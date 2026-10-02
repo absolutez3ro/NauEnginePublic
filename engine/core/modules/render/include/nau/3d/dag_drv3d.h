@@ -942,6 +942,16 @@ void window_destroyed(void *hwnd);
 /// returns raw pointer to device interface (implementation and platform specific)
 void *get_device();
 
+using GpuId = uint32_t;
+inline constexpr GpuId PRIMARY_GPU = 0;
+inline constexpr GpuId SECONDARY_GPU = 1;
+
+/// Возвращает указатель без передачи владения; для недоступного или неизвестного GPU — nullptr.
+/// Вызывать из потока рендера при работающем драйвере. Не освобождать сам указатель;
+/// созданные через него ресурсы освободить до завершения или восстановления драйвера.
+NAU_RENDER_EXPORT void *get_device(GpuId gpu_id);
+NAU_RENDER_EXPORT bool has_secondary_gpu();
+
 /// returns raw pointer to device interface
 void *get_context();
 
