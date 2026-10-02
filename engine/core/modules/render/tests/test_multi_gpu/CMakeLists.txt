@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
 
-# Can run without building the engine or fetching its SDK dependencies.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   project(NauMultiGpuTests LANGUAGES CXX)
   enable_testing()
