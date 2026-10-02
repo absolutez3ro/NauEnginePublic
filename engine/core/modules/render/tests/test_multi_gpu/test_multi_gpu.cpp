@@ -1,7 +1,10 @@
 #include "multi_gpu_device.h"
+#include "nau/directx/d3d12sdklayers.h"
 
+#include <dxgidebug.h>
 #include <gtest/gtest.h>
 #include <iostream>
+#include <vector>
 #include <wrl/implements.h>
 
 using namespace drv3d_dx12;
@@ -54,7 +57,7 @@ HRESULT WINAPI inject_create(IUnknown *, D3D_FEATURE_LEVEL, REFIID iid, void **r
 {
   return injectedDevice.CopyTo(iid, result);
 }
-} // namespace
+}
 
 TEST(MultiGpuSelection, RequiresDifferentLuidAndHardware)
 {
@@ -149,7 +152,7 @@ TEST(MultiGpuDevice, OwnsDeviceQueriesCapabilitiesAndReleasesOnResetAndFailure)
   injectedDevice.Reset();
 }
 
-TEST(MultiGpuHardware, CreatesSecondPhysicalDeviceWhenAvailable)
+static void check_hardware_pair()
 {
   ComPtr<IDXGIFactory4> factory;
   ASSERT_HRESULT_SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)));
@@ -174,7 +177,10 @@ TEST(MultiGpuHardware, CreatesSecondPhysicalDeviceWhenAvailable)
         CrossAdapterSupport support;
         support.query(primary.Get());
         EXPECT_HRESULT_SUCCEEDED(support.queryResult);
-        std::wcout << L"GPU 0: " << desc.Description << std::endl;
+        std::wcout << L"GPU 0: " << desc.Description << L", LUID=" << desc.AdapterLuid.HighPart << L":"
+          << desc.AdapterLuid.LowPart << L", CrossAdapterRowMajorTextureSupported="
+          << support.options.CrossAdapterRowMajorTextureSupported << L", CrossNodeSharingTier="
+          << support.options.CrossNodeSharingTier << std::endl;
       }
       continue;
     }
@@ -183,10 +189,53 @@ TEST(MultiGpuHardware, CreatesSecondPhysicalDeviceWhenAvailable)
       continue;
     EXPECT_NE(secondary.getDevice(), primary.Get());
     EXPECT_HRESULT_SUCCEEDED(secondary.getCrossAdapterSupport().queryResult);
-    std::wcout << L"GPU 1: " << desc.Description << std::endl;
+    const auto &support = secondary.getCrossAdapterSupport();
+    std::wcout << L"GPU 1: " << desc.Description << L", LUID=" << desc.AdapterLuid.HighPart << L":"
+      << desc.AdapterLuid.LowPart << L", CrossAdapterRowMajorTextureSupported="
+      << support.options.CrossAdapterRowMajorTextureSupported << L", CrossNodeSharingTier="
+      << support.options.CrossNodeSharingTier << std::endl;
     secondary.reset();
     EXPECT_EQ(secondary.getDevice(), nullptr);
     return;
   }
   GTEST_SKIP() << "Two physical D3D12 adapters are required";
+}
+
+TEST(MultiGpuHardware, CreatesSecondPhysicalDeviceWhenAvailable)
+{
+  check_hardware_pair();
+}
+
+TEST(MultiGpuHardware, DebugLayerShutdown)
+{
+  ComPtr<ID3D12Debug> debug;
+  if (FAILED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+    GTEST_SKIP() << "D3D12 debug layer unavailable";
+  debug->EnableDebugLayer();
+
+  ComPtr<IDXGIInfoQueue> queue;
+  ComPtr<IDXGIDebug1> dxgiDebug;
+  if (FAILED(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&queue))) ||
+      FAILED(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&dxgiDebug))))
+    GTEST_SKIP() << "DXGI debug diagnostics unavailable";
+  queue->ClearStoredMessages(DXGI_DEBUG_ALL);
+  check_hardware_pair();
+  if (::testing::Test::HasFailure() || ::testing::Test::IsSkipped())
+    return;
+  ASSERT_HRESULT_SUCCEEDED(dxgiDebug->ReportLiveObjects(DXGI_DEBUG_ALL,
+    static_cast<DXGI_DEBUG_RLO_FLAGS>(DXGI_DEBUG_RLO_DETAIL | DXGI_DEBUG_RLO_IGNORE_INTERNAL)));
+  for (UINT64 index = 0; index < queue->GetNumStoredMessages(DXGI_DEBUG_ALL); ++index)
+  {
+    SIZE_T size = 0;
+    ASSERT_HRESULT_SUCCEEDED(queue->GetMessage(DXGI_DEBUG_ALL, index, nullptr, &size));
+    std::vector<char> storage(size);
+    auto *message = reinterpret_cast<DXGI_INFO_QUEUE_MESSAGE *>(storage.data());
+    ASSERT_HRESULT_SUCCEEDED(queue->GetMessage(DXGI_DEBUG_ALL, index, message, &size));
+    EXPECT_NE(message->Severity, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR) << message->pDescription;
+    EXPECT_NE(message->Severity, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_CORRUPTION) << message->pDescription;
+    const std::string description(message->pDescription, message->DescriptionByteLength);
+    EXPECT_EQ(description.find("Live IDXGIAdapter"), std::string::npos) << description;
+    EXPECT_EQ(description.find("Live IDXGIFactory"), std::string::npos) << description;
+    EXPECT_EQ(description.find("Live ID3D12Device"), std::string::npos) << description;
+  }
 }

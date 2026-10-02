@@ -926,7 +926,7 @@ void init_secondary_gpu(D3D_FEATURE_LEVEL feature_level, const nau::DataBlock *g
   primarySupport.query(state.device.getDevice());
   log_multi_gpu_adapter(d3d::PRIMARY_GPU, primaryInfo, primarySupport);
 
-  // Explicit LUID, monitor and WARP selection bypass the normal candidate list.
+  // При выборе основного GPU по LUID, монитору или через WARP список кандидатов ещё не заполнен.
   if (candidates.empty())
   {
     ComPtr<IDXGIAdapter1> adapter;

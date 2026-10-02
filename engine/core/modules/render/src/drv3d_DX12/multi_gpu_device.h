@@ -31,7 +31,6 @@ struct CrossAdapterSupport
   }
 };
 
-// Owns only the secondary native device. Queues and shared resources belong to later MG tasks.
 class SecondaryGpuDevice
 {
   Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
@@ -83,4 +82,4 @@ public:
   const DXGI_ADAPTER_DESC1 &getDescription() const { return description; }
   const CrossAdapterSupport &getCrossAdapterSupport() const { return crossAdapterSupport; }
 };
-} // namespace drv3d_dx12
+}

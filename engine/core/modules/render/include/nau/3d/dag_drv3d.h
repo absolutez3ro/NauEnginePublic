@@ -946,9 +946,9 @@ using GpuId = uint32_t;
 inline constexpr GpuId PRIMARY_GPU = 0;
 inline constexpr GpuId SECONDARY_GPU = 1;
 
-/// Borrowed native device pointer. Returns nullptr for unavailable or unknown GPU ids.
-/// Call on the render thread while the driver is initialized. Do not release the pointer;
-/// release any resources created through it before driver shutdown or recovery.
+/// Возвращает указатель без передачи владения; для недоступного или неизвестного GPU — nullptr.
+/// Вызывать из потока рендера при работающем драйвере. Не освобождать сам указатель;
+/// созданные через него ресурсы освободить до завершения или восстановления драйвера.
 NAU_RENDER_EXPORT void *get_device(GpuId gpu_id);
 NAU_RENDER_EXPORT bool has_secondary_gpu();
 
