@@ -8,13 +8,20 @@
 
 namespace drv3d_dx12
 {
+inline bool is_software_device(const DXGI_ADAPTER_DESC1 &desc)
+{
+  constexpr UINT software_driver_vendor = 0x1414;
+  constexpr UINT software_driver_id = 0x8c;
+  // Some runtimes omit the software flag, so also check the WARP vendor and device ids.
+  return (0 != (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) ||
+         (desc.VendorId == software_driver_vendor && desc.DeviceId == software_driver_id);
+}
+
 inline bool is_secondary_gpu_candidate(const DXGI_ADAPTER_DESC1 &candidate, LUID primary_luid)
 {
-  const bool software = (candidate.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0 ||
-    (candidate.VendorId == 0x1414 && candidate.DeviceId == 0x8c);
   const bool sameAdapter = candidate.AdapterLuid.LowPart == primary_luid.LowPart &&
     candidate.AdapterLuid.HighPart == primary_luid.HighPart;
-  return !software && !sameAdapter;
+  return !is_software_device(candidate) && !sameAdapter;
 }
 
 struct CrossAdapterSupport

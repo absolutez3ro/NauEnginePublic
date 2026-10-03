@@ -7,7 +7,9 @@
 #include <vector>
 #include <wrl/implements.h>
 
-using namespace drv3d_dx12;
+using drv3d_dx12::CrossAdapterSupport;
+using drv3d_dx12::is_secondary_gpu_candidate;
+using drv3d_dx12::SecondaryGpuDevice;
 using Microsoft::WRL::ComPtr;
 
 namespace
@@ -152,7 +154,9 @@ TEST(MultiGpuDevice, OwnsDeviceQueriesCapabilitiesAndReleasesOnResetAndFailure)
   injectedDevice.Reset();
 }
 
-static void check_hardware_pair()
+namespace
+{
+void check_hardware_pair()
 {
   ComPtr<IDXGIFactory4> factory;
   ASSERT_HRESULT_SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)));
@@ -199,6 +203,7 @@ static void check_hardware_pair()
     return;
   }
   GTEST_SKIP() << "Two physical D3D12 adapters are required";
+}
 }
 
 TEST(MultiGpuHardware, CreatesSecondPhysicalDeviceWhenAvailable)

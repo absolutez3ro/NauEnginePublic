@@ -70,16 +70,6 @@ namespace
 constexpr int min_major_feature_level = 11;
 constexpr int min_minor_feature_level = 0;
 
-bool is_software_device(const DXGI_ADAPTER_DESC1 &desc)
-{
-  constexpr UINT software_driver_vendor = 0x1414;
-  constexpr UINT software_driver_id = 0x8c;
-  // checking software flag is insuficient, on some systems (even with exact same patch level and
-  // drivers) this flag might not be set by the dx runtime and we have to manually check for
-  // software device and vendor id.
-  return (0 != (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) ||
-         (desc.VendorId == software_driver_vendor && desc.DeviceId == software_driver_id);
-}
 D3D_FEATURE_LEVEL make_feature_level(int major, int minor)
 {
   struct FeatureLevelTableEntry
@@ -926,7 +916,7 @@ void init_secondary_gpu(D3D_FEATURE_LEVEL feature_level, const nau::DataBlock *g
   primarySupport.query(state.device.getDevice());
   log_multi_gpu_adapter(d3d::PRIMARY_GPU, primaryInfo, primarySupport);
 
-  // При выборе основного GPU по LUID, монитору или через WARP список кандидатов ещё не заполнен.
+  // Explicit primary selection by LUID, monitor or WARP bypasses the normal candidate list.
   if (candidates.empty())
   {
     ComPtr<IDXGIAdapter1> adapter;
