@@ -8,7 +8,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 if(WIN32)
-  add_executable(test_multi_gpu test_multi_gpu.cpp test_multi_gpu_fence.cpp test_main.cpp)
+  add_executable(test_multi_gpu test_multi_gpu.cpp test_multi_gpu_fence.cpp test_multi_gpu_transfer.cpp test_main.cpp)
   target_compile_features(test_multi_gpu PRIVATE cxx_std_20)
   target_compile_definitions(test_multi_gpu PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_include_directories(test_multi_gpu PRIVATE "../../include" "../../src/drv3d_DX12")
