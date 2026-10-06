@@ -113,8 +113,9 @@ private:
     return SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO, &info, sizeof(info))) && info.PlaneCount == 1;
   }
 
-  // Endpoints may have more mips or slices than the payload; only subresource 0 has to match.
-  bool matchesPayload(ID3D12Resource *resource, End end) const
+  // Texture endpoints may have more mips or slices than the payload; only subresource 0 has to match.
+  // Buffer endpoints may be larger and hold the payload at an offset, as sub-allocated engine buffers do.
+  bool matchesPayload(ID3D12Resource *resource, uint64_t offset, End end) const
   {
     if (!resource || !sameDevice(resource, sides[end].device.Get()))
       return false;
@@ -122,8 +123,8 @@ private:
     if (desc.Dimension != payload.Dimension)
       return false;
     if (!isTexture(payload))
-      return desc.Width >= payload.Width;
-    return desc.Width == payload.Width && desc.Height == payload.Height && desc.Format == payload.Format &&
+      return offset <= desc.Width && payload.Width <= desc.Width - offset;
+    return offset == 0 && desc.Width == payload.Width && desc.Height == payload.Height && desc.Format == payload.Format &&
            desc.SampleDesc.Count == 1;
   }
 
@@ -199,14 +200,15 @@ private:
     return value;
   }
 
-  void recordCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *resource, ID3D12Resource *slot, bool into_slot) const
+  void recordCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *resource, uint64_t offset, ID3D12Resource *slot,
+    bool into_slot) const
   {
     if (!isTexture(payload))
     {
       if (into_slot)
-        list->CopyBufferRegion(slot, 0, resource, 0, payload.Width);
+        list->CopyBufferRegion(slot, 0, resource, offset, payload.Width);
       else
-        list->CopyBufferRegion(resource, 0, slot, 0, payload.Width);
+        list->CopyBufferRegion(resource, offset, slot, 0, payload.Width);
       return;
     }
     D3D12_TEXTURE_COPY_LOCATION texture = {};
@@ -349,12 +351,13 @@ public:
    * @brief Copies source on the producer into the next slot.
    * @param source Producer resource matching the payload, in COMMON when the copy starts.
    * @param source_ready Producer fence the copy waits for, e.g. the end of the pass that writes source; may be empty.
+   * @param source_offset Byte offset of the payload in a buffer source; 0 for textures.
    * @return Ticket for receive() and the point after which source may be written again; ticket 0 if the input is
    *         invalid, the consumer is late (the frame is dropped) or submission failed.
    */
-  Send send(ID3D12Resource *source, CrossAdapterSyncPoint source_ready)
+  Send send(ID3D12Resource *source, CrossAdapterSyncPoint source_ready, uint64_t source_offset = 0)
   {
-    if (!*this || !matchesPayload(source, PRODUCER) ||
+    if (!*this || !matchesPayload(source, source_offset, PRODUCER) ||
         (source_ready.fence && !sameDevice(source_ready.fence, sides[PRODUCER].device.Get())))
       return {};
     const uint64_t ticket = lastSent + 1;
@@ -367,7 +370,7 @@ public:
     ID3D12GraphicsCommandList *list = beginRecording(PRODUCER, recording);
     if (!list)
       return {};
-    recordCopy(list, source, sides[PRODUCER].slots[ticket % slotCount].Get(), true);
+    recordCopy(list, source, source_offset, sides[PRODUCER].slots[ticket % slotCount].Get(), true);
     if (!enqueueExternalWait(PRODUCER, source_ready) ||
         (slot.consumedValue != 0 && !consumed.enqueueWait(sides[PRODUCER].queue.Get(), slot.consumedValue)))
     {
@@ -391,12 +394,14 @@ public:
    * @param ticket Value returned by send(); it can be received more than once until its slot is reused.
    * @param destination Consumer resource matching the payload, in COMMON when the copy starts.
    * @param destination_free Consumer fence the copy waits for, e.g. the last pass reading destination; may be empty.
+   * @param destination_offset Byte offset of the payload in a buffer destination; 0 for textures.
    * @return Point on the consumer after which destination holds the data; empty if the ticket is unknown or overwritten,
    *         the input is invalid or submission failed.
    */
-  CrossAdapterSyncPoint receive(uint64_t ticket, ID3D12Resource *destination, CrossAdapterSyncPoint destination_free)
+  CrossAdapterSyncPoint receive(uint64_t ticket, ID3D12Resource *destination, CrossAdapterSyncPoint destination_free,
+    uint64_t destination_offset = 0)
   {
-    if (!*this || ticket == 0 || !matchesPayload(destination, CONSUMER) ||
+    if (!*this || ticket == 0 || !matchesPayload(destination, destination_offset, CONSUMER) ||
         (destination_free.fence && !sameDevice(destination_free.fence, sides[CONSUMER].device.Get())))
       return {};
     Slot &slot = slotStates[ticket % slotCount];
@@ -407,7 +412,7 @@ public:
     ID3D12GraphicsCommandList *list = beginRecording(CONSUMER, recording);
     if (!list)
       return {};
-    recordCopy(list, destination, sides[CONSUMER].slots[ticket % slotCount].Get(), false);
+    recordCopy(list, destination, destination_offset, sides[CONSUMER].slots[ticket % slotCount].Get(), false);
     if (!enqueueExternalWait(CONSUMER, destination_free) || !written.enqueueWait(sides[CONSUMER].queue.Get(), slot.writtenValue))
     {
       list->Close();

@@ -264,6 +264,52 @@ TEST(MultiGpuTransferHardware, MovesBuffersOfAnySize)
   check_round(gpus[1], gpus[0], gpus[0], buffer_desc(3 * 1024 * 1024 + 4), 21);
 }
 
+TEST(MultiGpuTransferHardware, MovesBuffersAtAnOffsetInsideLargerResources)
+{
+  TestGpu gpus[2];
+  if (!make_hardware_pair(gpus))
+    GTEST_SKIP() << "Two physical D3D12 adapters are required";
+  // Engine buffers are sub-allocated: the payload sits at an offset inside a bigger resource.
+  constexpr UINT64 payloadSize = 4096 + 12;
+  constexpr UINT64 sourceOffset = 65536 + 256;
+  constexpr UINT64 destinationOffset = 768;
+  CrossAdapterChannel channel;
+  ASSERT_HRESULT_SUCCEEDED(
+    channel.init(gpus[0].device.Get(), gpus[1].device.Get(), gpus[0].device.Get(), buffer_desc(payloadSize), 2, nullptr));
+  auto source = create_resource(gpus[0], buffer_desc(256 * 1024));
+  auto destination = create_resource(gpus[1], buffer_desc(64 * 1024));
+  const auto sourceBytes = make_pattern(256 * 1024, 70);
+  const auto destinationBytes = make_pattern(64 * 1024, 71);
+  upload(gpus[0], source.Get(), sourceBytes);
+  upload(gpus[1], destination.Get(), destinationBytes);
+
+  EXPECT_EQ(channel.send(source.Get(), {}, 256 * 1024 - payloadSize + 1).ticket, 0u); // past the end
+  EXPECT_EQ(channel.send(source.Get(), {}, UINT64_MAX).ticket, 0u);
+  const auto sent = channel.send(source.Get(), {}, sourceOffset);
+  ASSERT_EQ(sent.ticket, 1u);
+  EXPECT_EQ(channel.receive(sent.ticket, destination.Get(), {}, 64 * 1024 - payloadSize + 1).fence, nullptr);
+  const auto ready = channel.receive(sent.ticket, destination.Get(), {}, destinationOffset);
+  ASSERT_NE(ready.fence, nullptr);
+  ASSERT_TRUE(wait_fence(ready.fence, ready.value, 10000));
+
+  // Only the payload range changed; the bytes around it are untouched.
+  auto expected = destinationBytes;
+  memcpy(expected.data() + destinationOffset, sourceBytes.data() + sourceOffset, payloadSize);
+  EXPECT_EQ(count_mismatches(download(gpus[1], destination.Get()), expected), 0u);
+}
+
+TEST(MultiGpuTransferHardware, RejectsOffsetsForTextures)
+{
+  TestGpu gpus[2];
+  if (!make_hardware_pair(gpus))
+    GTEST_SKIP() << "Two physical D3D12 adapters are required";
+  const auto desc = texture_desc(64, 64, DXGI_FORMAT_R8G8B8A8_UNORM);
+  CrossAdapterChannel channel;
+  ASSERT_HRESULT_SUCCEEDED(channel.init(gpus[0].device.Get(), gpus[1].device.Get(), gpus[0].device.Get(), desc, 2, nullptr));
+  auto source = create_resource(gpus[0], desc);
+  EXPECT_EQ(channel.send(source.Get(), {}, 256).ticket, 0u);
+}
+
 TEST(MultiGpuTransferHardware, RejectsEndpointsThatDoNotMatch)
 {
   TestGpu gpus[2];
