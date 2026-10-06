@@ -310,6 +310,54 @@ TEST(MultiGpuTransferHardware, RejectsOffsetsForTextures)
   EXPECT_EQ(channel.send(source.Get(), {}, 256).ticket, 0u);
 }
 
+TEST(MultiGpuTransferHardware, AcceptsEndpointsWithTheSameByteLayoutInAnotherFormat)
+{
+  TestGpu gpus[2];
+  if (!make_hardware_pair(gpus))
+    GTEST_SKIP() << "Two physical D3D12 adapters are required";
+  // The engine creates textures in typeless formats, a technique on the other GPU usually in typed ones.
+  CrossAdapterChannel channel;
+  ASSERT_HRESULT_SUCCEEDED(channel.init(gpus[0].device.Get(), gpus[1].device.Get(), gpus[0].device.Get(),
+    texture_desc(333, 77, DXGI_FORMAT_R8G8B8A8_UNORM), 2, nullptr));
+  auto source = create_resource(gpus[0], texture_desc(333, 77, DXGI_FORMAT_R8G8B8A8_TYPELESS));
+  auto destination = create_resource(gpus[1], texture_desc(333, 77, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB));
+  const auto pattern = make_pattern(333 * 77 * 4, 80);
+  upload(gpus[0], source.Get(), pattern);
+  const auto sent = channel.send(source.Get(), {});
+  ASSERT_EQ(sent.ticket, 1u);
+  const auto ready = channel.receive(sent.ticket, destination.Get(), {});
+  ASSERT_NE(ready.fence, nullptr);
+  ASSERT_TRUE(wait_fence(ready.fence, ready.value, 10000));
+  EXPECT_EQ(count_mismatches(download(gpus[1], destination.Get()), pattern), 0u);
+}
+
+TEST(MultiGpuTransferHardware, MovesDepthIntoAColorTexture)
+{
+  TestGpu gpus[2];
+  if (!make_hardware_pair(gpus))
+    GTEST_SKIP() << "Two physical D3D12 adapters are required";
+  // DOF and AO move a single-plane depth buffer and read it as R32F on the other GPU.
+  auto depthDesc = texture_desc(320, 180, DXGI_FORMAT_D32_FLOAT);
+  depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+  CrossAdapterChannel channel;
+  ASSERT_HRESULT_SUCCEEDED(channel.init(gpus[0].device.Get(), gpus[1].device.Get(), gpus[0].device.Get(), depthDesc, 2, nullptr));
+  auto source = create_resource(gpus[0], depthDesc);
+  auto destination = create_resource(gpus[1], texture_desc(320, 180, DXGI_FORMAT_R32_FLOAT));
+  std::vector<uint8_t> pattern(320 * 180 * 4);
+  for (size_t i = 0; i < 320 * 180; ++i)
+  {
+    const float depth = static_cast<float>(i % 1000) / 1000.0f;
+    memcpy(pattern.data() + i * 4, &depth, 4);
+  }
+  upload(gpus[0], source.Get(), pattern);
+  const auto sent = channel.send(source.Get(), {});
+  ASSERT_EQ(sent.ticket, 1u);
+  const auto ready = channel.receive(sent.ticket, destination.Get(), {});
+  ASSERT_NE(ready.fence, nullptr);
+  ASSERT_TRUE(wait_fence(ready.fence, ready.value, 10000));
+  EXPECT_EQ(count_mismatches(download(gpus[1], destination.Get()), pattern), 0u);
+}
+
 TEST(MultiGpuTransferHardware, RejectsEndpointsThatDoNotMatch)
 {
   TestGpu gpus[2];

@@ -90,6 +90,7 @@ private:
   uint32_t slotCount = 0;
   D3D12_RESOURCE_DESC payload = {};
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+  uint64_t slotSize = 0;
   uint64_t lastSent = 0;
   uint64_t lastReceived = 0;
 
@@ -113,9 +114,11 @@ private:
     return SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO, &info, sizeof(info))) && info.PlaneCount == 1;
   }
 
-  // Texture endpoints may have more mips or slices than the payload; only subresource 0 has to match.
+  // Texture endpoints may have more mips or slices than the payload; subresource 0 has to have its size and byte layout.
+  // The format itself may differ, e.g. a typeless engine texture on one side and a typed one on the other: the slot
+  // holds raw bytes, and each side copies with a footprint in its own format, which is always copy-compatible.
   // Buffer endpoints may be larger and hold the payload at an offset, as sub-allocated engine buffers do.
-  bool matchesPayload(ID3D12Resource *resource, uint64_t offset, End end) const
+  bool matchesPayload(ID3D12Resource *resource, uint64_t offset, End end, D3D12_PLACED_SUBRESOURCE_FOOTPRINT &layout) const
   {
     if (!resource || !sameDevice(resource, sides[end].device.Get()))
       return false;
@@ -124,8 +127,11 @@ private:
       return false;
     if (!isTexture(payload))
       return offset <= desc.Width && payload.Width <= desc.Width - offset;
-    return offset == 0 && desc.Width == payload.Width && desc.Height == payload.Height && desc.Format == payload.Format &&
-           desc.SampleDesc.Count == 1;
+    if (offset != 0 || desc.Width != payload.Width || desc.Height != payload.Height || desc.SampleDesc.Count != 1)
+      return false;
+    uint64_t total = 0;
+    sides[end].device->GetCopyableFootprints(&desc, 0, 1, 0, &layout, nullptr, nullptr, &total);
+    return total == slotSize && layout.Footprint.RowPitch == footprint.Footprint.RowPitch;
   }
 
   HRESULT initSide(End end, const D3D12_RESOURCE_DESC &slot_desc, uint64_t slot_stride, const wchar_t *name)
@@ -200,8 +206,8 @@ private:
     return value;
   }
 
-  void recordCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *resource, uint64_t offset, ID3D12Resource *slot,
-    bool into_slot) const
+  void recordCopy(ID3D12GraphicsCommandList *list, ID3D12Resource *resource, uint64_t offset,
+    const D3D12_PLACED_SUBRESOURCE_FOOTPRINT &layout, ID3D12Resource *slot, bool into_slot) const
   {
     if (!isTexture(payload))
     {
@@ -218,7 +224,7 @@ private:
     D3D12_TEXTURE_COPY_LOCATION placed = {};
     placed.pResource = slot;
     placed.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    placed.PlacedFootprint = footprint;
+    placed.PlacedFootprint = layout;
     if (into_slot)
       list->CopyTextureRegion(&placed, 0, 0, 0, &texture, nullptr);
     else
@@ -258,7 +264,7 @@ public:
         slot_count < 2 || slot_count > MAX_SLOTS || !isSupportedPayload(producer, payload_desc) || !isSupportedPayload(consumer, payload_desc))
       return E_INVALIDARG;
 
-    uint64_t slotSize = payload_desc.Width;
+    uint64_t payloadSize = payload_desc.Width;
     if (isTexture(payload_desc))
     {
       // Both adapters must read the slot with the same layout the other one wrote.
@@ -270,12 +276,12 @@ public:
           layouts[PRODUCER].Footprint.RowPitch != layouts[CONSUMER].Footprint.RowPitch)
         return DXGI_ERROR_UNSUPPORTED;
       footprint = layouts[PRODUCER];
-      slotSize = totals[PRODUCER];
+      payloadSize = totals[PRODUCER];
     }
 
     D3D12_RESOURCE_DESC slotDesc = {};
     slotDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    slotDesc.Width = slotSize;
+    slotDesc.Width = payloadSize;
     slotDesc.Height = 1;
     slotDesc.DepthOrArraySize = 1;
     slotDesc.MipLevels = 1;
@@ -291,6 +297,7 @@ public:
     sides[PRODUCER].device = producer;
     sides[CONSUMER].device = consumer;
     slotCount = slot_count;
+    slotSize = payloadSize;
     payload = payload_desc;
 
     const End owner = heap_owner == producer ? PRODUCER : CONSUMER;
@@ -341,6 +348,7 @@ public:
     slotCount = 0;
     payload = {};
     footprint = {};
+    slotSize = 0;
     lastSent = 0;
     lastReceived = 0;
   }
@@ -357,7 +365,8 @@ public:
    */
   Send send(ID3D12Resource *source, CrossAdapterSyncPoint source_ready, uint64_t source_offset = 0)
   {
-    if (!*this || !matchesPayload(source, source_offset, PRODUCER) ||
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout = {};
+    if (!*this || !matchesPayload(source, source_offset, PRODUCER, layout) ||
         (source_ready.fence && !sameDevice(source_ready.fence, sides[PRODUCER].device.Get())))
       return {};
     const uint64_t ticket = lastSent + 1;
@@ -370,7 +379,7 @@ public:
     ID3D12GraphicsCommandList *list = beginRecording(PRODUCER, recording);
     if (!list)
       return {};
-    recordCopy(list, source, source_offset, sides[PRODUCER].slots[ticket % slotCount].Get(), true);
+    recordCopy(list, source, source_offset, layout, sides[PRODUCER].slots[ticket % slotCount].Get(), true);
     if (!enqueueExternalWait(PRODUCER, source_ready) ||
         (slot.consumedValue != 0 && !consumed.enqueueWait(sides[PRODUCER].queue.Get(), slot.consumedValue)))
     {
@@ -401,7 +410,8 @@ public:
   CrossAdapterSyncPoint receive(uint64_t ticket, ID3D12Resource *destination, CrossAdapterSyncPoint destination_free,
     uint64_t destination_offset = 0)
   {
-    if (!*this || ticket == 0 || !matchesPayload(destination, destination_offset, CONSUMER) ||
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout = {};
+    if (!*this || ticket == 0 || !matchesPayload(destination, destination_offset, CONSUMER, layout) ||
         (destination_free.fence && !sameDevice(destination_free.fence, sides[CONSUMER].device.Get())))
       return {};
     Slot &slot = slotStates[ticket % slotCount];
@@ -412,7 +422,7 @@ public:
     ID3D12GraphicsCommandList *list = beginRecording(CONSUMER, recording);
     if (!list)
       return {};
-    recordCopy(list, destination, destination_offset, sides[CONSUMER].slots[ticket % slotCount].Get(), false);
+    recordCopy(list, destination, destination_offset, layout, sides[CONSUMER].slots[ticket % slotCount].Get(), false);
     if (!enqueueExternalWait(CONSUMER, destination_free) || !written.enqueueWait(sides[CONSUMER].queue.Get(), slot.writtenValue))
     {
       list->Close();
