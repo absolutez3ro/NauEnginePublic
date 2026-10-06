@@ -81,8 +81,10 @@ struct SecondarySend
 };
 
 // Slot reuse: ticket t occupies slot t % slotCount. A send waits on the GPU only for receives that were already
-// issued for the ticket in that slot. If the consumer has not issued one yet, the send is dropped and returns
-// ticket 0 instead of waiting, so a consumer that skips frames can never hang the producer GPU.
+// issued for the ticket in that slot. If the consumer skipped that ticket and already received a newer one, the slot
+// is reused without waiting. If the consumer has not received that ticket or a newer one yet, the send is dropped and
+// returns ticket 0 instead of waiting, so a consumer that skips frames can never hang the producer GPU. A send or
+// receive also fails instead of blocking when the CPU has run several submissions ahead of the GPUs.
 
 /**
  * @brief Creates a transfer channel.
