@@ -356,6 +356,23 @@ public:
   explicit operator bool() const { return static_cast<bool>(written); }
 
   /**
+   * @brief False if send() would drop the frame because the consumer is late. Has no side effects, so a caller can
+   *        skip preparing a source that would not be sent.
+   */
+  bool isNextSlotFree() const
+  {
+    if (!*this)
+      return false;
+    const Slot &slot = slotStates[(lastSent + 1) % slotCount];
+    return slot.ticket == 0 || slot.consumedValue != 0 || lastReceived >= slot.ticket;
+  }
+
+  /**
+   * @brief True if receive() can still copy ticket, i.e. it was sent and its slot was not reused.
+   */
+  bool holds(uint64_t ticket) const { return *this && ticket != 0 && slotStates[ticket % slotCount].ticket == ticket; }
+
+  /**
    * @brief Copies source on the producer into the next slot.
    * @param source Producer resource matching the payload, in COMMON when the copy starts.
    * @param source_ready Producer fence the copy waits for, e.g. the end of the pass that writes source; may be empty.
@@ -369,11 +386,10 @@ public:
     if (!*this || !matchesPayload(source, source_offset, PRODUCER, layout) ||
         (source_ready.fence && !sameDevice(source_ready.fence, sides[PRODUCER].device.Get())))
       return {};
+    if (!isNextSlotFree())
+      return {};
     const uint64_t ticket = lastSent + 1;
     Slot &slot = slotStates[ticket % slotCount];
-    const bool slotInUse = slot.ticket != 0 && slot.consumedValue == 0 && lastReceived < slot.ticket;
-    if (slotInUse)
-      return {};
 
     Recording *recording = nullptr;
     ID3D12GraphicsCommandList *list = beginRecording(PRODUCER, recording);
@@ -414,9 +430,9 @@ public:
     if (!*this || ticket == 0 || !matchesPayload(destination, destination_offset, CONSUMER, layout) ||
         (destination_free.fence && !sameDevice(destination_free.fence, sides[CONSUMER].device.Get())))
       return {};
-    Slot &slot = slotStates[ticket % slotCount];
-    if (slot.ticket != ticket)
+    if (!holds(ticket))
       return {};
+    Slot &slot = slotStates[ticket % slotCount];
 
     Recording *recording = nullptr;
     ID3D12GraphicsCommandList *list = beginRecording(CONSUMER, recording);

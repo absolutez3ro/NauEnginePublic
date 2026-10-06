@@ -404,14 +404,19 @@ TEST(MultiGpuTransferHardware, LateConsumerDropsFramesInsteadOfHangingProducer)
   EXPECT_EQ(channel.send(sources[0].Get(), {}).ticket, 1u);
   EXPECT_EQ(channel.send(sources[1].Get(), {}).ticket, 2u);
   // Both slots hold frames nobody has asked for: the third frame is dropped, nothing waits.
+  EXPECT_FALSE(channel.isNextSlotFree());
+  EXPECT_TRUE(channel.holds(1));
   EXPECT_EQ(channel.send(sources[2].Get(), {}).ticket, 0u);
   EXPECT_EQ(channel.send(sources[2].Get(), {}).ticket, 0u);
 
   // The consumer jumps to the newest frame. Frame 1 is skipped for good, so its slot is free without a wait.
   const auto second = channel.receive(2, destination.Get(), {});
   ASSERT_NE(second.fence, nullptr);
+  EXPECT_TRUE(channel.isNextSlotFree());
   const auto third = channel.send(sources[2].Get(), {});
   EXPECT_EQ(third.ticket, 3u);
+  EXPECT_FALSE(channel.holds(1));
+  EXPECT_TRUE(channel.holds(3));
   EXPECT_EQ(channel.receive(1, destination.Get(), {}).fence, nullptr); // overwritten by frame 3
 
   ASSERT_TRUE(wait_fence(second.fence, second.value, 10000));
