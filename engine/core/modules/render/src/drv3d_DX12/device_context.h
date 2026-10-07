@@ -1408,6 +1408,9 @@ class DeviceContext : protected ResourceUsageHistoryDataSetDebugger, public debu
     void flushComputeState();
     void textureReadBack(Image *image, HostDeviceSharedMemoryRegion cpu_memory, BufferImageCopyListRef::RangeType regions,
       DeviceQueueType queue);
+    void transitionTextureForForeignQueue(Image *image);
+    void signalForeignFence(ID3D12Fence *fence, uint64_t value);
+    void waitForeignFence(ID3D12Fence *fence, uint64_t value);
     void bufferReadBack(BufferResourceReferenceAndRange buffer, HostDeviceSharedMemoryRegion cpu_memory, size_t offset);
 #if !_TARGET_XBOXONE
     void setVariableRateShading(D3D12_SHADING_RATE rate, D3D12_SHADING_RATE_COMBINER vs_combiner,
@@ -1799,6 +1802,12 @@ public:
   void copyImage(Image *src, Image *dst, const ImageCopy &copy);
   void resolveMultiSampleImage(Image *src, Image *dst);
   void flushDraws();
+  // Hands the work recorded so far to a queue outside this context, e.g. a multi-GPU copy queue: optionally moves
+  // subresource 0 of image to COMMON, submits everything recorded so far and signals fence with value on the graphics
+  // queue after it. Buffers need no image, they are in COMMON after every flush.
+  void releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint64_t value);
+  // Graphics work submitted after this call waits on the GPU until fence reaches value. Never blocks the CPU.
+  void waitForForeignQueue(ID3D12Fence *fence, uint64_t value);
   // Similar to flushDraws, with the exception that it will only execute a flush when no queries are active.
   // Returns true if it executed a flush, otherwise it returns false.
   bool flushDrawWhenNoQueries();

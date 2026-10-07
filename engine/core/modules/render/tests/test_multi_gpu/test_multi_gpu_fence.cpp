@@ -1,5 +1,5 @@
-#include "multi_gpu_device.h"
 #include "multi_gpu_fence.h"
+#include "multi_gpu_test_utils.h"
 #include "nau/directx/d3d12sdklayers.h"
 
 #include <dxgidebug.h>
@@ -8,88 +8,10 @@
 #include <vector>
 
 using namespace drv3d_dx12;
-using Microsoft::WRL::ComPtr;
+using namespace multi_gpu_test;
 
 namespace
 {
-struct TestGpu
-{
-  ComPtr<ID3D12Device> device;
-  ComPtr<ID3D12CommandQueue> queue;
-  ComPtr<ID3D12Fence> gate; // signaled from the CPU to hold back queued work
-  ComPtr<ID3D12Fence> done;
-};
-
-bool make_gpu(IDXGIAdapter1 *adapter, TestGpu &gpu)
-{
-  if (FAILED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&gpu.device))))
-    return false;
-  D3D12_COMMAND_QUEUE_DESC desc = {};
-  desc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
-  return SUCCEEDED(gpu.device->CreateCommandQueue(&desc, IID_PPV_ARGS(&gpu.queue))) &&
-         SUCCEEDED(gpu.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gpu.gate))) &&
-         SUCCEEDED(gpu.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gpu.done)));
-}
-
-// Two devices on two different physical adapters, in DXGI enumeration order.
-bool make_hardware_pair(TestGpu (&gpus)[2])
-{
-  ComPtr<IDXGIFactory4> factory;
-  if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))))
-    return false;
-  LUID first = {};
-  int found = 0;
-  for (UINT index = 0; found < 2; ++index)
-  {
-    ComPtr<IDXGIAdapter1> adapter;
-    if (factory->EnumAdapters1(index, &adapter) == DXGI_ERROR_NOT_FOUND)
-      return false;
-    DXGI_ADAPTER_DESC1 desc = {};
-    if (FAILED(adapter->GetDesc1(&desc)) || !is_secondary_gpu_candidate(desc, first))
-      continue;
-    if (make_gpu(adapter.Get(), gpus[found]))
-    {
-      if (found == 0)
-        first = desc.AdapterLuid;
-      ++found;
-    }
-  }
-  return true;
-}
-
-// Any two distinct devices, enough for the bookkeeping that does not need two physical GPUs.
-// D3D12 devices are per-adapter singletons, so two devices need two adapters: a hardware pair if present,
-// otherwise WARP next to one hardware adapter.
-bool make_two_devices(TestGpu (&gpus)[2])
-{
-  if (make_hardware_pair(gpus))
-    return true;
-  gpus[0] = {};
-  gpus[1] = {};
-  ComPtr<IDXGIFactory4> factory;
-  ComPtr<IDXGIAdapter1> warp;
-  if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))) || FAILED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp))) ||
-      !make_gpu(warp.Get(), gpus[0]))
-    return false;
-  for (UINT index = 0;; ++index)
-  {
-    ComPtr<IDXGIAdapter1> adapter;
-    if (factory->EnumAdapters1(index, &adapter) == DXGI_ERROR_NOT_FOUND)
-      return false;
-    DXGI_ADAPTER_DESC1 desc = {};
-    if (SUCCEEDED(adapter->GetDesc1(&desc)) && is_secondary_gpu_candidate(desc, {}) && make_gpu(adapter.Get(), gpus[1]))
-      return true;
-  }
-}
-
-bool wait_done(TestGpu &gpu, uint64_t value, DWORD timeout_ms)
-{
-  HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-  bool reached = SUCCEEDED(gpu.done->SetEventOnCompletion(value, event)) && WaitForSingleObject(event, timeout_ms) == WAIT_OBJECT_0;
-  CloseHandle(event);
-  return reached;
-}
-
 // Signaler holds its signal behind its gate; waiter waits for the signal on the GPU, then marks done = 1.
 void check_gpu_side_wait(TestGpu &signaler, TestGpu &waiter)
 {
@@ -256,19 +178,7 @@ TEST(MultiGpuFenceHardware, DebugLayerReportsNothingAndNothingLeaks)
     check_gpu_side_wait(gpus[0], gpus[1]);
     check_gpu_side_wait(gpus[1], gpus[0]);
     for (TestGpu &gpu : gpus)
-    {
-      ComPtr<ID3D12InfoQueue> infoQueue;
-      ASSERT_HRESULT_SUCCEEDED(gpu.device.As(&infoQueue));
-      for (UINT64 index = 0; index < infoQueue->GetNumStoredMessages(); ++index)
-      {
-        SIZE_T size = 0;
-        ASSERT_HRESULT_SUCCEEDED(infoQueue->GetMessage(index, nullptr, &size));
-        std::vector<char> storage(size);
-        auto *message = reinterpret_cast<D3D12_MESSAGE *>(storage.data());
-        ASSERT_HRESULT_SUCCEEDED(infoQueue->GetMessage(index, message, &size));
-        EXPECT_GT(message->Severity, D3D12_MESSAGE_SEVERITY_WARNING) << message->pDescription;
-      }
-    }
+      expect_no_debug_warnings(gpu.device.Get());
   }
 
   ASSERT_HRESULT_SUCCEEDED(dxgiDebug->ReportLiveObjects(DXGI_DEBUG_ALL,
