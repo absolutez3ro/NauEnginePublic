@@ -33,6 +33,7 @@ enum class TransferPayload : uint8_t
  * @brief Description of a channel that repeatedly moves one 2D image or one buffer between the GPUs.
  *
  * Texture2D: both endpoints must have exactly this size and format. Only mip 0 of array slice 0 is moved.
+ * Engine textures need TEXCF_RTARGET, TEXCF_UNORDERED or TEXCF_UPDATE_DESTINATION, the same as for BaseTexture::update().
  * Depth is supported as TEXFMT_DEPTH32 (plane 0 only); combined depth-stencil formats are rejected,
  * copy such data into a TEXFMT_R32F texture first.
  *
