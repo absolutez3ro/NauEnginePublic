@@ -962,6 +962,33 @@ NAU_RENDER_EXPORT void *get_device(GpuId gpu_id);
  */
 NAU_RENDER_EXPORT bool has_secondary_gpu();
 
+/**
+ * @brief Checks whether a healthy secondary device is available for multi-GPU work.
+ *
+ * Checks device health on the render thread. Transfer-channel creation still has
+ * to validate the actual format, shared resources and fences on both adapters.
+ * A false result selects the technique's single-GPU path.
+ */
+NAU_RENDER_EXPORT bool is_multi_gpu_available();
+
+/**
+ * @brief Returns the last reason why multi-GPU fell back to GPU 0.
+ *
+ * The returned pointer is static storage. When is_multi_gpu_available() is true,
+ * this returns "available". Before driver initialization or after shutdown it
+ * returns "driver not initialized".
+ */
+NAU_RENDER_EXPORT const char *get_multi_gpu_fallback_reason();
+
+/**
+ * @brief Latches single-GPU fallback after a secondary transfer or resource failure.
+ *
+ * The transfer layer calls this on the render thread with the failing HRESULT.
+ * Successful HRESULTs are ignored. Existing consumer-owned resources must be
+ * retired by their owner; the driver keeps the secondary device alive until teardown.
+ */
+NAU_RENDER_EXPORT void report_secondary_gpu_failure(uint32_t error_code);
+
 /// returns raw pointer to device interface
 void *get_context();
 
