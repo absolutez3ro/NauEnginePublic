@@ -59,19 +59,30 @@ D3D12_RESOURCE_DESC payload_desc(const d3d::mgpu::TransferChannelDesc &desc)
   return result;
 }
 
-// A copy queue can read buffers in default and upload heaps, but write only to default heaps.
+// The engine places its resources in custom heaps, which a copy queue reads and writes like default ones. Only the
+// fixed-state heaps are out: upload resources can not be written, read back resources can not be read.
 bool is_copy_endpoint(ID3D12Resource *resource, bool written)
 {
   D3D12_HEAP_PROPERTIES properties = {};
   if (FAILED(resource->GetHeapProperties(&properties, nullptr)))
     return false;
-  return properties.Type == D3D12_HEAP_TYPE_DEFAULT || (!written && properties.Type == D3D12_HEAP_TYPE_UPLOAD);
+  return properties.Type != (written ? D3D12_HEAP_TYPE_UPLOAD : D3D12_HEAP_TYPE_READBACK);
 }
 
 Image *engine_image(BaseTexture *texture)
 {
   Image *image = texture ? getbasetex(texture)->getDeviceImage() : nullptr;
-  return image && image->getHandle() ? image : nullptr;
+  if (!image || !image->getHandle())
+    return nullptr;
+  // Static textures stay in their read state and have no tracked state to hand over to a copy queue.
+  if (!image->hasTrackedState())
+  {
+    NAU_LOG_ERROR("DX12: multi-GPU transfer of texture <{}> that does not support it, the texture needs either "
+                  "TEXCF_UPDATE_DESTINATION, TEXCF_RTARGET or TEXCF_UNORDERED create flags specified",
+      texture->getResName());
+    return nullptr;
+  }
+  return image;
 }
 
 const BufferState *engine_buffer(Sbuffer *buffer, bool written)
