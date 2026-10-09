@@ -173,6 +173,29 @@ ctest --test-dir build/multi_gpu_tests -C Debug --output-on-failure
 Локальный журнал: `build/multi_gpu_tests/Testing/Temporary/LastTest.log` (build-файлы не включены в коммит).
 Timeout CTest ограничивает зависание драйвера при тестовом ожидании fence; запуск executable напрямую этого ограничения не имеет.
 
+### Приведение стиля к руководству — 09.10.2026
+
+Новые `device_resource.h/.cpp`, `test_device_resource.cpp` и добавленная проверка ресурсов в
+`test_multi_gpu.cpp` приведены к `doc/coding_style_guide.md`: camelCase, поля с `m_`, явные специальные
+методы класса, Doxygen, явные типы вместо избыточного `auto`, Allman и отступы по четыре пробела.
+Getters `DeviceResource` перенесены в `.cpp`. В тестах используются `eastl::array` и
+`eastl::unique_ptr<char[]>` для массива диагностического сообщения; они не требуют сборки NauKernel.
+Проверка физического GPU 1 вынесена в небольшой helper; соседний код предыдущих MG-задач не переформатирован.
+
+Специализированные COM-указатели `Microsoft::WRL::ComPtr` сохранены ради `AddRef/Release` и совместимости
+с существующим `SecondaryGpuDevice`. Native `HRESULT` сохранён для ошибок D3D12, исключения не добавлены.
+Имена переопределений GoogleTest `SetUp`/`TearDown` и существующих внешних API следуют их контрактам.
+Это обоснованные особенности используемых API, а не новые общие соглашения об именовании или владении.
+
+В комплектном EASTL обнаружен необъявленный `pName` в debug-ветке `allocator::realloc`.
+Для `test_multi_gpu` задан `EASTL_DEBUGPARAMS_LEVEL=0`: неиспользуемые параметры имён аллокаций отключены,
+assertions EASTL сохранены, сторонние исходники не изменены.
+
+После правок повторно прошли Debug-сборка и CTest: **19 passed, 2 skipped, 0 failed**.
+Для трёх новых C++-файлов прошёл `clang-format 22.1.3 --style=file --dry-run --Werror` с конфигурацией
+репозитория; `git diff --check` также прошёл. Ограничения полной сборки и проверки второго физического GPU
+остаются указанными выше.
+
 Команда попытки полной конфигурации:
 
 ```powershell

@@ -60,6 +60,25 @@ HRESULT WINAPI inject_create(IUnknown *, D3D_FEATURE_LEVEL, REFIID iid, void **r
 {
   return injectedDevice.CopyTo(iid, result);
 }
+
+    /**
+     * @brief Verifies native resource ownership on the selected second physical GPU.
+     */
+    void checkSecondaryResources(ID3D12Device* secondaryDevice, ID3D12Device* primaryDevice)
+    {
+        drv3d_dx12::DeviceResource target;
+        drv3d_dx12::DeviceResource buffer;
+        ASSERT_HRESULT_SUCCEEDED(target.createRenderTarget(secondaryDevice, 64, 64));
+        ASSERT_HRESULT_SUCCEEDED(buffer.createBuffer(secondaryDevice, 1024, D3D12_HEAP_TYPE_DEFAULT));
+        for (const drv3d_dx12::DeviceResource* resource : {&target, &buffer})
+        {
+            ComPtr<ID3D12Device> owner;
+            ASSERT_HRESULT_SUCCEEDED(resource->getResource()->GetDevice(IID_PPV_ARGS(&owner)));
+            EXPECT_EQ(owner.Get(), secondaryDevice);
+            EXPECT_NE(owner.Get(), primaryDevice);
+        }
+        // No commands were submitted; resources are released before the caller resets the device.
+    }
 }
 
 TEST(MultiGpuSelection, RequiresDifferentLuidAndHardware)
@@ -201,19 +220,7 @@ void check_hardware_pair()
       << support.options.CrossNodeSharingTier << std::endl;
     // Exercise the production resource component on the selected physical GPU 1.
     // WARP is excluded by the adapter selection above.
-    drv3d_dx12::DeviceResource target, buffer;
-    ASSERT_HRESULT_SUCCEEDED(target.createRenderTarget(secondary.getDevice(), 64, 64));
-    ASSERT_HRESULT_SUCCEEDED(buffer.createBuffer(secondary.getDevice(), 1024, D3D12_HEAP_TYPE_DEFAULT));
-    for (const auto *resource : {&target, &buffer})
-    {
-      ComPtr<ID3D12Device> owner;
-      ASSERT_HRESULT_SUCCEEDED(resource->getResource()->GetDevice(IID_PPV_ARGS(&owner)));
-      EXPECT_EQ(owner.Get(), secondary.getDevice());
-      EXPECT_NE(owner.Get(), primary.Get());
-    }
-    // No commands were submitted; resources may be released immediately.
-    target.reset();
-    buffer.reset();
+    ASSERT_NO_FATAL_FAILURE(checkSecondaryResources(secondary.getDevice(), primary.Get()));
     secondary.reset();
     EXPECT_EQ(secondary.getDevice(), nullptr);
     return;
