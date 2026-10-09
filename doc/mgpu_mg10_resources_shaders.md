@@ -154,7 +154,8 @@ Cross-adapter sharing и показ результата на GPU 0 не тре�
 | Изоляция устройств | Одновременно созданы независимые WARP и hardware devices, ресурсы сохраняют правильного владельца. Это не подмена двух физических GPU. |
 | D3D12 debug layer | Доступен. Новые параметризованные тесты проверяют отсутствие ERROR/CORRUPTION и оставшихся resources/heaps через `ReportLiveDeviceObjects`. |
 | Два физических GPU | Оба существующих hardware pair теста пропущены; ветвь создания ресурсов физического GPU 1 добавлена, но здесь не исполнена. |
-| Полная конфигурация движка | Остановилась в `cmake/NauGenFunctions.cmake`: обязательный Python-пакет `cymbal` отсутствует. Полный Render/SceneBaseSample не собран и не запущен. |
+| Первоначальная конфигурация движка | Остановилась в `cmake/NauGenFunctions.cmake`: обязательный Python-пакет `cymbal` отсутствовал. После установки зависимостей конфигурация прошла; подробности ниже. |
+| `SceneBaseSample`, Release x64 | Собран вместе с `Render`, `ShaderCompilerTool` и shader caches. Потребовалось локальное исправление сравнения строк для MSVC 19.51. Приложение не запускалось. |
 | `git diff --check` | Без ошибок пробелов. |
 
 Сохранение GPU 0 проверено на уровне неизменности существующего production-пути и старых компонентных тестов.
@@ -193,21 +194,53 @@ assertions EASTL сохранены, сторонние исходники не 
 
 После правок повторно прошли Debug-сборка и CTest: **19 passed, 2 skipped, 0 failed**.
 Для трёх новых C++-файлов прошёл `clang-format 22.1.3 --style=file --dry-run --Werror` с конфигурацией
-репозитория; `git diff --check` также прошёл. Ограничения полной сборки и проверки второго физического GPU
-остаются указанными выше.
+репозитория; `git diff --check` также прошёл. Проверка второго физического GPU остаётся недоступной;
+результат последующей сборки движка приведён ниже.
 
-Команда попытки полной конфигурации:
+### Локальная сборка движка после установки cymbal — 09.10.2026
+
+Конфигурация и сборка `SceneBaseSample` успешно завершились с генератором `Visual Studio 18 2026`,
+`BUILD_SHARED_LIBS=OFF`, `NAU_CORE_TOOLS=OFF`, `NAU_CORE_SAMPLES=ON`, `NAU_CORE_TESTS=OFF` и
+`NAU_FORCE_ENABLE_SHADER_COMPILER_TOOL=ON`. Сборка этого target включает `Render` и production
+`device_resource.cpp`; это не проверка всех targets репозитория. Штатные shader caches также созданы.
+
+В окружение текущего процесса добавлены Python 3.9.13 и его Scripts с установленными `cymbal 1.0.0`
+и `clang 21.1.7`. README рекомендует Python 3.10+; результат здесь относится к указанной локальной
+конфигурации. Через комплектный vcpkg установлен `directx-dxc 2024-03-29` из baseline
+`a1212c93cabaa9c5c36c1ffdb4bddd59fdf31e43`, в `build/mg10_deps/installed`.
+
+В `engine/core/kernel/include/nau/string/string.h` исправлена несовместимость с MSVC 19.51:
+вместо конструирования `std::strong_ordering` из `signed char` используется стандартное
+`m_data.compare(str.m_data) <=> 0`. Локальная проверка настоящего `nau::string` прошла для 144 пар:
+равные строки, префиксы, ASCII и UTF-8. Проверочные файлы находятся в `build/mg10_string_check`.
+
+Артефакт: `build/mg10_engine_check/bin/Release/SceneBaseSample.exe`.
+Журналы: `build/mg10_engine_check/configure.log` и
+`build/mg10_engine_check/build-scene-release-portable-compare.log`.
+Воспроизведение из корня в консоли с CMake, Python и pip в PATH, с установленным
+`directx-dxc` в `build/mg10_deps/installed/x64-windows`:
 
 ```powershell
-cmake -S . -B build/mg10_engine_check -G "Visual Studio 18 2026" -A x64 -DBUILD_SHARED_LIBS=OFF -DNAU_CORE_TOOLS=OFF -DNAU_CORE_SAMPLES=OFF -DNAU_CORE_TESTS=OFF
+cmake -S . -B build/mg10_engine_check -G "Visual Studio 18 2026" -A x64 `
+    -DBUILD_SHARED_LIBS=OFF -DNAU_CORE_TOOLS=OFF -DNAU_CORE_SAMPLES=ON -DNAU_CORE_TESTS=OFF `
+    -DNAU_FORCE_ENABLE_SHADER_COMPILER_TOOL=ON `
+    "-Ddirectx-dxc_DIR=$PWD/build/mg10_deps/installed/x64-windows/share/directx-dxc" `
+    "-DVCPKG_INSTALLED_DIR=$PWD/build/mg10_deps/installed" -DVCPKG_TARGET_TRIPLET=x64-windows
+cmake -E make_directory build/mg10_engine_check/bin/Release
+cmake -E copy_if_different build/mg10_deps/installed/x64-windows/bin/dxcompiler.dll build/mg10_engine_check/bin/Release
+cmake --build build/mg10_engine_check --config Release --target SceneBaseSample --parallel 2 -- /p:CL_MPCount=2
 ```
+
+Для этой машины также сохранён скрипт `build/mg10_engine_check/build-local.ps1` в игнорируемом
+`build`; он не входит в репозиторий. Повторный CTest: **19 passed,
+2 skipped, 0 failed**. Запуск основной сцены и её визуальная регрессия по-прежнему не проверены.
 
 ## Оставшаяся работа и план до 21.10
 
 | Даты | Результат этапа |
 | --- | --- |
 | 09–10.10 | Представить этот отчёт, выбранный подход и проверенный компонент. Организовать доступ к двум физическим D3D12 GPU; запустить расширенные hardware pair тесты. |
-| 11–13.10 | Добавить owner прохода GPU 1: direct queue, allocator/list, fence, RTV heap; явные barriers и штатное завершение перед освобождением. Восстановить доступность полной сборки. |
+| 11–13.10 | Добавить owner прохода GPU 1: direct queue, allocator/list, fence, RTV heap; явные barriers и штатное завершение перед освобождением. |
 | 14–16.10 | Добавить минимальный VS fullscreen triangle + PS, отдельные root signature и graphics PSO на GPU 1; цвет/параметр передавать через созданный upload/constant buffer. Настроить компиляцию HLSL штатным DXC. |
 | 17–18.10 | Выполнить draw в собственную `DeviceResource`-текстуру GPU 1, дождаться fence и проверить readback по ожидаемым пикселям. Подключить opt-in запуск в движке с обработкой отсутствия GPU 1. |
 | 19–20.10 | Проверить основную сцену с флагом off/on, закрытие, повторный запуск и lifecycle recovery; debug layer на обоих физических GPU, проверить принадлежность PSO и ресурсов. |
