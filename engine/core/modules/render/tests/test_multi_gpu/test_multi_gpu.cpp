@@ -1,4 +1,5 @@
 #include "multi_gpu_device.h"
+#include "device_resource.h"
 #include "nau/directx/d3d12sdklayers.h"
 
 #include <dxgidebug.h>
@@ -198,6 +199,21 @@ void check_hardware_pair()
       << desc.AdapterLuid.LowPart << L", CrossAdapterRowMajorTextureSupported="
       << support.options.CrossAdapterRowMajorTextureSupported << L", CrossNodeSharingTier="
       << support.options.CrossNodeSharingTier << std::endl;
+    // Exercise the production resource component on the selected physical GPU 1.
+    // WARP is excluded by the adapter selection above.
+    drv3d_dx12::DeviceResource target, buffer;
+    ASSERT_HRESULT_SUCCEEDED(target.createRenderTarget(secondary.getDevice(), 64, 64));
+    ASSERT_HRESULT_SUCCEEDED(buffer.createBuffer(secondary.getDevice(), 1024, D3D12_HEAP_TYPE_DEFAULT));
+    for (const auto *resource : {&target, &buffer})
+    {
+      ComPtr<ID3D12Device> owner;
+      ASSERT_HRESULT_SUCCEEDED(resource->getResource()->GetDevice(IID_PPV_ARGS(&owner)));
+      EXPECT_EQ(owner.Get(), secondary.getDevice());
+      EXPECT_NE(owner.Get(), primary.Get());
+    }
+    // No commands were submitted; resources may be released immediately.
+    target.reset();
+    buffer.reset();
     secondary.reset();
     EXPECT_EQ(secondary.getDevice(), nullptr);
     return;

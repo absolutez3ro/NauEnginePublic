@@ -8,7 +8,8 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 if(WIN32)
-  add_executable(test_multi_gpu test_multi_gpu.cpp test_main.cpp)
+  add_executable(test_multi_gpu test_multi_gpu.cpp test_device_resource.cpp test_main.cpp
+    ../../src/drv3d_DX12/device_resource.cpp)
   target_compile_features(test_multi_gpu PRIVATE cxx_std_20)
   target_compile_definitions(test_multi_gpu PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_include_directories(test_multi_gpu PRIVATE "../../include" "../../src/drv3d_DX12")
@@ -17,5 +18,6 @@ if(WIN32)
     nau_add_compile_options(test_multi_gpu)
   endif()
   include(GoogleTest)
-  gtest_discover_tests(test_multi_gpu DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 10)
+  gtest_discover_tests(test_multi_gpu DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 10
+    NO_PRETTY_VALUES PROPERTIES TIMEOUT 30)
 endif()
