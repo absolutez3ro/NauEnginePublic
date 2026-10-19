@@ -15,6 +15,9 @@
             ]
         }
     },
+    "dx12": {
+        "multiGpu": false
+    },
     "sample": {
         "assetsToReload": [
             "file:/content/textures/rusted_pbr/rusted_albedo_ao.png"
