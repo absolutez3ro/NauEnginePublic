@@ -57,6 +57,8 @@ target_link_libraries(${TargetName} PUBLIC
   Microsoft::DirectXTex
   Microsoft::DirectXTK12
   WinPixEventRuntime
+  CoreInput
+  CoreScene
   imgui
   d3d12
   dxgi
