@@ -1,6 +1,7 @@
 #include "multi_gpu_device.h"
 #include "device_resource.h"
 #include "nau/directx/d3d12sdklayers.h"
+#include "test_fullscreen_pass_utils.h"
 
 #include <dxgidebug.h>
 #include <gtest/gtest.h>
@@ -78,6 +79,17 @@ HRESULT WINAPI inject_create(IUnknown *, D3D_FEATURE_LEVEL, REFIID iid, void **r
             EXPECT_NE(owner.Get(), primaryDevice);
         }
         // No commands were submitted; resources are released before the caller resets the device.
+    }
+
+    /**
+     * @brief MG-10 acceptance on the selected second physical GPU: a fullscreen VS/PS draws into GPU 1's own
+     * texture, the result is read back and checked pixel by pixel, and every object belongs to GPU 1.
+     */
+    void checkSecondaryPass(ID3D12Device* secondaryDevice, ID3D12Device* primaryDevice)
+    {
+        constexpr UINT WIDTH = 1920;
+        constexpr UINT HEIGHT = 1080;
+        mgpu_test::runPassAndVerify(secondaryDevice, primaryDevice, WIDTH, HEIGHT);
     }
 }
 
@@ -221,6 +233,7 @@ void check_hardware_pair()
     // Exercise the production resource component on the selected physical GPU 1.
     // WARP is excluded by the adapter selection above.
     ASSERT_NO_FATAL_FAILURE(checkSecondaryResources(secondary.getDevice(), primary.Get()));
+    ASSERT_NO_FATAL_FAILURE(checkSecondaryPass(secondary.getDevice(), primary.Get()));
     secondary.reset();
     EXPECT_EQ(secondary.getDevice(), nullptr);
     return;

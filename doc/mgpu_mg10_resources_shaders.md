@@ -250,3 +250,75 @@ cmake --build build/mg10_engine_check --config Release --target SceneBaseSample 
 полноэкранный VS/PS записывает ожидаемое изображение в его собственную текстуру; результат проверен readback;
 всё освобождается после завершения команд, основной рендер продолжает работать.
 Текущая итерация закрывает исследование и подготовку ресурсов, но этот финальный критерий пока не достигнут.
+
+## Итерация 2: проход GPU 1 (VS/PS, PSO, draw, readback)
+
+Добавлен класс `drv3d_dx12::DeviceFullscreenPass` (`device_fullscreen_pass.h/.cpp`), владелец прохода на явно
+выбранном `ID3D12Device`. Это шаги «владелец прохода», «VS/PS + root signature + PSO» и «draw + readback»
+из плана выше. Класс не трогает основной device, `ShaderProgramDatabase`, `PipelineManager` и `dx12.cpp`.
+
+Что создаётся на переданном устройстве (GPU 1):
+
+| Объект | Реализация |
+| --- | --- |
+| Очередь и команды | DIRECT-очередь, `FRAME_COUNT = 2` аллокатора, один command list |
+| Синхронизация | `ID3D12Fence` + событие; ожидание CPU ограничено 10 с, потеря устройства возвращается как `HRESULT` |
+| Текстура | `DeviceResource::createRenderTarget`, R8G8B8A8_UNORM, между вызовами в состоянии `COMMON` |
+| Буферы | `DeviceResource::createBuffer`: UPLOAD (constant buffer, по слоту 256 байт на кадр в полёте) и READBACK |
+| Дескрипторы | RTV heap на один дескриптор |
+| Pipeline | root signature с одним root CBV (b0, только PS), graphics PSO без input layout |
+| Шейдеры | VS рисует один fullscreen-треугольник из `SV_VertexID`; PS рисует шахматку по `SV_Position`, цвет берёт из b0 |
+
+Шахматка выбрана намеренно: ровный цвет можно получить и обычным `ClearRenderTargetView`, а шахматка доказывает,
+что отработали и вершинный, и пиксельный шейдер, и что константы прочитаны из буфера GPU 1.
+
+HLSL лежит в `FULLSCREEN_TEST_PASS_HLSL` и компилируется в тестах штатным `D3DCompile` (vs_5_0/ps_5_0). Сам проход
+принимает готовый байткод (`D3D12_SHADER_BYTECODE`), поэтому `Render` не получает новой зависимости от d3dcompiler,
+а будущая техника (AO) подставит свои шейдеры, собранные штатным DXC.
+
+Стыковка с MG-04/MG-08: после каждого `execute()` текстура в `COMMON`, `getFence()` и `getLastSubmittedValue()`
+образуют `SecondarySyncPoint` для `send_from_secondary()` (`source_ready`).
+
+### Тесты
+
+| Файл | Что проверяет |
+| --- | --- |
+| `test_device_fullscreen_pass.cpp` | WARP и железо, debug layer: отказ при `nullptr`-устройстве и неверных размерах/шейдерах, чистый откат при битом байткоде, владелец каждого объекта (`GetDevice()`), draw + readback всех пикселей (37×19, проверка row pitch), смена цвета на каждом слоте constant buffer, несколько submit без ожидания, `reset()` с работой в полёте |
+| `test_multi_gpu.cpp` (`checkSecondaryPass`) | **Приёмка MG-10 на второй физической видеокарте:** 1920×1080, draw на GPU 1, readback, все объекты принадлежат GPU 1 |
+| `test_fullscreen_pass_utils.h` | Общая компиляция шейдеров и проверка пикселей (допуск ±1 на округление UNORM у разных вендоров) |
+
+Запуск (как в разделе выше):
+
+```powershell
+cmake -S engine/core/modules/render/tests/test_multi_gpu -B build/multi_gpu_tests -G "Visual Studio 17 2022" -A x64
+cmake --build build/multi_gpu_tests --config Debug --target test_multi_gpu --parallel 4
+ctest --test-dir build/multi_gpu_tests -C Debug --output-on-failure
+```
+
+### Что проверено при подготовке и что нет
+
+Проверено без запуска на D3D12: оба новых `.cpp`, оба тестовых файла и проверочный заголовок компилируются
+`g++` (mingw-w64, C++20) с `-Wall -Wextra` без замечаний; HLSL разобран фронтендом glslang для обеих точек входа
+(`vsMain`, `psMain`); `clang-format --dry-run -Werror` по конфигурации репозитория чистый.
+
+**Не запускалось:** ни один тест не выполнялся на D3D12, ни на WARP, ни на железе. Сборка MSVC и прогон CTest,
+результат на двух физических GPU и чистый `ReportLiveObjects` остаются за вами. Результаты нужно записать ниже.
+
+### Результаты приёмки (заполнить после прогона)
+
+| Проверка | Результат |
+| --- | --- |
+| Сборка `test_multi_gpu`, MSVC | |
+| CTest, WARP | |
+| CTest, аппаратный GPU | |
+| `MultiGpuHardware.CreatesSecondPhysicalDeviceWhenAvailable` (draw на GPU 1) | |
+| `MultiGpuHardware.DebugLayerShutdown` | |
+| Модели GPU 0 / GPU 1, LUID | |
+
+### Что осталось
+
+- Opt-in запуск прохода из движка (`dx12.cpp`/`SecondaryGpuDevice`, флаг `multiGpu`) не подключён: пока проход
+  доступен как компонент и проверяется тестами. Подключение стоит делать вместе с владельцем жизненного цикла
+  secondary device (освобождать проход до `releaseAll()` и перед recovery).
+- Один проход и одна очередь DIRECT: для AO на GPU 1 нужно подставить свои шейдеры и входные текстуры
+  (depth R32_FLOAT и normal R16G16_FLOAT приходят через канал MG-04/MG-08), а не расширять этот тестовый проход.
