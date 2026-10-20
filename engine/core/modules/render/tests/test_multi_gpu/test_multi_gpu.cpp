@@ -67,10 +67,12 @@ HRESULT WINAPI inject_create(IUnknown *, D3D_FEATURE_LEVEL, REFIID iid, void **r
      */
     void checkSecondaryResources(ID3D12Device* secondaryDevice, ID3D12Device* primaryDevice)
     {
+        mgpu_test::TestResourceAllocator allocator;
+        ASSERT_HRESULT_SUCCEEDED(allocator.init(secondaryDevice));
         drv3d_dx12::DeviceResource target;
         drv3d_dx12::DeviceResource buffer;
-        ASSERT_HRESULT_SUCCEEDED(target.createRenderTarget(secondaryDevice, 64, 64));
-        ASSERT_HRESULT_SUCCEEDED(buffer.createBuffer(secondaryDevice, 1024, D3D12_HEAP_TYPE_DEFAULT));
+        ASSERT_HRESULT_SUCCEEDED(target.createRenderTarget(&allocator, 64, 64));
+        ASSERT_HRESULT_SUCCEEDED(buffer.createBuffer(&allocator, 1024, D3D12_HEAP_TYPE_DEFAULT));
         for (const drv3d_dx12::DeviceResource* resource : {&target, &buffer})
         {
             ComPtr<ID3D12Device> owner;

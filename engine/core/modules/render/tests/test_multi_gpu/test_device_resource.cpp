@@ -9,6 +9,7 @@
 #include "device_resource.h"
 #include "multi_gpu_device.h"
 #include "nau/directx/d3d12sdklayers.h"
+#include "test_resource_allocator.h"
 
 namespace
 {
@@ -88,6 +89,7 @@ namespace
             {
                 GTEST_SKIP() << (GetParam() ? "D3D12 WARP unavailable" : "D3D12 hardware unavailable");
             }
+            ASSERT_HRESULT_SUCCEEDED(m_resourceAllocator.init(m_device.Get()));
             if (debug)
             {
                 ASSERT_HRESULT_SUCCEEDED(m_device.As(&m_diagnostics));
@@ -97,6 +99,8 @@ namespace
 
         void TearDown() override
         {
+            EXPECT_EQ(m_resourceAllocator.getAllocationCount(), 0u);
+            EXPECT_HRESULT_SUCCEEDED(m_resourceAllocator.shutdown());
             if (!m_diagnostics)
             {
                 return;
@@ -122,6 +126,7 @@ namespace
 
     protected:
         ComPtr<ID3D12Device> m_device;
+        mgpu_test::TestResourceAllocator m_resourceAllocator;
         ComPtr<ID3D12InfoQueue> m_diagnostics;
     };
 
@@ -211,12 +216,12 @@ namespace
     TEST_P(DeviceResourceTest, RejectsInvalidDescriptionsWithoutAllocating)
     {
         DeviceResource resource;
-        EXPECT_EQ(resource.createRenderTarget(m_device.Get(), 0, 16), E_INVALIDARG);
-        EXPECT_EQ(resource.createRenderTarget(m_device.Get(), 16, 0), E_INVALIDARG);
-        EXPECT_EQ(resource.createRenderTarget(m_device.Get(), D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1, 16), E_INVALIDARG);
-        EXPECT_EQ(resource.createRenderTarget(m_device.Get(), 16, D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1), E_INVALIDARG);
-        EXPECT_EQ(resource.createBuffer(m_device.Get(), 0, D3D12_HEAP_TYPE_DEFAULT), E_INVALIDARG);
-        EXPECT_EQ(resource.createBuffer(m_device.Get(), 256, D3D12_HEAP_TYPE_CUSTOM), E_INVALIDARG);
+        EXPECT_EQ(resource.createRenderTarget(&m_resourceAllocator, 0, 16), E_INVALIDARG);
+        EXPECT_EQ(resource.createRenderTarget(&m_resourceAllocator, 16, 0), E_INVALIDARG);
+        EXPECT_EQ(resource.createRenderTarget(&m_resourceAllocator, D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1, 16), E_INVALIDARG);
+        EXPECT_EQ(resource.createRenderTarget(&m_resourceAllocator, 16, D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1), E_INVALIDARG);
+        EXPECT_EQ(resource.createBuffer(&m_resourceAllocator, 0, D3D12_HEAP_TYPE_DEFAULT), E_INVALIDARG);
+        EXPECT_EQ(resource.createBuffer(&m_resourceAllocator, 256, D3D12_HEAP_TYPE_CUSTOM), E_INVALIDARG);
         EXPECT_EQ(resource.getResource(), nullptr);
         EXPECT_EQ(resource.getDevice(), nullptr);
     }
@@ -224,7 +229,7 @@ namespace
     TEST_P(DeviceResourceTest, PreservesOwnerUntilExplicitReset)
     {
         DeviceResource resource;
-        ASSERT_HRESULT_SUCCEEDED(resource.createRenderTarget(m_device.Get(), 37, 19));
+        ASSERT_HRESULT_SUCCEEDED(resource.createRenderTarget(&m_resourceAllocator, 37, 19));
         expectOwner(resource, m_device.Get());
         ID3D12Resource* original = resource.getResource();
         const D3D12_RESOURCE_DESC desc = original->GetDesc();
@@ -235,7 +240,7 @@ namespace
         EXPECT_EQ(desc.Flags, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         EXPECT_EQ(resource.getInitialState(), D3D12_RESOURCE_STATE_COMMON);
 
-        EXPECT_EQ(resource.createBuffer(m_device.Get(), 256, D3D12_HEAP_TYPE_UPLOAD), DXGI_ERROR_INVALID_CALL);
+        EXPECT_EQ(resource.createBuffer(&m_resourceAllocator, 256, D3D12_HEAP_TYPE_UPLOAD), DXGI_ERROR_INVALID_CALL);
         EXPECT_EQ(resource.createRenderTarget(nullptr, 16, 16), E_INVALIDARG);
         EXPECT_EQ(resource.getResource(), original);
         expectOwner(resource, m_device.Get());
@@ -244,15 +249,37 @@ namespace
         EXPECT_EQ(resource.getDevice(), nullptr);
         for (D3D12_HEAP_TYPE heapType : {D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_UPLOAD, D3D12_HEAP_TYPE_READBACK})
         {
-            ASSERT_HRESULT_SUCCEEDED(resource.createBuffer(m_device.Get(), 1024, heapType));
+            ASSERT_HRESULT_SUCCEEDED(resource.createBuffer(&m_resourceAllocator, 1024, heapType));
             expectOwner(resource, m_device.Get());
             D3D12_HEAP_PROPERTIES heap = {};
             D3D12_HEAP_FLAGS flags;
             ASSERT_HRESULT_SUCCEEDED(resource.getResource()->GetHeapProperties(&heap, &flags));
-            EXPECT_EQ(heap.Type, heapType);
+            if (heap.Type == D3D12_HEAP_TYPE_CUSTOM)
+            {
+                const D3D12_HEAP_PROPERTIES expected = m_device->GetCustomHeapProperties(0, heapType);
+                EXPECT_EQ(heap.MemoryPoolPreference, expected.MemoryPoolPreference);
+                if (heapType == D3D12_HEAP_TYPE_READBACK)
+                {
+                    EXPECT_EQ(heap.CPUPageProperty, D3D12_CPU_PAGE_PROPERTY_WRITE_BACK);
+                }
+                else if (heapType == D3D12_HEAP_TYPE_UPLOAD)
+                {
+                    EXPECT_TRUE(heap.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE ||
+                                heap.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK);
+                }
+                else
+                {
+                    // Nau uses CPU-visible L0 memory for UMA DEFAULT buffers.
+                    EXPECT_NE(heap.CPUPageProperty, D3D12_CPU_PAGE_PROPERTY_UNKNOWN);
+                }
+            }
+            else
+            {
+                EXPECT_EQ(heap.Type, heapType);
+            }
             EXPECT_EQ(heap.CreationNodeMask, 1u);
             EXPECT_EQ(heap.VisibleNodeMask, 1u);
-            // The runtime adds resource-category restrictions to an implicit committed heap.
+            // Both standalone and engine allocators create local, non-shared resources.
             EXPECT_EQ(flags & (D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER), 0);
             resource.reset();
         }
@@ -268,9 +295,9 @@ namespace
         DeviceResource upload;
         DeviceResource gpu;
         DeviceResource readback;
-        ASSERT_HRESULT_SUCCEEDED(upload.createBuffer(m_device.Get(), expected.size(), D3D12_HEAP_TYPE_UPLOAD));
-        ASSERT_HRESULT_SUCCEEDED(gpu.createBuffer(m_device.Get(), expected.size(), D3D12_HEAP_TYPE_DEFAULT));
-        ASSERT_HRESULT_SUCCEEDED(readback.createBuffer(m_device.Get(), expected.size(), D3D12_HEAP_TYPE_READBACK));
+        ASSERT_HRESULT_SUCCEEDED(upload.createBuffer(&m_resourceAllocator, expected.size(), D3D12_HEAP_TYPE_UPLOAD));
+        ASSERT_HRESULT_SUCCEEDED(gpu.createBuffer(&m_resourceAllocator, expected.size(), D3D12_HEAP_TYPE_DEFAULT));
+        ASSERT_HRESULT_SUCCEEDED(readback.createBuffer(&m_resourceAllocator, expected.size(), D3D12_HEAP_TYPE_READBACK));
         EXPECT_EQ(upload.getInitialState(), D3D12_RESOURCE_STATE_GENERIC_READ);
         EXPECT_EQ(readback.getInitialState(), D3D12_RESOURCE_STATE_COPY_DEST);
         void* mapped = nullptr;
@@ -298,12 +325,12 @@ namespace
         // Odd dimensions exercise the row pitch returned by GetCopyableFootprints.
         DeviceResource target;
         DeviceResource readback;
-        ASSERT_HRESULT_SUCCEEDED(target.createRenderTarget(m_device.Get(), 37, 19));
+        ASSERT_HRESULT_SUCCEEDED(target.createRenderTarget(&m_resourceAllocator, 37, 19));
         const D3D12_RESOURCE_DESC desc = target.getResource()->GetDesc();
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
         UINT64 size = 0;
         m_device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, &size);
-        ASSERT_HRESULT_SUCCEEDED(readback.createBuffer(m_device.Get(), size, D3D12_HEAP_TYPE_READBACK));
+        ASSERT_HRESULT_SUCCEEDED(readback.createBuffer(&m_resourceAllocator, size, D3D12_HEAP_TYPE_READBACK));
 
         ComPtr<ID3D12DescriptorHeap> rtvHeap;
         D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
@@ -349,10 +376,10 @@ namespace
     {
         DeviceResource first;
         DeviceResource second;
-        ASSERT_HRESULT_SUCCEEDED(first.createRenderTarget(m_device.Get(), 16, 16));
-        ASSERT_HRESULT_SUCCEEDED(second.createBuffer(m_device.Get(), 256, D3D12_HEAP_TYPE_UPLOAD));
+        ASSERT_HRESULT_SUCCEEDED(first.createRenderTarget(&m_resourceAllocator, 16, 16));
+        ASSERT_HRESULT_SUCCEEDED(second.createBuffer(&m_resourceAllocator, 256, D3D12_HEAP_TYPE_UPLOAD));
         ID3D12Device* expected = m_device.Get();
-        // Release the diagnostic reference too, so only the resource owners keep the device alive.
+        // The allocator and resource owners retain the device after external references are released.
         m_diagnostics.Reset();
         m_device.Reset();
         expectOwner(first, expected);
@@ -373,17 +400,83 @@ namespace
             GTEST_SKIP() << "Both WARP and a hardware device are required for device isolation";
         }
         ASSERT_NE(m_device.Get(), otherDevice.Get());
+        mgpu_test::TestResourceAllocator otherAllocator;
+        ASSERT_HRESULT_SUCCEEDED(otherAllocator.init(otherDevice.Get()));
         DeviceResource first;
         DeviceResource second;
-        ASSERT_HRESULT_SUCCEEDED(first.createRenderTarget(m_device.Get(), 16, 16));
-        ASSERT_HRESULT_SUCCEEDED(second.createRenderTarget(otherDevice.Get(), 16, 16));
+        ASSERT_HRESULT_SUCCEEDED(first.createRenderTarget(&m_resourceAllocator, 16, 16));
+        ASSERT_HRESULT_SUCCEEDED(second.createRenderTarget(&otherAllocator, 16, 16));
         expectOwner(first, m_device.Get());
         expectOwner(second, otherDevice.Get());
         first.reset();
-        ASSERT_HRESULT_SUCCEEDED(first.createBuffer(otherDevice.Get(), 256, D3D12_HEAP_TYPE_DEFAULT));
+        ASSERT_HRESULT_SUCCEEDED(first.createBuffer(&otherAllocator, 256, D3D12_HEAP_TYPE_DEFAULT));
         expectOwner(first, otherDevice.Get());
         expectOwner(second, otherDevice.Get());
     }
+
+    TEST_P(DeviceResourceTest, AllocatorCannotShutDownWhileResourcesAreAlive)
+    {
+        DeviceResource resource;
+        ASSERT_HRESULT_SUCCEEDED(resource.createBuffer(&m_resourceAllocator, 1024, D3D12_HEAP_TYPE_DEFAULT));
+        EXPECT_EQ(m_resourceAllocator.getAllocationCount(), 1u);
+        EXPECT_EQ(m_resourceAllocator.shutdown(), DXGI_ERROR_INVALID_CALL);
+        expectOwner(resource, m_device.Get());
+        resource.reset();
+        EXPECT_EQ(m_resourceAllocator.getAllocationCount(), 0u);
+        EXPECT_HRESULT_SUCCEEDED(m_resourceAllocator.shutdown());
+    }
+
+#if defined(NAU_MGPU_TEST_ENGINE_ALLOCATOR)
+    TEST_P(DeviceResourceTest, FailedPlacedResourceReturnsMemoryToNauPool)
+    {
+        drv3d_dx12::DeviceResourceRequest request;
+        request.description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        request.description.Width = 65536;
+        request.description.Height = 1;
+        request.description.DepthOrArraySize = 1;
+        request.description.MipLevels = 1;
+        request.description.SampleDesc.Count = 1;
+        request.description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        // Allocation info is valid, but D3D12 rejects a buffer with an optimized clear value.
+        D3D12_CLEAR_VALUE clear = {};
+        clear.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        request.clearValue = &clear;
+        ComPtr<ID3D12Resource> resource;
+        uint64_t token = 0;
+        EXPECT_TRUE(FAILED(m_resourceAllocator.allocate(request, resource, token)));
+        EXPECT_EQ(resource.Get(), nullptr);
+        EXPECT_EQ(token, 0u);
+        EXPECT_EQ(m_resourceAllocator.getAllocationCount(), 0u);
+        EXPECT_EQ(m_resourceAllocator.getHeapCount(), 0u);
+        if (m_diagnostics)
+        {
+            // The invalid clear value is expected; retain diagnostics for subsequent valid work.
+            m_diagnostics->ClearStoredMessages();
+        }
+        DeviceResource valid;
+        EXPECT_HRESULT_SUCCEEDED(valid.createBuffer(&m_resourceAllocator, 65536, D3D12_HEAP_TYPE_DEFAULT));
+    }
+
+    TEST_P(DeviceResourceTest, NauPoolSharesHeapsAcrossResourceLifetimes)
+    {
+        DeviceResource first;
+        DeviceResource second;
+        DeviceResource replacement;
+        ASSERT_HRESULT_SUCCEEDED(first.createBuffer(&m_resourceAllocator, 65536, D3D12_HEAP_TYPE_DEFAULT));
+        const size_t heapCount = m_resourceAllocator.getHeapCount();
+        ASSERT_GT(heapCount, 0u);
+        ASSERT_HRESULT_SUCCEEDED(second.createBuffer(&m_resourceAllocator, 65536, D3D12_HEAP_TYPE_DEFAULT));
+        EXPECT_EQ(m_resourceAllocator.getAllocationCount(), 2u);
+        EXPECT_EQ(m_resourceAllocator.getHeapCount(), heapCount);
+        // Keep second alive so the pool retains the heap while the first range is returned.
+        first.reset();
+        ASSERT_HRESULT_SUCCEEDED(replacement.createBuffer(&m_resourceAllocator, 65536, D3D12_HEAP_TYPE_DEFAULT));
+        EXPECT_EQ(m_resourceAllocator.getHeapCount(), heapCount);
+        replacement.reset();
+        second.reset();
+        EXPECT_EQ(m_resourceAllocator.getAllocationCount(), 0u);
+    }
+#endif
 
     INSTANTIATE_TEST_SUITE_P(NativeDevices, DeviceResourceTest, ::testing::Values(true, false), [](const ::testing::TestParamInfo<bool>& info)
     {

@@ -65,7 +65,7 @@ float4 psMain(VsOutput input) : SV_Target
      */
     struct DeviceFullscreenPassDesc
     {
-        ID3D12Device* device = nullptr;  ///< Owning device (GPU 1). nullptr is rejected, there is no fallback to GPU 0.
+        IDeviceResourceAllocator* allocator = nullptr;  ///< Allocator for GPU 1; must outlive the pass.
         UINT width = 0;
         UINT height = 0;
         D3D12_SHADER_BYTECODE vertexShader = {};  ///< DXBC or DXIL; no input layout, vertices come from SV_VertexID.
@@ -78,13 +78,14 @@ float4 psMain(VsOutput input) : SV_Target
      * This is the "pass owner" for the secondary GPU. It owns everything the pass needs, all created on
      * the device passed to init(): a DIRECT queue, command allocators and list, a fence, an RTV heap, a root signature,
      * a graphics PSO, a render target, a constant buffer and an optional readback buffer. It does not touch the
-     * primary device, the engine resource manager or the ShaderProgramDatabase.
+     * primary device or the ShaderProgramDatabase. Resource memory comes from the supplied allocator.
      *
      * Synchronization: up to FRAME_COUNT submissions can be in flight. execute() never waits for the GPU unless it
      * needs to reuse the allocator and constant buffer slot of a submission that is still running. The render
      * target is left in D3D12_RESOURCE_STATE_COMMON after every execute(), which is the state the MG-04 transfer
      * channel expects from send_from_secondary(); the fence from getFence() and the value from
-     * getLastSubmittedValue() form its source_ready sync point.
+     * getLastSubmittedValue() form its source_ready sync point after a successful execute().
+     * Before overwriting a target read by another queue, enqueue waitForExternalWork() with its release fence.
      *
      * Thread safety: none. Call everything from the render thread. reset() waits for the GPU on the CPU, call it
      * before driver shutdown or device recovery.
@@ -94,7 +95,7 @@ float4 psMain(VsOutput input) : SV_Target
     public:
         /// Submissions that may be in flight at once; each has its own allocator and constant buffer slot.
         static constexpr UINT FRAME_COUNT = 2;
-        /// Upper bound of any CPU wait. A hung GPU yields HRESULT_FROM_WIN32(ERROR_TIMEOUT) instead of a frozen process.
+        /// Default timeout of explicit CPU waits. Destruction must drain work before releasing its memory.
         static constexpr DWORD WAIT_TIMEOUT_MS = 10000;
 
     public:
@@ -107,8 +108,8 @@ float4 psMain(VsOutput input) : SV_Target
 
     public:
         /**
-         * @brief Creates all objects of the pass on desc.device.
-         * @param desc Device, target size and shader bytecode.
+         * @brief Creates all objects on desc.allocator->getDevice().
+         * @param desc Allocator, target size and shader bytecode.
          * @return S_OK on success, E_INVALIDARG for a null device, zero or too large size or empty shaders,
          * DXGI_ERROR_INVALID_CALL if already initialized, or the native D3D12/Win32 error.
          * Any failure releases everything that was created and leaves the object empty.
@@ -118,10 +119,11 @@ float4 psMain(VsOutput input) : SV_Target
         /**
          * @brief Waits for submitted work and releases everything. Safe to call on an empty object.
          *
-         * The wait is bounded by WAIT_TIMEOUT_MS. If it times out the objects are still released, because the device
-         * is considered lost at that point.
+         * On timeout or a recoverable wait error, returns the error and retains all objects for a later retry.
+         * Only completion or confirmed device removal permits releasing GPU memory. The destructor keeps waiting
+         * while the device is alive; callers must resolve external queue dependencies before destruction.
          */
-        void reset();
+        HRESULT reset(DWORD timeoutMs = WAIT_TIMEOUT_MS);
 
         /**
          * @brief Sets the color used by the next execute() calls. Copied into a per-submission constant buffer.
@@ -141,7 +143,15 @@ float4 psMain(VsOutput input) : SV_Target
          * @brief Blocks the CPU until everything submitted so far has finished on the GPU.
          * @return S_OK, HRESULT_FROM_WIN32(ERROR_TIMEOUT) on timeout, or the device removed reason.
          */
-        HRESULT waitForCompletion();
+        HRESULT waitForCompletion(DWORD timeoutMs = WAIT_TIMEOUT_MS);
+
+        /**
+         * @brief Enqueues a GPU wait before the next draw, for example the transfer channel's sourceReleased fence.
+         * @param fence Fence opened on this device; retain it until waitForCompletion() succeeds. It must not depend
+         * on a future submission of this pass.
+         * @param value Value signaled by the consumer when the render target may be overwritten.
+         */
+        HRESULT waitForExternalWork(ID3D12Fence* fence, UINT64 value);
 
         /**
          * @brief Copies the pixels of the last execute(true) into a tightly packed RGBA8 buffer.
@@ -159,7 +169,7 @@ float4 psMain(VsOutput input) : SV_Target
         ID3D12Fence* getFence() const;
 
         /**
-         * @brief Fence value that is reached when the most recent execute() has finished. 0 if nothing was submitted.
+         * @brief Latest queued draw or external-wait completion value. 0 if nothing was submitted.
          */
         UINT64 getLastSubmittedValue() const;
 
@@ -184,13 +194,15 @@ float4 psMain(VsOutput input) : SV_Target
         HRESULT createCommandObjects();
         HRESULT createPipeline(const DeviceFullscreenPassDesc& desc);
         HRESULT createResources(UINT width, UINT height);
-        HRESULT waitForValue(UINT64 value);
+        HRESULT waitForValue(UINT64 value, DWORD timeoutMs = WAIT_TIMEOUT_MS);
+        HRESULT signalSubmission();
         void recordPass(UINT slot, bool copyToReadback);
         void recordBarrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
 
     private:
         // Declared device first: members are destroyed in reverse order, so the device reference is released last.
         Microsoft::WRL::ComPtr<ID3D12Device> m_device;
+        IDeviceResourceAllocator* m_resourceAllocator = nullptr;
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_queue;
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_allocators[FRAME_COUNT];
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_list;
@@ -208,6 +220,7 @@ float4 psMain(VsOutput input) : SV_Target
         UINT64 m_slotFenceValues[FRAME_COUNT] = {};
         UINT64 m_lastSubmittedValue = 0;
         UINT64 m_readbackValue = 0;  ///< Fence value of the most recent submission that copied into m_readback.
+        bool m_signalPending = false;
         FullscreenPassColor m_color;
         UINT m_width = 0;
         UINT m_height = 0;

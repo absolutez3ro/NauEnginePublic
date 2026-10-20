@@ -181,7 +181,9 @@ void MemoryBudgetObserver::setup(const SetupInfo &info)
   processVirtualTotal = sysdtemMemoryStatus.ullTotalVirtual;
 
   info.adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &poolStates[device_local_memory_pool]);
-  info.adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &poolStates[host_local_memory_pool]);
+  const DXGI_MEMORY_SEGMENT_GROUP hostSegment =
+    info.useLocalBudgetForUMA && isUMASystem() ? DXGI_MEMORY_SEGMENT_GROUP_LOCAL : DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL;
+  info.adapter->QueryVideoMemoryInfo(0, hostSegment, &poolStates[host_local_memory_pool]);
 
   behaviorStatus.set(BehaviorBits::DISABLE_DEVICE_MEMORY_STATUS_QUERY);
   behaviorStatus.set(BehaviorBits::DISABLE_HOST_MEMORY_STATUS_QUERY);
@@ -637,10 +639,14 @@ ResourceMemoryHeapProvider::getInitialTextureResourceState(D3D12_RESOURCE_FLAGS 
 }
 
 ResourceMemory ResourceMemoryHeapProvider::allocate(DXGIAdapter *adapter, ID3D12Device *device, ResourceHeapProperties properties,
-  const D3D12_RESOURCE_ALLOCATION_INFO &alloc_info, AllocationFlags flags)
+  const D3D12_RESOURCE_ALLOCATION_INFO &alloc_info, AllocationFlags flags, HRESULT *allocationError)
 {
   //TIME_PROFILE_DEV(DX12_AllocateMemory);
   G_UNUSED(adapter);
+  if (allocationError)
+  {
+    *allocationError = E_OUTOFMEMORY;
+  }
   ResourceMemory result;
   auto &group = groups[properties.raw];
 
@@ -691,7 +697,11 @@ ResourceMemory ResourceMemoryHeapProvider::allocate(DXGIAdapter *adapter, ID3D12
       NAU_ASSERT(newHeap.totalSize == newHeapDesc.SizeInBytes);
       newHeap.freeRanges.push_back(make_value_range(0ull, newHeap.totalSize));
 
-      auto errorCode = DX12_CHECK_RESULT_NO_OOM_CHECK(device->CreateHeap(&newHeapDesc, COM_ARGS(&newHeap.heap)));
+      auto errorCode = checkHeapResult(device->CreateHeap(&newHeapDesc, COM_ARGS(&newHeap.heap)), "CreateHeap");
+      if (allocationError)
+      {
+        *allocationError = errorCode;
+      }
       if (SUCCEEDED(errorCode) && newHeap.heap)
       {
         addHeapGroupFreeSpace(properties.raw, newHeap.totalSize);
@@ -731,6 +741,10 @@ ResourceMemory ResourceMemoryHeapProvider::allocate(DXGIAdapter *adapter, ID3D12
 
     if (result)
     {
+      if (allocationError)
+      {
+        *allocationError = S_OK;
+      }
       subtractHeapGroupFreeSpace(properties.raw, result.size());
 
       recordMemoryAllocated(result.size(), D3D12_MEMORY_POOL_L1 == properties.getMemoryPool(isUMASystem()));

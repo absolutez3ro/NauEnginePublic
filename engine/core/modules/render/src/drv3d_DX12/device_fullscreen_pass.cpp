@@ -19,12 +19,16 @@ namespace drv3d_dx12
 
     DeviceFullscreenPass::~DeviceFullscreenPass()
     {
-        reset();
+        while (FAILED(reset()) && m_device)
+        {
+            // A timeout is not device removal. Do not return live memory to the pool.
+            Sleep(1);
+        }
     }
 
     HRESULT DeviceFullscreenPass::init(const DeviceFullscreenPassDesc& desc)
     {
-        if (!desc.device || desc.width == 0 || desc.height == 0 || desc.width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        if (!desc.allocator || !desc.allocator->getDevice() || desc.width == 0 || desc.height == 0 || desc.width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
             desc.height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION || !isValidBytecode(desc.vertexShader) || !isValidBytecode(desc.pixelShader))
         {
             return E_INVALIDARG;
@@ -35,7 +39,8 @@ namespace drv3d_dx12
             return DXGI_ERROR_INVALID_CALL;
         }
 
-        m_device = desc.device;
+        m_resourceAllocator = desc.allocator;
+        m_device = desc.allocator->getDevice();
         m_width = desc.width;
         m_height = desc.height;
 
@@ -90,7 +95,7 @@ namespace drv3d_dx12
 
     HRESULT DeviceFullscreenPass::createResources(UINT width, UINT height)
     {
-        HRESULT result = m_renderTarget.createRenderTarget(m_device.Get(), width, height);
+        HRESULT result = m_renderTarget.createRenderTarget(m_resourceAllocator, width, height);
         if (FAILED(result))
         {
             return result;
@@ -106,7 +111,7 @@ namespace drv3d_dx12
         }
         m_device->CreateRenderTargetView(m_renderTarget.getResource(), nullptr, m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
 
-        result = m_constantBuffer.createBuffer(m_device.Get(), CONSTANT_SLOT_SIZE * FRAME_COUNT, D3D12_HEAP_TYPE_UPLOAD);
+        result = m_constantBuffer.createBuffer(m_resourceAllocator, CONSTANT_SLOT_SIZE * FRAME_COUNT, D3D12_HEAP_TYPE_UPLOAD);
         if (FAILED(result))
         {
             return result;
@@ -124,7 +129,7 @@ namespace drv3d_dx12
 
         const D3D12_RESOURCE_DESC targetDesc = m_renderTarget.getResource()->GetDesc();
         m_device->GetCopyableFootprints(&targetDesc, 0, 1, 0, &m_footprint, nullptr, nullptr, &m_readbackBytes);
-        return m_readback.createBuffer(m_device.Get(), m_readbackBytes, D3D12_HEAP_TYPE_READBACK);
+        return m_readback.createBuffer(m_resourceAllocator, m_readbackBytes, D3D12_HEAP_TYPE_READBACK);
     }
 
     HRESULT DeviceFullscreenPass::createPipeline(const DeviceFullscreenPassDesc& desc)
@@ -191,12 +196,12 @@ namespace drv3d_dx12
         return m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pipelineState));
     }
 
-    void DeviceFullscreenPass::reset()
+    HRESULT DeviceFullscreenPass::reset(DWORD timeoutMs)
     {
-        if (m_fence && m_fenceEvent && m_lastSubmittedValue > 0)
+        const HRESULT result = waitForCompletion(timeoutMs);
+        if (FAILED(result) && m_device && SUCCEEDED(m_device->GetDeviceRemovedReason()))
         {
-            // If the wait fails or times out the device is lost or hung; release everything anyway.
-            waitForValue(m_lastSubmittedValue);
+            return result;
         }
         if (m_constantsMapped)
         {
@@ -227,12 +232,15 @@ namespace drv3d_dx12
         }
         m_lastSubmittedValue = 0;
         m_readbackValue = 0;
+        m_signalPending = false;
         m_footprint = {};
         m_readbackBytes = 0;
         m_color = FullscreenPassColor();
         m_width = 0;
         m_height = 0;
+        m_resourceAllocator = nullptr;
         m_device.Reset();
+        return result;
     }
 
     void DeviceFullscreenPass::setColor(const FullscreenPassColor& color)
@@ -240,7 +248,7 @@ namespace drv3d_dx12
         m_color = color;
     }
 
-    HRESULT DeviceFullscreenPass::waitForValue(UINT64 value)
+    HRESULT DeviceFullscreenPass::waitForValue(UINT64 value, DWORD timeoutMs)
     {
         UINT64 completed = m_fence->GetCompletedValue();
         // A removed device completes every fence with UINT64_MAX.
@@ -258,31 +266,81 @@ namespace drv3d_dx12
         {
             return result;
         }
-        const DWORD waitResult = WaitForSingleObject(m_fenceEvent, WAIT_TIMEOUT_MS);
-        if (waitResult == WAIT_TIMEOUT)
+        const ULONGLONG start = GetTickCount64();
+        for (;;)
         {
-            return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+            const ULONGLONG elapsed = GetTickCount64() - start;
+            const DWORD remaining = timeoutMs == INFINITE ? INFINITE : (elapsed >= timeoutMs ? 0 : timeoutMs - static_cast<DWORD>(elapsed));
+            const DWORD waitResult = WaitForSingleObject(m_fenceEvent, remaining);
+            completed = m_fence->GetCompletedValue();
+            if (completed == UINT64_MAX)
+            {
+                const HRESULT reason = m_device->GetDeviceRemovedReason();
+                return FAILED(reason) ? reason : DXGI_ERROR_DEVICE_REMOVED;
+            }
+            if (completed >= value)
+            {
+                return S_OK;
+            }
+            if (waitResult == WAIT_TIMEOUT)
+            {
+                return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+            }
+            if (waitResult != WAIT_OBJECT_0)
+            {
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+            // A registration from an earlier timed-out wait can wake this event before our value is reached.
         }
-        if (waitResult != WAIT_OBJECT_0)
-        {
-            return E_FAIL;
-        }
-        completed = m_fence->GetCompletedValue();
-        if (completed == UINT64_MAX)
-        {
-            const HRESULT reason = m_device->GetDeviceRemovedReason();
-            return FAILED(reason) ? reason : DXGI_ERROR_DEVICE_REMOVED;
-        }
-        return completed >= value ? S_OK : DXGI_ERROR_WAS_STILL_DRAWING;
     }
 
-    HRESULT DeviceFullscreenPass::waitForCompletion()
+    HRESULT DeviceFullscreenPass::waitForCompletion(DWORD timeoutMs)
     {
         if (!m_fence)
         {
             return S_OK;
         }
-        return waitForValue(m_lastSubmittedValue);
+        if (m_signalPending)
+        {
+            const HRESULT result = signalSubmission();
+            if (FAILED(result))
+            {
+                return result;
+            }
+        }
+        return waitForValue(m_lastSubmittedValue, timeoutMs);
+    }
+
+    HRESULT DeviceFullscreenPass::signalSubmission()
+    {
+        const HRESULT result = m_queue->Signal(m_fence.Get(), m_lastSubmittedValue);
+        m_signalPending = FAILED(result);
+        return result;
+    }
+
+    HRESULT DeviceFullscreenPass::waitForExternalWork(ID3D12Fence* fence, UINT64 value)
+    {
+        if (!m_queue || m_signalPending || m_lastSubmittedValue == UINT64_MAX - 1)
+        {
+            return DXGI_ERROR_INVALID_CALL;
+        }
+        if (!fence || value == UINT64_MAX)
+        {
+            return E_INVALIDARG;
+        }
+        Microsoft::WRL::ComPtr<ID3D12Device> owner;
+        const HRESULT ownerResult = fence->GetDevice(IID_PPV_ARGS(&owner));
+        if (FAILED(ownerResult) || owner.Get() != m_device.Get())
+        {
+            return E_INVALIDARG;
+        }
+        const HRESULT result = m_queue->Wait(fence, value);
+        if (FAILED(result))
+        {
+            return result;
+        }
+        ++m_lastSubmittedValue;
+        return signalSubmission();
     }
 
     void DeviceFullscreenPass::recordBarrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
@@ -304,6 +362,9 @@ namespace drv3d_dx12
         const D3D12_RECT scissor = {0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height)};
 
         recordBarrier(target, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        // Placed render targets need initialization before drawing, including reused heap ranges.
+        // Every pixel is overwritten by the fullscreen triangle, so no clear color is needed.
+        m_list->DiscardResource(target, nullptr);
         m_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
         m_list->RSSetViewports(1, &viewport);
         m_list->RSSetScissorRects(1, &scissor);
@@ -332,7 +393,7 @@ namespace drv3d_dx12
 
     HRESULT DeviceFullscreenPass::execute(bool copyToReadback)
     {
-        if (!m_list)
+        if (!m_list || m_signalPending || m_lastSubmittedValue == UINT64_MAX - 1)
         {
             return DXGI_ERROR_INVALID_CALL;
         }
@@ -366,18 +427,14 @@ namespace drv3d_dx12
         ID3D12CommandList* lists[] = {m_list.Get()};
         m_queue->ExecuteCommandLists(1, lists);
         const UINT64 value = m_lastSubmittedValue + 1;
-        result = m_queue->Signal(m_fence.Get(), value);
-        if (FAILED(result))
-        {
-            return result;
-        }
+        // Track work before Signal: even a failed Signal does not undo ExecuteCommandLists.
         m_lastSubmittedValue = value;
         m_slotFenceValues[slot] = value;
         if (copyToReadback)
         {
             m_readbackValue = value;
         }
-        return S_OK;
+        return signalSubmission();
     }
 
     HRESULT DeviceFullscreenPass::readPixels(uint8_t* destination, size_t destinationSize) const

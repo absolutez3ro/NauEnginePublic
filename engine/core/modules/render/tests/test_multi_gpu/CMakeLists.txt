@@ -8,8 +8,14 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 if(WIN32)
-    add_executable(test_multi_gpu test_multi_gpu.cpp test_device_resource.cpp test_device_fullscreen_pass.cpp test_main.cpp
-        ../../src/drv3d_DX12/device_resource.cpp ../../src/drv3d_DX12/device_fullscreen_pass.cpp)
+    add_executable(test_multi_gpu test_multi_gpu.cpp test_device_resource.cpp test_device_fullscreen_pass.cpp test_main.cpp)
+    if(TARGET Render AND NOT BUILD_SHARED_LIBS)
+        target_link_libraries(test_multi_gpu PRIVATE Render)
+        target_compile_definitions(test_multi_gpu PRIVATE NAU_MGPU_TEST_ENGINE_ALLOCATOR)
+    else()
+        target_sources(test_multi_gpu PRIVATE
+            ../../src/drv3d_DX12/device_resource.cpp ../../src/drv3d_DX12/device_fullscreen_pass.cpp)
+    endif()
     target_compile_features(test_multi_gpu PRIVATE cxx_std_20)
     target_compile_definitions(test_multi_gpu PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_include_directories(test_multi_gpu PRIVATE "../../include" "../../src/drv3d_DX12")
@@ -19,7 +25,9 @@ if(WIN32)
         "../../../../../3rdparty_libs/EABase/include/Common")
     # Bundled allocator.h has an undefined pName in its debug realloc branch. These tests
     # do not use that allocator; omit allocation-name arguments without disabling assertions.
-    target_compile_definitions(test_multi_gpu PRIVATE EASTL_DEBUGPARAMS_LEVEL=0)
+    if(NOT TARGET Render OR BUILD_SHARED_LIBS)
+        target_compile_definitions(test_multi_gpu PRIVATE EASTL_DEBUGPARAMS_LEVEL=0)
+    endif()
     # d3dcompiler compiles the HLSL of the test pass at run time; the engine itself receives ready bytecode.
     target_link_libraries(test_multi_gpu PRIVATE gtest d3d12 dxgi dxguid d3dcompiler)
     if(COMMAND nau_add_compile_options)

@@ -1,6 +1,15 @@
 add_subdirectory(src)
 
-if(NAU_CORE_TESTS AND WIN32)
+option(NAU_MGPU_ENGINE_TESTS "Build MGPU tests with the real Render heap manager" OFF)
+if(NAU_MGPU_ENGINE_TESTS AND BUILD_SHARED_LIBS)
+  message(FATAL_ERROR "NAU_MGPU_ENGINE_TESTS requires BUILD_SHARED_LIBS=OFF (the heap provider is internal to Render)")
+endif()
+if((NAU_CORE_TESTS OR NAU_MGPU_ENGINE_TESTS) AND WIN32)
+  if(NOT TARGET gtest)
+    set(gtest_force_shared_crt OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${CMAKE_SOURCE_DIR}/engine/3rdparty_libs/googletest" "${CMAKE_BINARY_DIR}/mgpu_googletest")
+    nau_target_add_compile_options(TARGETS gtest gmock)
+  endif()
   add_subdirectory(tests/test_multi_gpu)
 endif()
 

@@ -14,6 +14,7 @@
 #include <cstdlib>
 
 #include "device_fullscreen_pass.h"
+#include "test_resource_allocator.h"
 
 namespace mgpu_test
 {
@@ -96,8 +97,10 @@ namespace mgpu_test
         Microsoft::WRL::ComPtr<ID3DBlob> pixelShader = compileTestShader("psMain", "ps_5_0");
         ASSERT_TRUE(vertexShader && pixelShader);
 
+        TestResourceAllocator allocator;
+        ASSERT_HRESULT_SUCCEEDED(allocator.init(device));
         drv3d_dx12::DeviceFullscreenPassDesc desc;
-        desc.device = device;
+        desc.allocator = &allocator;
         desc.width = width;
         desc.height = height;
         desc.vertexShader = {vertexShader->GetBufferPointer(), vertexShader->GetBufferSize()};

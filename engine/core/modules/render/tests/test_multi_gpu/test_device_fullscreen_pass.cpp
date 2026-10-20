@@ -7,6 +7,7 @@
 #include "multi_gpu_device.h"
 #include "nau/directx/d3d12sdklayers.h"
 #include "test_fullscreen_pass_utils.h"
+#include "test_resource_allocator.h"
 
 namespace
 {
@@ -83,6 +84,7 @@ namespace
             m_vertexShader = mgpu_test::compileTestShader("vsMain", "vs_5_0");
             m_pixelShader = mgpu_test::compileTestShader("psMain", "ps_5_0");
             ASSERT_TRUE(m_vertexShader && m_pixelShader);
+            ASSERT_HRESULT_SUCCEEDED(m_resourceAllocator.init(m_device.Get()));
             if (debug)
             {
                 ASSERT_HRESULT_SUCCEEDED(m_device.As(&m_diagnostics));
@@ -92,6 +94,8 @@ namespace
 
         void TearDown() override
         {
+            EXPECT_EQ(m_resourceAllocator.getAllocationCount(), 0u);
+            EXPECT_HRESULT_SUCCEEDED(m_resourceAllocator.shutdown());
             if (!m_diagnostics)
             {
                 return;
@@ -117,10 +121,10 @@ namespace
         /**
          * @brief Builds a pass description for the fixture device with the compiled test shaders.
          */
-        DeviceFullscreenPassDesc makeDesc(UINT width, UINT height) const
+        DeviceFullscreenPassDesc makeDesc(UINT width, UINT height)
         {
             DeviceFullscreenPassDesc desc;
-            desc.device = m_device.Get();
+            desc.allocator = &m_resourceAllocator;
             desc.width = width;
             desc.height = height;
             desc.vertexShader = {m_vertexShader->GetBufferPointer(), m_vertexShader->GetBufferSize()};
@@ -130,6 +134,7 @@ namespace
 
     protected:
         ComPtr<ID3D12Device> m_device;
+        mgpu_test::TestResourceAllocator m_resourceAllocator;
         ComPtr<ID3D12InfoQueue> m_diagnostics;
         ComPtr<ID3DBlob> m_vertexShader;
         ComPtr<ID3DBlob> m_pixelShader;
@@ -162,6 +167,22 @@ namespace
         DeviceFullscreenPass pass;
         EXPECT_EQ(pass.init(desc), E_INVALIDARG);
         EXPECT_EQ(pass.getDevice(), nullptr);
+    }
+
+    TEST(MultiGpuWarpPair, FullscreenPassOnWarpIsIndependentOfPrimaryHardware)
+    {
+        ComPtr<ID3D12Device> primary = createTestDevice(false);
+        ComPtr<ID3D12Device> secondary = createTestDevice(true);
+        if (!primary || !secondary)
+        {
+            GTEST_SKIP() << "Hardware and WARP are required";
+        }
+        ASSERT_NE(primary.Get(), secondary.Get());
+        const LUID primaryLuid = primary->GetAdapterLuid();
+        const LUID secondaryLuid = secondary->GetAdapterLuid();
+        EXPECT_TRUE(primaryLuid.LowPart != secondaryLuid.LowPart || primaryLuid.HighPart != secondaryLuid.HighPart);
+        // WARP is explicitly selected for this acceptance test; production hardware selection stays unchanged.
+        ASSERT_NO_FATAL_FAILURE(mgpu_test::runPassAndVerify(secondary.Get(), primary.Get(), 1920, 1080));
     }
 
     TEST_P(DeviceFullscreenPassTest, RejectsInvalidDescriptionsWithoutAllocating)
@@ -320,6 +341,45 @@ namespace
         // The fixture's debug layer reports a destroyed-while-in-use object as an ERROR.
         pass.reset();
         EXPECT_EQ(pass.getFence(), nullptr);
+        EXPECT_EQ(pass.getLastSubmittedValue(), 0u);
+    }
+
+    TEST_P(DeviceFullscreenPassTest, TimeoutKeepsResourcesUntilExternalWorkCompletes)
+    {
+        DeviceFullscreenPass pass;
+        ASSERT_HRESULT_SUCCEEDED(pass.init(makeDesc(16, 16)));
+        ComPtr<ID3D12Fence> consumer;
+        ASSERT_HRESULT_SUCCEEDED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&consumer)));
+        ASSERT_HRESULT_SUCCEEDED(pass.waitForExternalWork(consumer.Get(), 1));
+        // Avoid fatal assertions until the artificial queue dependency has been released.
+        EXPECT_HRESULT_SUCCEEDED(pass.execute(true));
+        ID3D12Resource* target = pass.getRenderTarget();
+        EXPECT_EQ(pass.reset(0), HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+        EXPECT_EQ(pass.getRenderTarget(), target);
+        EXPECT_EQ(m_resourceAllocator.getAllocationCount(), 3u);
+        EXPECT_EQ(pass.readPixels(nullptr, 0), E_INVALIDARG);
+        EXPECT_HRESULT_SUCCEEDED(consumer->Signal(1));
+        EXPECT_HRESULT_SUCCEEDED(pass.waitForCompletion());
+        uint8_t pixels[16 * 16 * 4] = {};
+        EXPECT_HRESULT_SUCCEEDED(pass.readPixels(pixels, sizeof(pixels)));
+        mgpu_test::expectCheckerboard(pixels, 16, 16, FullscreenPassColor{});
+        EXPECT_HRESULT_SUCCEEDED(pass.reset());
+        EXPECT_EQ(m_resourceAllocator.getAllocationCount(), 0u);
+    }
+
+    TEST_P(DeviceFullscreenPassTest, RejectsForeignConsumerFence)
+    {
+        ComPtr<ID3D12Device> other = createTestDevice(!GetParam());
+        if (!other)
+        {
+            GTEST_SKIP() << "Hardware and WARP are required for the independent-device check";
+        }
+        ComPtr<ID3D12Fence> foreign;
+        ASSERT_HRESULT_SUCCEEDED(other->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&foreign)));
+        DeviceFullscreenPass pass;
+        ASSERT_HRESULT_SUCCEEDED(pass.init(makeDesc(16, 16)));
+        EXPECT_EQ(pass.waitForExternalWork(nullptr, 1), E_INVALIDARG);
+        EXPECT_EQ(pass.waitForExternalWork(foreign.Get(), 1), E_INVALIDARG);
         EXPECT_EQ(pass.getLastSubmittedValue(), 0u);
     }
 
