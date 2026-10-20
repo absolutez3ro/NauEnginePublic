@@ -27,6 +27,16 @@
 #include "nau/mgpu/Graphics/PSO.h"
 #include "nau/mgpu/Graphics/GraphicPSO.h"
 #include "nau/mgpu/Graphics/ComputePSO.h"
+#include "nau/mgpu/Common/ShadowMap.h"
+#include "nau/mgpu/Common/RenderModeFactory.h"
+#include "nau/mgpu/Common/SharedSSAO.h"
+#include "nau/mgpu/Common/SharedHBAO.h"
+#include "nau/mgpu/Common/Emitter.h"
+#include "nau/mgpu/Common/ParticleEmitter.h"
+#include "nau/mgpu/Common/CrossAdapterParticleEmitter.h"
+#include "nau/mgpu/Common/CloudGenerator.h"
+#include "nau/mgpu/Common/Light.h"
+#include "nau/mgpu/Common/Ssao.h"
 
 namespace nau::PEPEngine
 {

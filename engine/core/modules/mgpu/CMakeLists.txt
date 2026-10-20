@@ -110,3 +110,8 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 nau_install(${TargetName} core)
+
+# Section 15: A/MGPU-ShadowMap as an executable. Only for the static runtime: Mgpu has no DLL exports.
+if(NOT BUILD_SHARED_LIBS)
+  add_subdirectory(samples/ShadowMap)
+endif()

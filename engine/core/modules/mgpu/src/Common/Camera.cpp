@@ -26,17 +26,7 @@ void Camera::Update()
 {
     if (source)
     {
-        const Matrix world = ToSimpleMath(source->getWorldTransform().getMatrix());
-
-        const Vector3 position(world.m[3][0], world.m[3][1], world.m[3][2]);
-        Vector3 forward = -Vector3(world.m[2][0], world.m[2][1], world.m[2][2]);
-        Vector3 up(world.m[1][0], world.m[1][1], world.m[1][2]);
-        forward.Normalize();
-        up.Normalize();
-
-        focusPosition = forward + position;
-
-        view = XMMatrixLookAtLH(position, focusPosition, up);
+        SetWorldMatrix(ToSimpleMath(source->getWorldTransform().getMatrix()));
 
         if (fov != source->getFov() || nearZ != source->getClipNearPlane() || farZ != source->getClipFarPlane())
         {
@@ -52,6 +42,19 @@ void Camera::Update()
         CreateProjection();
         NumFramesDirty--;
     }
+}
+
+void Camera::SetWorldMatrix(const Matrix& world)
+{
+    const Vector3 position(world.m[3][0], world.m[3][1], world.m[3][2]);
+    Vector3 forward = -Vector3(world.m[2][0], world.m[2][1], world.m[2][2]);
+    Vector3 up(world.m[1][0], world.m[1][1], world.m[1][2]);
+    forward.Normalize();
+    up.Normalize();
+
+    focusPosition = forward + position;
+
+    view = XMMatrixLookAtLH(position, focusPosition, up);
 }
 
 void Camera::CreateProjection()

@@ -41,6 +41,10 @@ public:
 
     void SetSource(const nau::scene::ICameraProperties* cameraProperties);
 
+    // World transform of the camera when no Nau camera is bound (A: Transform of the camera GameObject).
+    // Same axes as for a bound Nau camera.
+    void SetWorldMatrix(const Matrix& world);
+
     void Update();
 
     void SetAspectRatio(float aspect);
