@@ -304,19 +304,47 @@ ctest --test-dir build/multi_gpu_tests -C Debug --output-on-failure
 `g++` (mingw-w64, C++20) с `-Wall -Wextra` без замечаний; HLSL разобран фронтендом glslang для обеих точек входа
 (`vsMain`, `psMain`); `clang-format --dry-run -Werror` по конфигурации репозитория чистый.
 
-**Не запускалось:** ни один тест не выполнялся на D3D12, ни на WARP, ни на железе. Сборка MSVC и прогон CTest,
-результат на двух физических GPU и чистый `ReportLiveObjects` остаются за вами. Результаты нужно записать ниже.
+Тесты затем запускались на Windows (раздел «Результаты приёмки» ниже), в том числе на машине с двумя разными
+физическими видеокартами.
 
-### Результаты приёмки (заполнить после прогона)
+### Результаты приёмки — 21.10.2026
+
+Коммит, на котором получены результаты: `f26dcd9c` (ресурсы прохода создавались через committed-аллокатор тестов).
+Перепроверка на `0395a66b` отмечена в конце раздела.
+
+Сборка: Visual Studio 2022 Professional, MSVC 19.44.35229, Windows SDK 10.0.26100.0, Debug x64, генератор
+`Visual Studio 17 2022`. Команды из раздела «Запуск» выше, `ctest -C Debug`.
+
+**Машина с двумя разными физическими GPU (встроенная + дискретная):**
+
+| GPU | Адаптер | LUID | CrossAdapterRowMajorTextureSupported | CrossNodeSharingTier |
+| --- | --- | --- | --- | --- |
+| 0 | NVIDIA GeForce GTX 1650 | 0:65266 | false | 0 |
+| 1 | Intel(R) UHD Graphics 630 | 0:68431 | true | 0 |
 
 | Проверка | Результат |
 | --- | --- |
-| Сборка `test_multi_gpu`, MSVC | |
-| CTest, WARP | |
-| CTest, аппаратный GPU | |
-| `MultiGpuHardware.CreatesSecondPhysicalDeviceWhenAvailable` (draw на GPU 1) | |
-| `MultiGpuHardware.DebugLayerShutdown` | |
-| Модели GPU 0 / GPU 1, LUID | |
+| Сборка `test_multi_gpu` | Успешна |
+| CTest, все тесты | **39 из 39 passed**, 0 failed (14.6 с) |
+| CTest, WARP | passed |
+| CTest, аппаратный GPU (первый адаптер) | passed |
+| `MultiGpuHardware.CreatesSecondPhysicalDeviceWhenAvailable` | passed (0.31 с): на Intel UHD 630 (GPU 1) создан `DeviceFullscreenPass`, выполнен draw 1920×1080, readback совпал с ожидаемой шахматкой во всех пикселях, все объекты принадлежат GPU 1 |
+| `MultiGpuHardware.DebugLayerShutdown` | passed (0.36 с): та же проверка с D3D12/DXGI debug layer, ERROR/CORRUPTION и оставшихся объектов нет |
+| `DeviceFullscreenPass*` (Warp / Hardware) | passed: draw + readback, смена цвета на каждом слоте, submit без ожидания, `reset()` с работой в полёте |
+
+Замечание: GPU 1 здесь это Intel, а GPU 0 NVIDIA. Cross-adapter row-major текстуры поддерживает только Intel;
+для NVIDIA она `false`, поэтому передачу между такими адаптерами нужно строить на буферах и копиях
+(см. MG-08/MG-09), а не на прямом использовании общей текстуры как view.
+
+Повторный прогон на `0395a66b` на этой же паре GPU (Debug x64, те же команды): **46 из 46 passed**, 0 failed (17.9 с).
+С фильтром `MultiGpuHardware|FullscreenPass`: 25 из 25 passed; GPU 0 и GPU 1 определены так же, как в таблице выше.
+Тестов больше, чем на `f26dcd9` (46 вместо 39): пара с WARP, таймаут `reset()`, чужой fence, запрет остановки аллокатора при живых ресурсах.
+Standalone-сборка использует тестовый committed-аллокатор; путь через пул Nau (`NauDeviceResourceAllocator`) на этой
+паре не запускался: для него нужна полная сборка движка (`-DNAU_MGPU_ENGINE_TESTS=ON`).
+
+Дополнительный запуск на другой машине (NVIDIA GeForce RTX 4060 Ti): тот же набор, 39 из 39 passed. Windows
+там показывает один физический адаптер дважды (два LUID: 0:84279 и 0:126893), поэтому этот запуск не считается
+приёмкой на двух физических GPU.
 
 ### Что осталось
 
