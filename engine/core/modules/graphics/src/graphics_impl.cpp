@@ -32,6 +32,7 @@
 #include "nau/utils/performance_profiling.h"
 #include "render/daBfg/bfg.h"
 #include "gpu_profiler/gpu_profiler.h"
+#include "gpu_profiler/gpu_profiler_selftest.h"
 
 #define USE_SHADER_CACHE 1
 #define VIEWPORT_AUTO_RESIZE 0
@@ -336,6 +337,7 @@ namespace nau
 #endif
         d3d::driver_command(DRV3D_COMMAND_ACQUIRE_OWNERSHIP, NULL, NULL, NULL);
         gpu_profiler::GpuProfiler::instance().init();  
+        gpu_profiler::SelfTest::instance().init();
         gpu_profiler::GpuProfiler::instance().beginFrame();
         // Render for all RenderWindows
         for (auto& [swapId, renderWindow] : m_renderWindows)
@@ -365,6 +367,7 @@ namespace nau
         dabfg::update_external_state(dabfg::ExternalState{false, false});
         dabfg::run_nodes();
 
+        gpu_profiler::SelfTest::instance().tick();
         gpu_profiler::GpuProfiler::instance().endFrame();
         d3d::update_screen();
         d3d::driver_command(DRV3D_COMMAND_RELEASE_OWNERSHIP, NULL, NULL, NULL);
@@ -419,6 +422,7 @@ namespace nau
         m_renderWindows.clear();
         m_defaultRenderWindow.reset();
 
+        gpu_profiler::SelfTest::instance().shutdown();
         gpu_profiler::GpuProfiler::instance().shutdown();
         dabfg::shutdown();
         d3d::release_driver();
