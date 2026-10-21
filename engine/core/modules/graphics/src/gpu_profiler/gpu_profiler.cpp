@@ -19,6 +19,13 @@ namespace nau::gpu_profiler
         // A source finalizes timestamp queries only after the frame fence has been passed, i.e. a few frames later.
         // Cap the number of frames we keep waiting on; when the cap is hit the new frame is simply not measured.
         constexpr size_t MaxPendingFrames = 8;
+        // A transfer half whose pair has not arrived after this many frames is dropped.
+        constexpr uint64_t MaxTransferWaitFrames = 4 * MaxPendingFrames;
+
+        const char* transferSuffix(TransferHalf half)
+        {
+            return half == TransferHalf::Source ? "/src" : "/dst";
+        }
 
         const char* getEnv(const char* name)
         {
@@ -184,6 +191,7 @@ namespace nau::gpu_profiler
             m_csv.close();
         }
 
+        m_transfers.clear();
         m_frameIndex = 0;
         m_initialized = false;
         m_config = {};
@@ -287,7 +295,12 @@ namespace nau::gpu_profiler
             state.current.frame = m_frameIndex;
             state.openScopes.clear();
             state.frameActive = state.pending.size() < MaxPendingFrames;
+
+            Calibration& cal = state.current.calibration;
+            cal.valid = state.frameActive && state.source->getClockCalibration(cal.gpuTicks, cal.cpuTicks, cal.cpuFrequency) &&
+                        cal.cpuFrequency != 0;
         }
+        dropStaleTransfers();
 
         beginScope("Frame", PrimaryGpu);
     }
@@ -374,6 +387,25 @@ namespace nau::gpu_profiler
         }
     }
 
+    void GpuProfiler::beginTransfer(const char* name, GpuIndex srcGpu, GpuIndex dstGpu, TransferHalf half)
+    {
+        const GpuIndex gpu = half == TransferHalf::Source ? srcGpu : dstGpu;
+        if (!m_config.enabled || !hasGpu(gpu) || !m_gpus[gpu].frameActive)
+        {
+            return;
+        }
+
+        TransferInfo info;
+        info.name = name ? name : "<unnamed>";
+        info.src = srcGpu;
+        info.dst = dstGpu;
+        info.half = half;
+
+        const eastl::string scopeName = info.name + transferSuffix(half);
+        beginScope(scopeName.c_str(), gpu);
+        m_gpus[gpu].current.scopes.back().transfer = eastl::move(info);
+    }
+
     void GpuProfiler::collectFinished(GpuIndex gpu)
     {
         GpuState& state = m_gpus[gpu];
@@ -432,27 +464,121 @@ namespace nau::gpu_profiler
             // Both timestamps come from the same GPU, so they are converted with that GPU's frequency.
             const double ms = (e >= b) ? double(e - b) * 1000.0 / double(state.frequency) : 0.0;
 
-            if (m_csv.is_open())
-            {
-                m_csv << rec.frame << ',' << csvEscape(s.name).c_str() << ',' << gpu << ',' << std::fixed << std::setprecision(4)
-                      << ms << ',' << toString(m_config.mode) << '\n';
-            }
+            writeRow(rec.frame, s.name, eastl::to_string(gpu), ms);
+            accumulate(state, s.name, ms);
 
-            auto it = state.accum.find(s.name);
-            if (it == state.accum.end())
+            if (s.transfer)
             {
-                it = state.accum.insert(eastl::make_pair(s.name, Accum{})).first;
-                state.accumOrder.push_back(s.name);
+                addTransferHalf(gpu, rec, s, b, e, ms);
             }
-            it->second.sumMs += ms;
-            it->second.maxMs = eastl::max(it->second.maxMs, ms);
-            ++it->second.count;
         }
 
         ++state.framesInAccum;
         if (m_config.logEveryNFrames > 0 && state.framesInAccum >= m_config.logEveryNFrames)
         {
             logSummary(gpu);
+        }
+    }
+
+    void GpuProfiler::writeRow(uint64_t frame, const eastl::string& pass, const eastl::string& gpu, double ms)
+    {
+        if (m_csv.is_open())
+        {
+            m_csv << frame << ',' << csvEscape(pass).c_str() << ',' << gpu.c_str() << ',' << std::fixed << std::setprecision(4) << ms << ','
+                  << toString(m_config.mode) << '\n';
+        }
+    }
+
+    void GpuProfiler::accumulate(GpuState& state, const eastl::string& name, double ms)
+    {
+        auto it = state.accum.find(name);
+        if (it == state.accum.end())
+        {
+            it = state.accum.insert(eastl::make_pair(name, Accum{})).first;
+            state.accumOrder.push_back(name);
+        }
+        it->second.sumMs += ms;
+        it->second.maxMs = eastl::max(it->second.maxMs, ms);
+        ++it->second.count;
+    }
+
+    void GpuProfiler::addTransferHalf(GpuIndex gpu, const FrameRecord& rec, const Scope& scope, uint64_t begin, uint64_t end, double ms)
+    {
+        const TransferInfo& info = *scope.transfer;
+        auto it = eastl::find_if(m_transfers.begin(), m_transfers.end(), [&](const TransferRecord& t)
+        {
+            return t.frame == rec.frame && t.info.name == info.name && t.info.src == info.src && t.info.dst == info.dst;
+        });
+        if (it == m_transfers.end())
+        {
+            TransferRecord record;
+            record.frame = rec.frame;
+            record.info = info;
+            m_transfers.push_back(eastl::move(record));
+            it = m_transfers.end() - 1;
+        }
+
+        TransferHalfResult& half = it->halves[size_t(info.half)];
+        half.ready = true;
+        half.begin = begin;
+        half.end = end;
+        half.ms = ms;
+        half.frequency = m_gpus[gpu].frequency;
+        half.calibration = rec.calibration;
+
+        if (it->halves[0].ready && it->halves[1].ready)
+        {
+            writeTransfer(*it);
+            m_transfers.erase(it);
+        }
+    }
+
+    void GpuProfiler::writeTransfer(const TransferRecord& rec)
+    {
+        const TransferHalfResult& src = rec.halves[size_t(TransferHalf::Source)];
+        const TransferHalfResult& dst = rec.halves[size_t(TransferHalf::Destination)];
+        const eastl::string gpus = eastl::to_string(rec.info.src) + ">" + eastl::to_string(rec.info.dst);
+
+        // Each half was measured on its own GPU, so the sum is pure GPU work of the transfer.
+        const eastl::string sumName = rec.info.name + "/sum";
+        const double sumMs = src.ms + dst.ms;
+        writeRow(rec.frame, sumName, gpus, sumMs);
+        accumulate(m_gpus[rec.info.dst], sumName + " (" + gpus + ")", sumMs);
+
+        // The span needs one time scale: both GPU clocks are moved to the CPU clock with their own calibration,
+        // the GPU timestamps themselves are never subtracted across GPUs.
+        if (!src.calibration.valid || !dst.calibration.valid)
+        {
+            return;
+        }
+        const uint64_t cpuBase = eastl::min(src.calibration.cpuTicks, dst.calibration.cpuTicks);
+        auto toCpuSeconds = [cpuBase](uint64_t ticks, uint64_t frequency, const Calibration& cal)
+        {
+            const double cpu = double(int64_t(cal.cpuTicks - cpuBase)) / double(cal.cpuFrequency);
+            const double gpu = double(int64_t(ticks - cal.gpuTicks)) / double(frequency);
+            return cpu + gpu;
+        };
+        const double start = toCpuSeconds(src.begin, src.frequency, src.calibration);
+        const double finish = toCpuSeconds(dst.end, dst.frequency, dst.calibration);
+
+        const eastl::string spanName = rec.info.name + "/span";
+        const double spanMs = (finish - start) * 1000.0;
+        writeRow(rec.frame, spanName, gpus, spanMs);
+        accumulate(m_gpus[rec.info.dst], spanName + " (" + gpus + ")", spanMs);
+    }
+
+    void GpuProfiler::dropStaleTransfers()
+    {
+        const auto stale = [this](const TransferRecord& t)
+        {
+            return t.frame + MaxTransferWaitFrames < m_frameIndex;
+        };
+        const auto it = eastl::remove_if(m_transfers.begin(), m_transfers.end(), stale);
+        if (it != m_transfers.end())
+        {
+            NAU_LOG_WARNING("GPU profiler: transfer '{}' of frame {} has only one half measured, dropped", it->info.name.c_str(),
+                            it->frame);
+            m_transfers.erase(it, m_transfers.end());
         }
     }
 

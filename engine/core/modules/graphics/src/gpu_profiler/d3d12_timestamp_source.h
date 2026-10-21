@@ -61,6 +61,8 @@ namespace nau::gpu_profiler
         void issue(void*& query) override;
         bool tryGetValue(void* query, uint64_t& value) override;
         void release(void* query) override;
+        // ID3D12CommandQueue::GetClockCalibration of the measured queue.
+        bool getClockCalibration(uint64_t& gpuTicks, uint64_t& cpuTicks, uint64_t& cpuFrequency) override;
 
     private:
         enum class SlotState : uint8_t

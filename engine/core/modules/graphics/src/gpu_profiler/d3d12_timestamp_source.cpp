@@ -247,6 +247,17 @@ namespace nau::gpu_profiler
         m_freeSlots.push_back(slot);
     }
 
+    bool D3D12TimestampSource::getClockCalibration(uint64_t& gpuTicks, uint64_t& cpuTicks, uint64_t& cpuFrequency)
+    {
+        LARGE_INTEGER qpcFrequency = {};
+        if (!m_queue || !QueryPerformanceFrequency(&qpcFrequency) || FAILED(m_queue->GetClockCalibration(&gpuTicks, &cpuTicks)))
+        {
+            return false;
+        }
+        cpuFrequency = uint64_t(qpcFrequency.QuadPart);
+        return true;
+    }
+
     bool D3D12TimestampSource::toSlot(void* query, uint32_t& slot) const
     {
         const uintptr_t v = reinterpret_cast<uintptr_t>(query);
