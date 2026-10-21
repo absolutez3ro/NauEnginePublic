@@ -1,5 +1,7 @@
 #include "multi_gpu_device.h"
+#include "device_resource.h"
 #include "nau/directx/d3d12sdklayers.h"
+#include "test_fullscreen_pass_utils.h"
 
 #include <dxgidebug.h>
 #include <gtest/gtest.h>
@@ -59,6 +61,38 @@ HRESULT WINAPI inject_create(IUnknown *, D3D_FEATURE_LEVEL, REFIID iid, void **r
 {
   return injectedDevice.CopyTo(iid, result);
 }
+
+    /**
+     * @brief Verifies native resource ownership on the selected second physical GPU.
+     */
+    void checkSecondaryResources(ID3D12Device* secondaryDevice, ID3D12Device* primaryDevice)
+    {
+        mgpu_test::TestResourceAllocator allocator;
+        ASSERT_HRESULT_SUCCEEDED(allocator.init(secondaryDevice));
+        drv3d_dx12::DeviceResource target;
+        drv3d_dx12::DeviceResource buffer;
+        ASSERT_HRESULT_SUCCEEDED(target.createRenderTarget(&allocator, 64, 64));
+        ASSERT_HRESULT_SUCCEEDED(buffer.createBuffer(&allocator, 1024, D3D12_HEAP_TYPE_DEFAULT));
+        for (const drv3d_dx12::DeviceResource* resource : {&target, &buffer})
+        {
+            ComPtr<ID3D12Device> owner;
+            ASSERT_HRESULT_SUCCEEDED(resource->getResource()->GetDevice(IID_PPV_ARGS(&owner)));
+            EXPECT_EQ(owner.Get(), secondaryDevice);
+            EXPECT_NE(owner.Get(), primaryDevice);
+        }
+        // No commands were submitted; resources are released before the caller resets the device.
+    }
+
+    /**
+     * @brief MG-10 acceptance on the selected second physical GPU: a fullscreen VS/PS draws into GPU 1's own
+     * texture, the result is read back and checked pixel by pixel, and every object belongs to GPU 1.
+     */
+    void checkSecondaryPass(ID3D12Device* secondaryDevice, ID3D12Device* primaryDevice)
+    {
+        constexpr UINT WIDTH = 1920;
+        constexpr UINT HEIGHT = 1080;
+        mgpu_test::runPassAndVerify(secondaryDevice, primaryDevice, WIDTH, HEIGHT);
+    }
 }
 
 TEST(MultiGpuSelection, RequiresDifferentLuidAndHardware)
@@ -198,6 +232,10 @@ void check_hardware_pair()
       << desc.AdapterLuid.LowPart << L", CrossAdapterRowMajorTextureSupported="
       << support.options.CrossAdapterRowMajorTextureSupported << L", CrossNodeSharingTier="
       << support.options.CrossNodeSharingTier << std::endl;
+    // Exercise the production resource component on the selected physical GPU 1.
+    // WARP is excluded by the adapter selection above.
+    ASSERT_NO_FATAL_FAILURE(checkSecondaryResources(secondary.getDevice(), primary.Get()));
+    ASSERT_NO_FATAL_FAILURE(checkSecondaryPass(secondary.getDevice(), primary.Get()));
     secondary.reset();
     EXPECT_EQ(secondary.getDevice(), nullptr);
     return;
