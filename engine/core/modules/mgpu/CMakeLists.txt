@@ -70,6 +70,13 @@ target_link_libraries(${TargetName} PUBLIC
 # e.g. &CD3DX12_HEAP_PROPERTIES(...)); B defaults to /permissive-.
 target_compile_options(${TargetName} PRIVATE /permissive)
 
+# Camera.cpp is the only Mgpu file that includes Nau math headers; they need the default conformance mode
+# (Vectormath::Comparators operators are not found with /permissive).
+set_source_files_properties(src/Common/Camera.cpp PROPERTIES COMPILE_OPTIONS /permissive- SKIP_PRECOMPILE_HEADERS ON)
+
+# A's Window.cpp calls assert(hWnd, "message") with two arguments (C4002); B builds with warnings as errors.
+target_compile_options(${TargetName} PRIVATE /wd4002)
+
 # A builds all projects with CharacterSet=Unicode.
 target_compile_definitions(${TargetName} PUBLIC NOMINMAX UNICODE _UNICODE)
 

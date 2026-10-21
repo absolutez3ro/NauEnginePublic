@@ -1,7 +1,13 @@
 #include "nau/mgpu/Common/pch.h"
-#include "nau/mgpu/Common/Camera.h"
 
+// d3dUtil.h must precede the Nau headers: nau/math defines a `PI` macro that breaks Math::PI.
+#include "nau/mgpu/Utils/d3dUtil.h"
+
+// Must precede Camera.h: it has a global `using namespace DirectX::SimpleMath`, which makes Vector2/3/4
+// ambiguous with the Vectormath types used by nau/math.
 #include "nau/scene/camera/camera.h"
+
+#include "nau/mgpu/Common/Camera.h"
 
 namespace
 {

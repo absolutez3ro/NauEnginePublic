@@ -5,6 +5,7 @@
 #include <fstream>
 #include "nau/mgpu/Utils/d3dUtil.h"
 #include "nau/mgpu/Common/GCrossAdapterResource.h"
+#include "nau/mgpu/Common/Material.h" // B: came transitively through GameObject.h in A (not transferred)
 #include "nau/mgpu/Common/Window.h"
 #include <chrono>
 #include <thread>

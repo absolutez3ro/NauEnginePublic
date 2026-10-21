@@ -10,7 +10,12 @@
     },
     "assimp",
     "directxmesh",
-    "directxtex",
+    {
+      "name": "directxtex",
+      "features": [
+        "dx12"
+      ]
+    },
     "directxtk12"
   ],
   "builtin-baseline": "a1212c93cabaa9c5c36c1ffdb4bddd59fdf31e43"
