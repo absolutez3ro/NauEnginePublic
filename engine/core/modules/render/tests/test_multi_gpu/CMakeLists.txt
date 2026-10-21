@@ -14,12 +14,13 @@ if(WIN32)
         target_compile_definitions(test_multi_gpu PRIVATE NAU_MGPU_TEST_ENGINE_ALLOCATOR)
     else()
         target_sources(test_multi_gpu PRIVATE
-            ../../src/drv3d_DX12/device_resource.cpp ../../src/drv3d_DX12/device_fullscreen_pass.cpp)
+            ../../src/drv3d_DX12/device_resource.cpp ../../src/drv3d_DX12/device_fullscreen_pass.cpp
+            ../../../../../3rdparty_libs/EASTL/source/assert.cpp)
     endif()
     target_compile_features(test_multi_gpu PRIVATE cxx_std_20)
     target_compile_definitions(test_multi_gpu PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_include_directories(test_multi_gpu PRIVATE "../../include" "../../src/drv3d_DX12")
-    # The tests only use header-only EASTL array/unique_ptr, keeping standalone builds independent of NauKernel.
+    # EASTL containers and shared lifetime support remain independent of NauKernel in standalone builds.
     target_include_directories(test_multi_gpu PRIVATE
         "../../../../../3rdparty_libs/EASTL/include"
         "../../../../../3rdparty_libs/EABase/include/Common")

@@ -27,7 +27,8 @@ namespace drv3d_dx12
     /**
      * @brief Allocates resources on one device and returns their memory after GPU completion.
      *
-     * The allocator must outlive every DeviceResource and DeviceFullscreenPass using it.
+     * The allocator must outlive every DeviceResource using it. DeviceFullscreenPass retains shared
+     * ownership, including after retirement, until its GPU work completes or the device is removed.
      * Calls are serialized by the owning render thread. A successful allocation returns a nonzero
      * token; releaseAllocation() is called after releasing the resource and completing GPU access.
      * The engine implementation uses Nau's ResourceMemoryHeapProvider.

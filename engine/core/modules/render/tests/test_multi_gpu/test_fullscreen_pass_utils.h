@@ -97,10 +97,10 @@ namespace mgpu_test
         Microsoft::WRL::ComPtr<ID3DBlob> pixelShader = compileTestShader("psMain", "ps_5_0");
         ASSERT_TRUE(vertexShader && pixelShader);
 
-        TestResourceAllocator allocator;
-        ASSERT_HRESULT_SUCCEEDED(allocator.init(device));
+        eastl::shared_ptr<TestResourceAllocator> allocator = makeTestResourceAllocator();
+        ASSERT_HRESULT_SUCCEEDED(allocator->init(device));
         drv3d_dx12::DeviceFullscreenPassDesc desc;
-        desc.allocator = &allocator;
+        desc.allocator = allocator;
         desc.width = width;
         desc.height = height;
         desc.vertexShader = {vertexShader->GetBufferPointer(), vertexShader->GetBufferSize()};
@@ -130,6 +130,6 @@ namespace mgpu_test
         eastl::unique_ptr<uint8_t[]> pixels(new uint8_t[static_cast<size_t>(width) * height * 4]);
         ASSERT_HRESULT_SUCCEEDED(pass.readPixels(pixels.get(), static_cast<size_t>(width) * height * 4));
         expectCheckerboard(pixels.get(), width, height, color);
-        // pass is destroyed here: it waits for the GPU and releases its objects before the caller releases the device.
+        // waitForCompletion() above finished all work, so destruction releases the objects immediately.
     }
 }  // namespace mgpu_test

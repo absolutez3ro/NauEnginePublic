@@ -17,16 +17,221 @@ namespace drv3d_dx12
         }
     }  // namespace
 
+    class DeviceFullscreenPass::State
+    {
+    public:
+        State() = default;
+        State(const State&) = delete;
+        State(State&&) = delete;
+        State& operator=(const State&) = delete;
+        State& operator=(State&&) = delete;
+        ~State() = default;  // Deleted only after reset() has released GPU state.
+
+        HRESULT init(const DeviceFullscreenPassDesc& desc);
+        HRESULT reset(DWORD timeoutMs = WAIT_TIMEOUT_MS);
+        void setColor(const FullscreenPassColor& color);
+        HRESULT execute(bool copyToReadback);
+        HRESULT waitForCompletion(DWORD timeoutMs = WAIT_TIMEOUT_MS);
+        HRESULT waitForExternalWork(ID3D12Fence* fence, UINT64 value);
+        HRESULT readPixels(uint8_t* destination, size_t destinationSize) const;
+        ID3D12Fence* getFence() const;
+        UINT64 getLastSubmittedValue() const;
+        ID3D12Resource* getRenderTarget() const;
+        ID3D12PipelineState* getPipelineState() const;
+        ID3D12RootSignature* getRootSignature() const;
+        ID3D12Resource* getConstantBuffer() const;
+        ID3D12Device* getDevice() const;
+
+        State* m_nextRetired = nullptr;
+
+    private:
+        struct ExternalWait
+        {
+            Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+            UINT64 completionValue = 0;
+            ExternalWait* next = nullptr;
+        };
+
+        void collectExternalWaits(UINT64 completedValue);
+        ExternalWait* m_externalWaits = nullptr;
+
+    private:
+        HRESULT createCommandObjects();
+        HRESULT createPipeline(const DeviceFullscreenPassDesc& desc);
+        HRESULT createResources(UINT width, UINT height);
+        HRESULT waitForValue(UINT64 value, DWORD timeoutMs = WAIT_TIMEOUT_MS);
+        HRESULT signalSubmission();
+        void recordPass(UINT slot, bool copyToReadback);
+        void recordBarrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
+
+    private:
+        // Declared device first: members are destroyed in reverse order, so the device reference is released last.
+        Microsoft::WRL::ComPtr<ID3D12Device> m_device;
+        eastl::shared_ptr<IDeviceResourceAllocator> m_resourceAllocator;
+        Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_queue;
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_allocators[FRAME_COUNT];
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_list;
+        Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pipelineState;
+        DeviceResource m_renderTarget;
+        DeviceResource m_constantBuffer;  ///< UPLOAD heap, persistently mapped, one 256-byte slot per submission slot.
+        DeviceResource m_readback;        ///< READBACK heap sized from GetCopyableFootprints of the render target.
+        HANDLE m_fenceEvent = nullptr;
+        uint8_t* m_constantsMapped = nullptr;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_footprint = {};
+        UINT64 m_readbackBytes = 0;  ///< Total size from GetCopyableFootprints; the last row has no padding.
+        UINT64 m_slotFenceValues[FRAME_COUNT] = {};
+        UINT64 m_lastSubmittedValue = 0;
+        UINT64 m_readbackValue = 0;  ///< Fence value of the most recent submission that copied into m_readback.
+        bool m_signalPending = false;
+        FullscreenPassColor m_color;
+        UINT m_width = 0;
+        UINT m_height = 0;
+    };
+
+    DeviceFullscreenPass::State* DeviceFullscreenPass::s_retiredStates = nullptr;
+
+    DeviceFullscreenPass::DeviceFullscreenPass() = default;
+
     DeviceFullscreenPass::~DeviceFullscreenPass()
     {
-        while (FAILED(reset()) && m_device)
+        reset(0);
+        if (m_state)
         {
-            // A timeout is not device removal. Do not return live memory to the pool.
-            Sleep(1);
+            // The state was allocated by init(): retirement cannot fail to allocate in a destructor.
+            m_state->m_nextRetired = s_retiredStates;
+            s_retiredStates = m_state.release();
+            OutputDebugStringA("MG-10: retiring unfinished GPU work; collectRetiredResources() must poll it.\n");
         }
     }
 
+    size_t DeviceFullscreenPass::collectRetiredResources()
+    {
+        size_t pending = 0;
+        State** current = &s_retiredStates;
+        while (*current)
+        {
+            State* state = *current;
+            state->reset(0);
+            if (!state->getDevice())
+            {
+                *current = state->m_nextRetired;
+                delete state;
+            }
+            else
+            {
+                ++pending;
+                current = &state->m_nextRetired;
+            }
+        }
+        return pending;
+    }
+
     HRESULT DeviceFullscreenPass::init(const DeviceFullscreenPassDesc& desc)
+    {
+        collectRetiredResources();
+        if (m_state)
+        {
+            return DXGI_ERROR_INVALID_CALL;
+        }
+        eastl::unique_ptr<State> state(new State());
+        const HRESULT result = state->init(desc);
+        if (SUCCEEDED(result))
+        {
+            state->setColor(m_color);
+            m_state = eastl::move(state);
+        }
+        return result;
+    }
+
+    HRESULT DeviceFullscreenPass::reset(DWORD timeoutMs)
+    {
+        if (!m_state)
+        {
+            m_color = {};
+            return S_OK;
+        }
+        const HRESULT result = m_state->reset(timeoutMs);
+        if (!m_state->getDevice())
+        {
+            m_state.reset();
+            m_color = {};
+        }
+        return result;
+    }
+
+    void DeviceFullscreenPass::setColor(const FullscreenPassColor& color)
+    {
+        m_color = color;
+        if (m_state)
+        {
+            m_state->setColor(color);
+        }
+    }
+
+    HRESULT DeviceFullscreenPass::execute(bool copyToReadback)
+    {
+        collectRetiredResources();
+        return m_state ? m_state->execute(copyToReadback) : DXGI_ERROR_INVALID_CALL;
+    }
+
+    HRESULT DeviceFullscreenPass::waitForCompletion(DWORD timeoutMs)
+    {
+        return m_state ? m_state->waitForCompletion(timeoutMs) : S_OK;
+    }
+
+    HRESULT DeviceFullscreenPass::waitForExternalWork(ID3D12Fence* fence, UINT64 value)
+    {
+        return m_state ? m_state->waitForExternalWork(fence, value) : DXGI_ERROR_INVALID_CALL;
+    }
+
+    HRESULT DeviceFullscreenPass::readPixels(uint8_t* destination, size_t destinationSize) const
+    {
+        if (!destination)
+        {
+            return E_INVALIDARG;
+        }
+        return m_state ? m_state->readPixels(destination, destinationSize) : DXGI_ERROR_INVALID_CALL;
+    }
+
+    ID3D12Fence* DeviceFullscreenPass::getFence() const
+    {
+        return m_state ? m_state->getFence() : nullptr;
+    }
+
+    UINT64 DeviceFullscreenPass::getLastSubmittedValue() const
+    {
+        return m_state ? m_state->getLastSubmittedValue() : 0;
+    }
+
+    ID3D12Resource* DeviceFullscreenPass::getRenderTarget() const
+    {
+        return m_state ? m_state->getRenderTarget() : nullptr;
+    }
+
+    ID3D12PipelineState* DeviceFullscreenPass::getPipelineState() const
+    {
+        return m_state ? m_state->getPipelineState() : nullptr;
+    }
+
+    ID3D12RootSignature* DeviceFullscreenPass::getRootSignature() const
+    {
+        return m_state ? m_state->getRootSignature() : nullptr;
+    }
+
+    ID3D12Resource* DeviceFullscreenPass::getConstantBuffer() const
+    {
+        return m_state ? m_state->getConstantBuffer() : nullptr;
+    }
+
+    ID3D12Device* DeviceFullscreenPass::getDevice() const
+    {
+        return m_state ? m_state->getDevice() : nullptr;
+    }
+
+    HRESULT DeviceFullscreenPass::State::init(const DeviceFullscreenPassDesc& desc)
     {
         if (!desc.allocator || !desc.allocator->getDevice() || desc.width == 0 || desc.height == 0 || desc.width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
             desc.height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION || !isValidBytecode(desc.vertexShader) || !isValidBytecode(desc.pixelShader))
@@ -60,7 +265,7 @@ namespace drv3d_dx12
         return result;
     }
 
-    HRESULT DeviceFullscreenPass::createCommandObjects()
+    HRESULT DeviceFullscreenPass::State::createCommandObjects()
     {
         D3D12_COMMAND_QUEUE_DESC queueDesc = {};
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -93,9 +298,9 @@ namespace drv3d_dx12
         return result;
     }
 
-    HRESULT DeviceFullscreenPass::createResources(UINT width, UINT height)
+    HRESULT DeviceFullscreenPass::State::createResources(UINT width, UINT height)
     {
-        HRESULT result = m_renderTarget.createRenderTarget(m_resourceAllocator, width, height);
+        HRESULT result = m_renderTarget.createRenderTarget(m_resourceAllocator.get(), width, height);
         if (FAILED(result))
         {
             return result;
@@ -111,7 +316,7 @@ namespace drv3d_dx12
         }
         m_device->CreateRenderTargetView(m_renderTarget.getResource(), nullptr, m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
 
-        result = m_constantBuffer.createBuffer(m_resourceAllocator, CONSTANT_SLOT_SIZE * FRAME_COUNT, D3D12_HEAP_TYPE_UPLOAD);
+        result = m_constantBuffer.createBuffer(m_resourceAllocator.get(), CONSTANT_SLOT_SIZE * FRAME_COUNT, D3D12_HEAP_TYPE_UPLOAD);
         if (FAILED(result))
         {
             return result;
@@ -129,10 +334,10 @@ namespace drv3d_dx12
 
         const D3D12_RESOURCE_DESC targetDesc = m_renderTarget.getResource()->GetDesc();
         m_device->GetCopyableFootprints(&targetDesc, 0, 1, 0, &m_footprint, nullptr, nullptr, &m_readbackBytes);
-        return m_readback.createBuffer(m_resourceAllocator, m_readbackBytes, D3D12_HEAP_TYPE_READBACK);
+        return m_readback.createBuffer(m_resourceAllocator.get(), m_readbackBytes, D3D12_HEAP_TYPE_READBACK);
     }
 
-    HRESULT DeviceFullscreenPass::createPipeline(const DeviceFullscreenPassDesc& desc)
+    HRESULT DeviceFullscreenPass::State::createPipeline(const DeviceFullscreenPassDesc& desc)
     {
         // One root CBV (b0) visible to the pixel shader only.
         D3D12_ROOT_PARAMETER parameter = {};
@@ -196,7 +401,7 @@ namespace drv3d_dx12
         return m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pipelineState));
     }
 
-    HRESULT DeviceFullscreenPass::reset(DWORD timeoutMs)
+    HRESULT DeviceFullscreenPass::State::reset(DWORD timeoutMs)
     {
         const HRESULT result = waitForCompletion(timeoutMs);
         if (FAILED(result) && m_device && SUCCEEDED(m_device->GetDeviceRemovedReason()))
@@ -220,6 +425,7 @@ namespace drv3d_dx12
             allocator.Reset();
         }
         m_queue.Reset();
+        collectExternalWaits(UINT64_MAX);
         m_fence.Reset();
         if (m_fenceEvent)
         {
@@ -238,17 +444,17 @@ namespace drv3d_dx12
         m_color = FullscreenPassColor();
         m_width = 0;
         m_height = 0;
-        m_resourceAllocator = nullptr;
+        m_resourceAllocator.reset();
         m_device.Reset();
         return result;
     }
 
-    void DeviceFullscreenPass::setColor(const FullscreenPassColor& color)
+    void DeviceFullscreenPass::State::setColor(const FullscreenPassColor& color)
     {
         m_color = color;
     }
 
-    HRESULT DeviceFullscreenPass::waitForValue(UINT64 value, DWORD timeoutMs)
+    HRESULT DeviceFullscreenPass::State::waitForValue(UINT64 value, DWORD timeoutMs)
     {
         UINT64 completed = m_fence->GetCompletedValue();
         // A removed device completes every fence with UINT64_MAX.
@@ -260,6 +466,11 @@ namespace drv3d_dx12
         if (completed >= value)
         {
             return S_OK;
+        }
+        if (timeoutMs == 0)
+        {
+            // Polling must not register an unbounded number of events on a stuck fence.
+            return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
         }
         HRESULT result = m_fence->SetEventOnCompletion(value, m_fenceEvent);
         if (FAILED(result))
@@ -294,7 +505,7 @@ namespace drv3d_dx12
         }
     }
 
-    HRESULT DeviceFullscreenPass::waitForCompletion(DWORD timeoutMs)
+    HRESULT DeviceFullscreenPass::State::waitForCompletion(DWORD timeoutMs)
     {
         if (!m_fence)
         {
@@ -311,14 +522,14 @@ namespace drv3d_dx12
         return waitForValue(m_lastSubmittedValue, timeoutMs);
     }
 
-    HRESULT DeviceFullscreenPass::signalSubmission()
+    HRESULT DeviceFullscreenPass::State::signalSubmission()
     {
         const HRESULT result = m_queue->Signal(m_fence.Get(), m_lastSubmittedValue);
         m_signalPending = FAILED(result);
         return result;
     }
 
-    HRESULT DeviceFullscreenPass::waitForExternalWork(ID3D12Fence* fence, UINT64 value)
+    HRESULT DeviceFullscreenPass::State::waitForExternalWork(ID3D12Fence* fence, UINT64 value)
     {
         if (!m_queue || m_signalPending || m_lastSubmittedValue == UINT64_MAX - 1)
         {
@@ -334,16 +545,39 @@ namespace drv3d_dx12
         {
             return E_INVALIDARG;
         }
+        collectExternalWaits(m_fence->GetCompletedValue());
+        eastl::unique_ptr<ExternalWait> dependency(new ExternalWait());
+        dependency->fence = fence;
         const HRESULT result = m_queue->Wait(fence, value);
         if (FAILED(result))
         {
             return result;
         }
-        ++m_lastSubmittedValue;
+        dependency->completionValue = ++m_lastSubmittedValue;
+        dependency->next = m_externalWaits;
+        m_externalWaits = dependency.release();
         return signalSubmission();
     }
 
-    void DeviceFullscreenPass::recordBarrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+    void DeviceFullscreenPass::State::collectExternalWaits(UINT64 completedValue)
+    {
+        ExternalWait** current = &m_externalWaits;
+        while (*current)
+        {
+            ExternalWait* dependency = *current;
+            if (completedValue >= dependency->completionValue)
+            {
+                *current = dependency->next;
+                delete dependency;
+            }
+            else
+            {
+                current = &dependency->next;
+            }
+        }
+    }
+
+    void DeviceFullscreenPass::State::recordBarrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
     {
         D3D12_RESOURCE_BARRIER barrier = {};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -354,7 +588,7 @@ namespace drv3d_dx12
         m_list->ResourceBarrier(1, &barrier);
     }
 
-    void DeviceFullscreenPass::recordPass(UINT slot, bool copyToReadback)
+    void DeviceFullscreenPass::State::recordPass(UINT slot, bool copyToReadback)
     {
         ID3D12Resource* target = m_renderTarget.getResource();
         const D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -391,7 +625,7 @@ namespace drv3d_dx12
         recordBarrier(target, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
     }
 
-    HRESULT DeviceFullscreenPass::execute(bool copyToReadback)
+    HRESULT DeviceFullscreenPass::State::execute(bool copyToReadback)
     {
         if (!m_list || m_signalPending || m_lastSubmittedValue == UINT64_MAX - 1)
         {
@@ -437,7 +671,7 @@ namespace drv3d_dx12
         return signalSubmission();
     }
 
-    HRESULT DeviceFullscreenPass::readPixels(uint8_t* destination, size_t destinationSize) const
+    HRESULT DeviceFullscreenPass::State::readPixels(uint8_t* destination, size_t destinationSize) const
     {
         const size_t rowBytes = static_cast<size_t>(m_width) * 4;
         if (!destination || destinationSize < rowBytes * m_height)
@@ -475,37 +709,37 @@ namespace drv3d_dx12
         return S_OK;
     }
 
-    ID3D12Fence* DeviceFullscreenPass::getFence() const
+    ID3D12Fence* DeviceFullscreenPass::State::getFence() const
     {
         return m_fence.Get();
     }
 
-    UINT64 DeviceFullscreenPass::getLastSubmittedValue() const
+    UINT64 DeviceFullscreenPass::State::getLastSubmittedValue() const
     {
         return m_lastSubmittedValue;
     }
 
-    ID3D12Resource* DeviceFullscreenPass::getRenderTarget() const
+    ID3D12Resource* DeviceFullscreenPass::State::getRenderTarget() const
     {
         return m_renderTarget.getResource();
     }
 
-    ID3D12PipelineState* DeviceFullscreenPass::getPipelineState() const
+    ID3D12PipelineState* DeviceFullscreenPass::State::getPipelineState() const
     {
         return m_pipelineState.Get();
     }
 
-    ID3D12RootSignature* DeviceFullscreenPass::getRootSignature() const
+    ID3D12RootSignature* DeviceFullscreenPass::State::getRootSignature() const
     {
         return m_rootSignature.Get();
     }
 
-    ID3D12Resource* DeviceFullscreenPass::getConstantBuffer() const
+    ID3D12Resource* DeviceFullscreenPass::State::getConstantBuffer() const
     {
         return m_constantBuffer.getResource();
     }
 
-    ID3D12Device* DeviceFullscreenPass::getDevice() const
+    ID3D12Device* DeviceFullscreenPass::State::getDevice() const
     {
         return m_device.Get();
     }

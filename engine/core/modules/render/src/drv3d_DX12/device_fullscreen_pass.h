@@ -5,6 +5,8 @@
 // A self-contained fullscreen render pass that runs on an explicitly selected D3D12 device (GPU 1 for MG-10).
 #pragma once
 
+#include <EASTL/shared_ptr.h>
+#include <EASTL/unique_ptr.h>
 #include <wrl/client.h>
 
 #include <cstdint>  // Required by the bundled D3D12 declarations.
@@ -65,7 +67,7 @@ float4 psMain(VsOutput input) : SV_Target
      */
     struct DeviceFullscreenPassDesc
     {
-        IDeviceResourceAllocator* allocator = nullptr;  ///< Allocator for GPU 1; must outlive the pass.
+        eastl::shared_ptr<IDeviceResourceAllocator> allocator;  ///< Retained until all submitted GPU work ends.
         UINT width = 0;
         UINT height = 0;
         D3D12_SHADER_BYTECODE vertexShader = {};  ///< DXBC or DXIL; no input layout, vertices come from SV_VertexID.
@@ -85,7 +87,8 @@ float4 psMain(VsOutput input) : SV_Target
      * target is left in D3D12_RESOURCE_STATE_COMMON after every execute(), which is the state the MG-04 transfer
      * channel expects from send_from_secondary(); the fence from getFence() and the value from
      * getLastSubmittedValue() form its source_ready sync point after a successful execute().
-     * Before overwriting a target read by another queue, enqueue waitForExternalWork() with its release fence.
+     * Before overwriting or releasing a target read by another queue, enqueue waitForExternalWork() with its
+     * release fence. Retirement cannot track consumers whose completion was never registered with the pass.
      *
      * Thread safety: none. Call everything from the render thread. reset() waits for the GPU on the CPU, call it
      * before driver shutdown or device recovery.
@@ -95,11 +98,11 @@ float4 psMain(VsOutput input) : SV_Target
     public:
         /// Submissions that may be in flight at once; each has its own allocator and constant buffer slot.
         static constexpr UINT FRAME_COUNT = 2;
-        /// Default timeout of explicit CPU waits. Destruction must drain work before releasing its memory.
+        /// Default timeout of explicit CPU waits. Destruction itself never waits for GPU completion.
         static constexpr DWORD WAIT_TIMEOUT_MS = 10000;
 
     public:
-        DeviceFullscreenPass() = default;
+        DeviceFullscreenPass();
         DeviceFullscreenPass(const DeviceFullscreenPass&) = delete;
         DeviceFullscreenPass(DeviceFullscreenPass&&) = delete;
         DeviceFullscreenPass& operator=(const DeviceFullscreenPass&) = delete;
@@ -120,10 +123,22 @@ float4 psMain(VsOutput input) : SV_Target
          * @brief Waits for submitted work and releases everything. Safe to call on an empty object.
          *
          * On timeout or a recoverable wait error, returns the error and retains all objects for a later retry.
-         * Only completion or confirmed device removal permits releasing GPU memory. The destructor keeps waiting
-         * while the device is alive; callers must resolve external queue dependencies before destruction.
+         * Only completion or confirmed device removal permits releasing GPU memory. Destruction polls once,
+         * then retires unfinished state without waiting. Its allocator and external fences remain owned.
+         * Callers should handle reset() errors and stop submitting work to an unavailable secondary path.
          */
         HRESULT reset(DWORD timeoutMs = WAIT_TIMEOUT_MS);
+
+        /**
+         * @brief Polls retired passes without waiting; releases completed or removed-device state.
+         * @return Number of states still waiting for GPU completion or device removal.
+         *
+         * Call on the render thread each frame and during shutdown, before unloading Render or its allocator
+         * code. init() and execute() also collect. No worker thread is involved. If an external dependency never
+         * completes and the device stays alive, its state remains pinned until process exit; shutdown must not
+         * spin on this count. Never fake completion by signaling a consumer's fence from the producer.
+         */
+        static size_t collectRetiredResources();
 
         /**
          * @brief Sets the color used by the next execute() calls. Copied into a per-submission constant buffer.
@@ -147,7 +162,7 @@ float4 psMain(VsOutput input) : SV_Target
 
         /**
          * @brief Enqueues a GPU wait before the next draw, for example the transfer channel's sourceReleased fence.
-         * @param fence Fence opened on this device; retain it until waitForCompletion() succeeds. It must not depend
+         * @param fence Fence opened on this device; the pass retains it through completion. It must not depend
          * on a future submission of this pass.
          * @param value Value signaled by the consumer when the render target may be overwritten.
          */
@@ -191,38 +206,10 @@ float4 psMain(VsOutput input) : SV_Target
         ID3D12Device* getDevice() const;
 
     private:
-        HRESULT createCommandObjects();
-        HRESULT createPipeline(const DeviceFullscreenPassDesc& desc);
-        HRESULT createResources(UINT width, UINT height);
-        HRESULT waitForValue(UINT64 value, DWORD timeoutMs = WAIT_TIMEOUT_MS);
-        HRESULT signalSubmission();
-        void recordPass(UINT slot, bool copyToReadback);
-        void recordBarrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
-
-    private:
-        // Declared device first: members are destroyed in reverse order, so the device reference is released last.
-        Microsoft::WRL::ComPtr<ID3D12Device> m_device;
-        IDeviceResourceAllocator* m_resourceAllocator = nullptr;
-        Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_queue;
-        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_allocators[FRAME_COUNT];
-        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_list;
-        Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
-        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
-        Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
-        Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pipelineState;
-        DeviceResource m_renderTarget;
-        DeviceResource m_constantBuffer;  ///< UPLOAD heap, persistently mapped, one 256-byte slot per submission slot.
-        DeviceResource m_readback;        ///< READBACK heap sized from GetCopyableFootprints of the render target.
-        HANDLE m_fenceEvent = nullptr;
-        uint8_t* m_constantsMapped = nullptr;
-        D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_footprint = {};
-        UINT64 m_readbackBytes = 0;  ///< Total size from GetCopyableFootprints; the last row has no padding.
-        UINT64 m_slotFenceValues[FRAME_COUNT] = {};
-        UINT64 m_lastSubmittedValue = 0;
-        UINT64 m_readbackValue = 0;  ///< Fence value of the most recent submission that copied into m_readback.
-        bool m_signalPending = false;
+        class State;
+        // Intrusive process-lifetime list: pending GPU work is never released by static destruction.
+        static State* s_retiredStates;
+        eastl::unique_ptr<State> m_state;
         FullscreenPassColor m_color;
-        UINT m_width = 0;
-        UINT m_height = 0;
     };
 }  // namespace drv3d_dx12

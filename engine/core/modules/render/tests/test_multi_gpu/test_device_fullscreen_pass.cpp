@@ -84,7 +84,7 @@ namespace
             m_vertexShader = mgpu_test::compileTestShader("vsMain", "vs_5_0");
             m_pixelShader = mgpu_test::compileTestShader("psMain", "ps_5_0");
             ASSERT_TRUE(m_vertexShader && m_pixelShader);
-            ASSERT_HRESULT_SUCCEEDED(m_resourceAllocator.init(m_device.Get()));
+            ASSERT_HRESULT_SUCCEEDED(m_resourceAllocator->init(m_device.Get()));
             if (debug)
             {
                 ASSERT_HRESULT_SUCCEEDED(m_device.As(&m_diagnostics));
@@ -94,8 +94,9 @@ namespace
 
         void TearDown() override
         {
-            EXPECT_EQ(m_resourceAllocator.getAllocationCount(), 0u);
-            EXPECT_HRESULT_SUCCEEDED(m_resourceAllocator.shutdown());
+            EXPECT_EQ(DeviceFullscreenPass::collectRetiredResources(), 0u);
+            EXPECT_EQ(m_resourceAllocator->getAllocationCount(), 0u);
+            EXPECT_HRESULT_SUCCEEDED(m_resourceAllocator->shutdown());
             if (!m_diagnostics)
             {
                 return;
@@ -124,7 +125,7 @@ namespace
         DeviceFullscreenPassDesc makeDesc(UINT width, UINT height)
         {
             DeviceFullscreenPassDesc desc;
-            desc.allocator = &m_resourceAllocator;
+            desc.allocator = m_resourceAllocator;
             desc.width = width;
             desc.height = height;
             desc.vertexShader = {m_vertexShader->GetBufferPointer(), m_vertexShader->GetBufferSize()};
@@ -134,7 +135,7 @@ namespace
 
     protected:
         ComPtr<ID3D12Device> m_device;
-        mgpu_test::TestResourceAllocator m_resourceAllocator;
+        eastl::shared_ptr<mgpu_test::TestResourceAllocator> m_resourceAllocator = mgpu_test::makeTestResourceAllocator();
         ComPtr<ID3D12InfoQueue> m_diagnostics;
         ComPtr<ID3DBlob> m_vertexShader;
         ComPtr<ID3DBlob> m_pixelShader;
@@ -167,6 +168,39 @@ namespace
         DeviceFullscreenPass pass;
         EXPECT_EQ(pass.init(desc), E_INVALIDARG);
         EXPECT_EQ(pass.getDevice(), nullptr);
+    }
+
+    TEST(DeviceFullscreenPassInput, ProcessExitsWithPermanentlyUnsignaledExternalFence)
+    {
+        // Only WARP is used in the child. It returns from main normally without signaling its consumer fence.
+        wchar_t executable[MAX_PATH] = {};
+        const DWORD pathSize = GetModuleFileNameW(nullptr, executable, MAX_PATH);
+        ASSERT_GT(pathSize, 0u);
+        ASSERT_LT(pathSize, static_cast<DWORD>(MAX_PATH));
+        wchar_t command[MAX_PATH + 64] = {};
+        ASSERT_GT(swprintf_s(command, L"\"%s\" --mgpu-blocked-shutdown-child", executable), 0);
+        STARTUPINFOW startup = {};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process = {};
+        ASSERT_TRUE(CreateProcessW(executable, command, nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                                   nullptr, nullptr, &startup, &process));
+        const DWORD waitResult = WaitForSingleObject(process.hProcess, 10000);
+        DWORD exitCode = STILL_ACTIVE;
+        EXPECT_TRUE(GetExitCodeProcess(process.hProcess, &exitCode));
+        if (waitResult != WAIT_OBJECT_0)
+        {
+            // A regression must fail the test without leaving the deliberately blocked child running.
+            EXPECT_TRUE(TerminateProcess(process.hProcess, 1));
+            WaitForSingleObject(process.hProcess, 5000);
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        EXPECT_EQ(waitResult, WAIT_OBJECT_0);
+        if (exitCode == 77)
+        {
+            GTEST_SKIP() << "D3D12 WARP unavailable in shutdown child";
+        }
+        EXPECT_EQ(exitCode, 0u);
     }
 
     TEST(MultiGpuWarpPair, FullscreenPassOnWarpIsIndependentOfPrimaryHardware)
@@ -356,7 +390,7 @@ namespace
         ID3D12Resource* target = pass.getRenderTarget();
         EXPECT_EQ(pass.reset(0), HRESULT_FROM_WIN32(ERROR_TIMEOUT));
         EXPECT_EQ(pass.getRenderTarget(), target);
-        EXPECT_EQ(m_resourceAllocator.getAllocationCount(), 3u);
+        EXPECT_EQ(m_resourceAllocator->getAllocationCount(), 3u);
         EXPECT_EQ(pass.readPixels(nullptr, 0), E_INVALIDARG);
         EXPECT_HRESULT_SUCCEEDED(consumer->Signal(1));
         EXPECT_HRESULT_SUCCEEDED(pass.waitForCompletion());
@@ -364,7 +398,7 @@ namespace
         EXPECT_HRESULT_SUCCEEDED(pass.readPixels(pixels, sizeof(pixels)));
         mgpu_test::expectCheckerboard(pixels, 16, 16, FullscreenPassColor{});
         EXPECT_HRESULT_SUCCEEDED(pass.reset());
-        EXPECT_EQ(m_resourceAllocator.getAllocationCount(), 0u);
+        EXPECT_EQ(m_resourceAllocator->getAllocationCount(), 0u);
     }
 
     TEST_P(DeviceFullscreenPassTest, RejectsForeignConsumerFence)
@@ -383,9 +417,136 @@ namespace
         EXPECT_EQ(pass.getLastSubmittedValue(), 0u);
     }
 
+    TEST_P(DeviceFullscreenPassTest, DestructorRetiresBlockedWorkAndKeepsAllocatorAlive)
+    {
+        eastl::shared_ptr<mgpu_test::TestResourceAllocator> allocator = mgpu_test::makeTestResourceAllocator();
+        ASSERT_HRESULT_SUCCEEDED(allocator->init(m_device.Get()));
+        eastl::weak_ptr<mgpu_test::TestResourceAllocator> lifetime = allocator;
+        ComPtr<ID3D12Fence> consumer;
+        ASSERT_HRESULT_SUCCEEDED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&consumer)));
+
+        DeviceFullscreenPassDesc desc = makeDesc(16, 16);
+        desc.allocator = allocator;
+        eastl::unique_ptr<DeviceFullscreenPass> pass(new DeviceFullscreenPass());
+        ASSERT_HRESULT_SUCCEEDED(pass->init(desc));
+        ASSERT_HRESULT_SUCCEEDED(pass->waitForExternalWork(consumer.Get(), 1));
+        EXPECT_HRESULT_SUCCEEDED(pass->execute(true));
+        ComPtr<ID3D12Fence> completion = pass->getFence();
+        const UINT64 value = pass->getLastSubmittedValue();
+        // The original allocator owner disappears before the blocked pass is destroyed.
+        desc.allocator.reset();
+        allocator.reset();
+        const ULONGLONG started = GetTickCount64();
+        pass.reset();
+        EXPECT_LT(GetTickCount64() - started, 1000u);
+        EXPECT_FALSE(lifetime.expired());
+        EXPECT_EQ(DeviceFullscreenPass::collectRetiredResources(), 1u);
+        EXPECT_LT(completion->GetCompletedValue(), value);
+        {
+            eastl::shared_ptr<mgpu_test::TestResourceAllocator> retained = lifetime.lock();
+            EXPECT_TRUE(retained);
+            if (retained)
+            {
+                EXPECT_EQ(retained->getAllocationCount(), 3u);
+                EXPECT_EQ(retained->shutdown(), DXGI_ERROR_INVALID_CALL);
+            }
+        }
+
+        // Only the consumer releases the dependency. Retirement must not fake this signal.
+        EXPECT_HRESULT_SUCCEEDED(consumer->Signal(1));
+        const ULONGLONG deadline = GetTickCount64() + 5000;
+        while (DeviceFullscreenPass::collectRetiredResources() != 0 && GetTickCount64() < deadline)
+        {
+            Sleep(1);
+        }
+        EXPECT_EQ(DeviceFullscreenPass::collectRetiredResources(), 0u);
+        EXPECT_GE(completion->GetCompletedValue(), value);
+        EXPECT_TRUE(lifetime.expired());
+        // Fixture diagnostics also reject destroyed-while-in-use objects and resource/heap leaks.
+    }
+
+    TEST_P(DeviceFullscreenPassTest, RetirementCollectsCompletedWorkBehindBlockedEntry)
+    {
+        ComPtr<ID3D12Fence> readyConsumer;
+        ComPtr<ID3D12Fence> blockedConsumer;
+        ASSERT_HRESULT_SUCCEEDED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&readyConsumer)));
+        ASSERT_HRESULT_SUCCEEDED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&blockedConsumer)));
+        eastl::unique_ptr<DeviceFullscreenPass> ready(new DeviceFullscreenPass());
+        eastl::unique_ptr<DeviceFullscreenPass> blocked(new DeviceFullscreenPass());
+        ASSERT_HRESULT_SUCCEEDED(ready->init(makeDesc(16, 16)));
+        ASSERT_HRESULT_SUCCEEDED(blocked->init(makeDesc(16, 16)));
+        ASSERT_HRESULT_SUCCEEDED(ready->waitForExternalWork(readyConsumer.Get(), 1));
+        EXPECT_HRESULT_SUCCEEDED(ready->execute(false));
+        EXPECT_HRESULT_SUCCEEDED(blocked->waitForExternalWork(blockedConsumer.Get(), 1));
+        EXPECT_HRESULT_SUCCEEDED(blocked->execute(false));
+        ComPtr<ID3D12Fence> readyCompletion = ready->getFence();
+        const UINT64 readyValue = ready->getLastSubmittedValue();
+        ready.reset();
+        blocked.reset();  // The blocked entry is at the head of the intrusive retirement list.
+        EXPECT_EQ(DeviceFullscreenPass::collectRetiredResources(), 2u);
+        EXPECT_EQ(m_resourceAllocator->getAllocationCount(), 6u);
+
+        EXPECT_HRESULT_SUCCEEDED(readyConsumer->Signal(1));
+        ULONGLONG deadline = GetTickCount64() + 5000;
+        while (readyCompletion->GetCompletedValue() < readyValue && GetTickCount64() < deadline)
+        {
+            Sleep(1);
+        }
+        EXPECT_GE(readyCompletion->GetCompletedValue(), readyValue);
+        EXPECT_EQ(DeviceFullscreenPass::collectRetiredResources(), 1u);
+        EXPECT_EQ(m_resourceAllocator->getAllocationCount(), 3u);
+        EXPECT_EQ(blockedConsumer->GetCompletedValue(), 0u);
+
+        EXPECT_HRESULT_SUCCEEDED(blockedConsumer->Signal(1));
+        deadline = GetTickCount64() + 5000;
+        while (DeviceFullscreenPass::collectRetiredResources() != 0 && GetTickCount64() < deadline)
+        {
+            Sleep(1);
+        }
+        EXPECT_EQ(DeviceFullscreenPass::collectRetiredResources(), 0u);
+        EXPECT_EQ(m_resourceAllocator->getAllocationCount(), 0u);
+    }
+
     INSTANTIATE_TEST_SUITE_P(NativeDevices, DeviceFullscreenPassTest, ::testing::Values(true, false), [](const ::testing::TestParamInfo<bool>& info)
     {
         return info.param ? "Warp" : "Hardware";
     });
 
 }  // namespace
+
+namespace mgpu_test
+{
+    int runBlockedShutdownChild()
+    {
+        Microsoft::WRL::ComPtr<ID3D12Device> device = createTestDevice(true);
+        if (!device)
+        {
+            return 77;
+        }
+        {
+            eastl::shared_ptr<TestResourceAllocator> allocator = makeTestResourceAllocator();
+            Microsoft::WRL::ComPtr<ID3DBlob> vertex = compileTestShader("vsMain", "vs_5_0");
+            Microsoft::WRL::ComPtr<ID3DBlob> pixel = compileTestShader("psMain", "ps_5_0");
+            if (!vertex || !pixel || FAILED(allocator->init(device.Get())))
+            {
+                return 1;
+            }
+            drv3d_dx12::DeviceFullscreenPassDesc desc;
+            desc.allocator = allocator;
+            desc.width = 16;
+            desc.height = 16;
+            desc.vertexShader = {vertex->GetBufferPointer(), vertex->GetBufferSize()};
+            desc.pixelShader = {pixel->GetBufferPointer(), pixel->GetBufferSize()};
+            Microsoft::WRL::ComPtr<ID3D12Fence> consumer;
+            drv3d_dx12::DeviceFullscreenPass pass;
+            if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&consumer))) ||
+                FAILED(pass.init(desc)) || FAILED(pass.waitForExternalWork(consumer.Get(), 1)) ||
+                FAILED(pass.execute(false)))
+            {
+                return 2;
+            }
+            // Neither this scope nor process shutdown is allowed to wait for consumer->Signal(1).
+        }
+        return drv3d_dx12::DeviceFullscreenPass::collectRetiredResources() == 1 ? 0 : 3;
+    }
+}  // namespace mgpu_test

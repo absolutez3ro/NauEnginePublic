@@ -5,6 +5,9 @@
 // Standalone tests isolate the resource contract; engine builds exercise the real Nau pool.
 #pragma once
 
+#include <EASTL/allocator_malloc.h>
+#include <EASTL/shared_ptr.h>
+
 #if defined(NAU_MGPU_TEST_ENGINE_ALLOCATOR)
     #include "nau_device_resource_allocator.h"
 
@@ -98,3 +101,12 @@ namespace mgpu_test
     };
 }  // namespace mgpu_test
 #endif
+
+namespace mgpu_test
+{
+    /** @brief Shared lifetime for pass retirement; malloc-backed control block also works without NauKernel. */
+    inline eastl::shared_ptr<TestResourceAllocator> makeTestResourceAllocator()
+    {
+        return eastl::allocate_shared<TestResourceAllocator>(eastl::allocator_malloc{});
+    }
+}  // namespace mgpu_test
