@@ -35,6 +35,11 @@ namespace nau::gpu_profiler
 
         // Timestamp ticks per second, 0 if the GPU cannot provide timestamps.
         virtual uint64_t getFrequency() = 0;
+        // False while the GPU has no command stream to write timestamps into; scopes opened then are not measured.
+        virtual bool canIssue()
+        {
+            return true;
+        }
         // Writes a timestamp into the GPU command stream. A null query is created by the source on first use.
         virtual void issue(void*& query) = 0;
         // Returns true and the timestamp once the GPU has written it.

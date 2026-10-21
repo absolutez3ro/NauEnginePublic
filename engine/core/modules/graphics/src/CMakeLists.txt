@@ -55,6 +55,8 @@ target_link_libraries(${TargetName} PRIVATE
     NauKernel
     Animation
     D3DCompiler.lib
+    d3d12.lib
+    dxgi.lib
     imgui
     gainput
     DebugRenderer

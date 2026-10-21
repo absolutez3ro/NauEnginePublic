@@ -333,9 +333,13 @@ namespace nau::gpu_profiler
         GpuState& state = m_gpus[gpu];
         Scope scope;
         scope.name = name ? name : "<unnamed>";
-        scope.begin = acquireQuery(state);
-        scope.end = acquireQuery(state);
-        issueTimestamp(state, scope.begin);
+        // A scope that cannot be measured is still pushed, so that endScope() closes the right one.
+        if (state.source->canIssue())
+        {
+            scope.begin = acquireQuery(state);
+            scope.end = acquireQuery(state);
+            issueTimestamp(state, scope.begin);
+        }
 
         state.current.scopes.push_back(eastl::move(scope));
         state.openScopes.push_back(state.current.scopes.size() - 1);
@@ -351,7 +355,23 @@ namespace nau::gpu_profiler
         GpuState& state = m_gpus[gpu];
         Scope& scope = state.current.scopes[state.openScopes.back()];
         state.openScopes.pop_back();
-        issueTimestamp(state, scope.end);
+        if (scope.begin && state.source->canIssue())
+        {
+            issueTimestamp(state, scope.end);
+        }
+        else
+        {
+            // The end cannot be written (the command stream is gone): the scope is not measured.
+            for (void* q : {scope.begin, scope.end})
+            {
+                if (q)
+                {
+                    state.freeQueries.push_back(q);
+                }
+            }
+            scope.begin = nullptr;
+            scope.end = nullptr;
+        }
     }
 
     void GpuProfiler::collectFinished(GpuIndex gpu)
