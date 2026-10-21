@@ -39,7 +39,8 @@ namespace nau::gpu_profiler
         {
             Microsoft::WRL::ComPtr<ID3D12Device> device;
             Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
-            eastl::array<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>, FramesInFlight> allocators;
+            // A plain array: eastl::array takes element addresses with operator&, which ComPtr overloads to release.
+            Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocators[FramesInFlight];
             eastl::array<uint64_t, FramesInFlight> allocatorFence = {};
             Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
             Microsoft::WRL::ComPtr<ID3D12Fence> fence;
