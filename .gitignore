@@ -56,3 +56,5 @@ logs.*.log
 *.nsbc
 *imgui.ini
 package-lock.json
+# GPU profiler runs (raw CSV)
+results/
