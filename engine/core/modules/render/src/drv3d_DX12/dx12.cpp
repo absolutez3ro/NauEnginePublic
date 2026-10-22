@@ -32,6 +32,7 @@
 
 #include "nau/dataBlock/dag_dataBlock.h"
 #if _TARGET_PC_WIN
+#include <atomic>
 #include "multi_gpu_device.h"
 #include "nau/app/global_properties.h"
 #include "nau/service/service_provider.h"
@@ -423,6 +424,7 @@ struct ApiState
   ComPtr<DXGIFactory> dxgi14;
   SecondaryGpuDevice secondaryDevice;
   bool multiGpuEnabled = false;
+  std::atomic<MultiGpuFallbackReason> multiGpuFallbackReason{MultiGpuFallbackReason::DriverNotInitialized};
 #endif
   Device device;
   HRESULT lastErrorCode;
@@ -503,6 +505,7 @@ struct ApiState
 #if _TARGET_PC_WIN
     secondaryDevice.reset();
     multiGpuEnabled = false;
+    multiGpuFallbackReason = MultiGpuFallbackReason::DriverNotInitialized;
     debugState.teardown();
     dxgi14.Reset();
     d3d12Env.teardown();
@@ -906,6 +909,30 @@ void log_multi_gpu_adapter(d3d::GpuId gpu_id, const DXGI_ADAPTER_DESC1 &info, co
     static_cast<uint32_t>(support.options.CrossNodeSharingTier));
 }
 
+void set_multi_gpu_fallback(MultiGpuFallbackReason reason)
+{
+  auto &state = drv3d_dx12::api_state;
+  if (state.multiGpuFallbackReason.exchange(reason) == reason)
+    return;
+  NAU_LOG_WARNING("DX12: MGPU fallback to GPU 0: {}", multi_gpu_fallback_reason_to_string(reason));
+}
+
+void check_secondary_gpu_health()
+{
+  auto &state = drv3d_dx12::api_state;
+  if (state.multiGpuFallbackReason != MultiGpuFallbackReason::Available)
+    return;
+  auto *device = state.secondaryDevice.getDevice();
+  const HRESULT hr = device ? device->GetDeviceRemovedReason() : DXGI_ERROR_DEVICE_REMOVED;
+  auto expected = MultiGpuFallbackReason::Available;
+  const auto reason = drv3d_dx12::check_secondary_gpu_health(expected, hr);
+  if (reason != expected && state.multiGpuFallbackReason.compare_exchange_strong(expected, reason))
+  {
+    NAU_LOG_WARNING("DX12: Secondary GPU failure: {}", dxgi_error_code_to_string(hr));
+    NAU_LOG_WARNING("DX12: MGPU fallback to GPU 0: {}", multi_gpu_fallback_reason_to_string(reason));
+  }
+}
+
 void init_secondary_gpu(D3D_FEATURE_LEVEL feature_level, const nau::DataBlock *gpu_cfg,
   eastl::vector<Device::AdapterInfo> &candidates)
 {
@@ -915,6 +942,12 @@ void init_secondary_gpu(D3D_FEATURE_LEVEL feature_level, const nau::DataBlock *g
   CrossAdapterSupport primarySupport;
   primarySupport.query(state.device.getDevice());
   log_multi_gpu_adapter(d3d::PRIMARY_GPU, primaryInfo, primarySupport);
+  if (FAILED(primarySupport.queryResult))
+  {
+    set_multi_gpu_fallback(MultiGpuFallbackReason::CapabilityQueryFailed);
+    return;
+  }
+  auto failureReason = MultiGpuFallbackReason::NoSecondaryAdapter;
 
   // Explicit primary selection by LUID, monitor or WARP bypasses the normal candidate list.
   if (candidates.empty())
@@ -929,6 +962,7 @@ void init_secondary_gpu(D3D_FEATURE_LEVEL feature_level, const nau::DataBlock *g
       if (FAILED(hr))
       {
         NAU_LOG_WARNING("DX12: Secondary GPU enumeration failed: {}", dxgi_error_code_to_string(hr));
+        failureReason = MultiGpuFallbackReason::AdapterEnumerationFailed;
         break;
       }
       check_and_add_adapter(state.d3d12Env, feature_level, gpu_cfg, adapter, candidates);
@@ -944,6 +978,7 @@ void init_secondary_gpu(D3D_FEATURE_LEVEL feature_level, const nau::DataBlock *g
       state.d3d12Env.D3D12CreateDevice);
     if (FAILED(hr))
     {
+      failureReason = MultiGpuFallbackReason::DeviceCreationFailed;
       NAU_LOG_WARNING("DX12: Secondary GPU creation failed for LUID {:#010x}:{:#010x}: {}",
         static_cast<uint32_t>(candidate.info.AdapterLuid.HighPart), candidate.info.AdapterLuid.LowPart,
         dxgi_error_code_to_string(hr));
@@ -951,10 +986,24 @@ void init_secondary_gpu(D3D_FEATURE_LEVEL feature_level, const nau::DataBlock *g
     }
     log_multi_gpu_adapter(d3d::SECONDARY_GPU, state.secondaryDevice.getDescription(),
       state.secondaryDevice.getCrossAdapterSupport());
+    if (FAILED(state.secondaryDevice.getCrossAdapterSupport().queryResult))
+    {
+      state.secondaryDevice.reset();
+      failureReason = MultiGpuFallbackReason::CapabilityQueryFailed;
+      continue;
+    }
+    if (FAILED(state.secondaryDevice.getDevice()->GetDeviceRemovedReason()))
+    {
+      state.secondaryDevice.reset();
+      failureReason = MultiGpuFallbackReason::SecondaryDeviceRemoved;
+      continue;
+    }
+    state.multiGpuFallbackReason = MultiGpuFallbackReason::Available;
+    NAU_LOG_INFO("DX12: MGPU secondary device available; transfer channels must validate resource support");
     return;
   }
 
-  NAU_LOG_WARNING("DX12: multiGpu enabled, no suitable secondary GPU available; continuing with GPU 0");
+  set_multi_gpu_fallback(failureReason);
 }
 } // namespace
 
@@ -1060,6 +1109,8 @@ bool d3d::init_video(void *hinst, main_wnd_f *wnd_proc, const char *wcname, int 
     dxCfg->getInt("FeatureLevelMinor", min_minor_feature_level));
 
   drv3d_dx12::api_state.multiGpuEnabled = multi_gpu_enabled(dxCfg);
+  if (!drv3d_dx12::api_state.multiGpuEnabled)
+    set_multi_gpu_fallback(MultiGpuFallbackReason::DisabledByConfig);
   eastl::vector<Device::AdapterInfo> secondaryCandidates;
 
   auto init_device = [&](ComPtr<IDXGIAdapter1> adapter1, ComPtr<IDXGIOutput> output) {
@@ -1379,12 +1430,56 @@ void *d3d::get_device(GpuId gpu_id)
     return get_device();
 #if _TARGET_PC_WIN
   if (gpu_id == SECONDARY_GPU)
-    return drv3d_dx12::api_state.secondaryDevice.getDevice();
+    return is_multi_gpu_available() ? drv3d_dx12::api_state.secondaryDevice.getDevice() : nullptr;
 #endif
   return nullptr;
 }
 
 bool d3d::has_secondary_gpu() { return get_device(SECONDARY_GPU) != nullptr; }
+
+bool d3d::is_multi_gpu_available()
+{
+  if (!is_inited())
+    return false;
+#if _TARGET_PC_WIN
+  check_secondary_gpu_health();
+  return drv3d_dx12::api_state.multiGpuFallbackReason == MultiGpuFallbackReason::Available &&
+    drv3d_dx12::api_state.secondaryDevice.getDevice() != nullptr;
+#else
+  return false;
+#endif
+}
+
+const char *d3d::get_multi_gpu_fallback_reason()
+{
+  if (!is_inited())
+    return "driver not initialized";
+#if _TARGET_PC_WIN
+  check_secondary_gpu_health();
+  return multi_gpu_fallback_reason_to_string(drv3d_dx12::api_state.multiGpuFallbackReason);
+#else
+  return "driver does not support multi-GPU";
+#endif
+}
+
+void d3d::report_secondary_gpu_failure(uint32_t error_code)
+{
+#if _TARGET_PC_WIN
+  if (!is_inited() || SUCCEEDED(static_cast<HRESULT>(error_code)))
+    return;
+  if (!is_multi_gpu_available())
+    return;
+  auto expected = MultiGpuFallbackReason::Available;
+  if (drv3d_dx12::api_state.multiGpuFallbackReason.compare_exchange_strong(expected, MultiGpuFallbackReason::TransferFailed))
+  {
+    NAU_LOG_WARNING("DX12: Secondary transfer failure: {}", dxgi_error_code_to_string(static_cast<HRESULT>(error_code)));
+    NAU_LOG_WARNING("DX12: MGPU fallback to GPU 0: {}",
+      multi_gpu_fallback_reason_to_string(MultiGpuFallbackReason::TransferFailed));
+  }
+#else
+  G_UNUSED(error_code);
+#endif
+}
 
 const Driver3dDesc &d3d::get_driver_desc() { return drv3d_dx12::api_state.driverDesc; }
 
@@ -2047,7 +2142,10 @@ bool d3d::reset_device()
   if (dagor_d3d_force_driver_reset)
   {
     if (drv3d_dx12::api_state.multiGpuEnabled)
+    {
+      drv3d_dx12::api_state.multiGpuFallbackReason = MultiGpuFallbackReason::DriverNotInitialized;
       drv3d_dx12::api_state.secondaryDevice.reset();
+    }
     drv3d_dx12::api_state.state.preRecovery();
 
     // this will tear down stuff as we need it, but keeps things that can be left alone
@@ -2978,6 +3076,9 @@ bool d3d::update_screen(bool app_active)
 {
   STORE_RETURN_ADDRESS();
   CHECK_MAIN_THREAD();
+#if _TARGET_PC_WIN
+  check_secondary_gpu_health();
+#endif
 
   if (!drv3d_dx12::api_state.device.getContext().wasCurrentFramePresentSubmitted())
   {
@@ -4737,4 +4838,3 @@ BaseTexture* d3d::get_back_buffer_rt(SWAPID id)
 
     return res;
 }
-

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include "multi_gpu_status.h"
 #include "nau/directx/d3d12.h"
 #include <dxgi1_4.h>
 #include <wrl/client.h>
