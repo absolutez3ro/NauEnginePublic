@@ -1,3 +1,7 @@
+// gpu_profiler_selftest.h
+//
+// Copyright 2026 N-GINN LLC. All rights reserved.
+//
 // Debug mode of the GPU profiler that checks timestamps of a second GPU without any multi-GPU code of the engine.
 //
 //   NAU_GPU_PROFILER_SELFTEST=1   copy on the second GPU (requires NAU_GPU_PROFILER=1)

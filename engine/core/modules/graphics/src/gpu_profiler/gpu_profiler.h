@@ -1,3 +1,7 @@
+// gpu_profiler.h
+//
+// Copyright 2026 N-GINN LLC. All rights reserved.
+//
 // GPU timestamp profiler: measures GPU time of render passes (framegraph nodes) and of the whole frame.
 // Every GPU is measured separately with its own timestamp source and its own timestamp frequency.
 // Results are written to a CSV file (frame,pass,gpu,ms,mode) and periodically summarized into the log.
@@ -294,6 +298,6 @@ namespace nau::gpu_profiler
 #define NAU_GPU_TIMER_ON(gpu, name) \
     ::nau::gpu_profiler::ScopedGpuTimer NAU_GPU_TIMER_CONCAT(nauGpuTimer_, __LINE__)(name, gpu)
 // Times the source half of a copy from srcGpu to dstGpu; the work must be recorded through srcGpu's timestamp source.
-#define NAU_GPU_TRANSFER_SRC(name, srcGpu, dstGpu)                                             ::nau::gpu_profiler::ScopedGpuTransfer NAU_GPU_TIMER_CONCAT(nauGpuTransfer_, __LINE__)(         name, srcGpu, dstGpu, ::nau::gpu_profiler::TransferHalf::Source)
+#define NAU_GPU_TRANSFER_SRC(name, srcGpu, dstGpu) ::nau::gpu_profiler::ScopedGpuTransfer NAU_GPU_TIMER_CONCAT(nauGpuTransfer_, __LINE__)(name, srcGpu, dstGpu, ::nau::gpu_profiler::TransferHalf::Source)
 // Times the destination half of a copy from srcGpu to dstGpu; the work must be recorded through dstGpu's source.
-#define NAU_GPU_TRANSFER_DST(name, srcGpu, dstGpu)                                             ::nau::gpu_profiler::ScopedGpuTransfer NAU_GPU_TIMER_CONCAT(nauGpuTransfer_, __LINE__)(         name, srcGpu, dstGpu, ::nau::gpu_profiler::TransferHalf::Destination)
+#define NAU_GPU_TRANSFER_DST(name, srcGpu, dstGpu) ::nau::gpu_profiler::ScopedGpuTransfer NAU_GPU_TIMER_CONCAT(nauGpuTransfer_, __LINE__)(name, srcGpu, dstGpu, ::nau::gpu_profiler::TransferHalf::Destination)

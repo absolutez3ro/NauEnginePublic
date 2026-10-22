@@ -1,3 +1,7 @@
+// d3d12_timestamp_source.h
+//
+// Copyright 2026 N-GINN LLC. All rights reserved.
+//
 // Timestamp source for a GPU that is driven by raw D3D12 (not by the engine driver), e.g. a secondary GPU.
 //
 // Timestamps are written with EndQuery into a D3D12_QUERY_HEAP_TYPE_TIMESTAMP heap, resolved with ResolveQueryData into
