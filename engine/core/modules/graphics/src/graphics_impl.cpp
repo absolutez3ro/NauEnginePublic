@@ -336,7 +336,7 @@ namespace nau
         }
 #endif
         d3d::driver_command(DRV3D_COMMAND_ACQUIRE_OWNERSHIP, NULL, NULL, NULL);
-        gpu_profiler::GpuProfiler::instance().init();  
+        gpu_profiler::GpuProfiler::instance().init();
         gpu_profiler::SelfTest::instance().init();
         gpu_profiler::GpuProfiler::instance().beginFrame();
         // Render for all RenderWindows
