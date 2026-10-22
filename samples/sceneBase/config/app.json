@@ -16,9 +16,14 @@
         }
     },
     "dx12": {
-        "multiGpu": false
+        "multiGpu": false,
+        "secondaryWarpForTesting": false
     },
     "sample": {
+        "mgpuDemo": {
+            "enabled": false,
+            "useSecondary": true
+        },
         "assetsToReload": [
             "file:/content/textures/rusted_pbr/rusted_albedo_ao.png"
         ]

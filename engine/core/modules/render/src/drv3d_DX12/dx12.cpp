@@ -898,6 +898,22 @@ bool multi_gpu_enabled(const nau::DataBlock *dx_cfg)
   return dx_cfg->getBool("multiGpu", false);
 }
 
+bool secondaryWarpForTestingEnabled()
+{
+  if (nau::hasServiceProvider())
+  {
+    if (nau::GlobalProperties* properties = nau::getServiceProvider().find<nau::GlobalProperties>())
+    {
+      const eastl::optional<bool> enabled = properties->getValue<bool>("dx12/secondaryWarpForTesting");
+      if (enabled)
+      {
+        return *enabled;
+      }
+    }
+  }
+  return ::dgs_get_settings()->getBlockByNameEx("dx12")->getBool("secondaryWarpForTesting", false);
+}
+
 void log_multi_gpu_adapter(d3d::GpuId gpu_id, const DXGI_ADAPTER_DESC1 &info, const CrossAdapterSupport &support)
 {
   char name[sizeof(info.Description) * 3] = {};
@@ -948,6 +964,29 @@ void init_secondary_gpu(D3D_FEATURE_LEVEL feature_level, const nau::DataBlock *g
     return;
   }
   auto failureReason = MultiGpuFallbackReason::NoSecondaryAdapter;
+
+  // Explicit acceptance-test mode. Normal adapter selection still rejects software devices.
+  if (secondaryWarpForTestingEnabled())
+  {
+    ComPtr<IDXGIAdapter1> warp;
+    HRESULT result = state.dxgi14->EnumWarpAdapter(IID_PPV_ARGS(&warp));
+    if (SUCCEEDED(result))
+    {
+      result = state.secondaryDevice.init(warp.Get(), primaryInfo.AdapterLuid, feature_level,
+        state.d3d12Env.D3D12CreateDevice, true);
+    }
+    if (SUCCEEDED(result) && SUCCEEDED(state.secondaryDevice.getCrossAdapterSupport().queryResult))
+    {
+      log_multi_gpu_adapter(d3d::SECONDARY_GPU, state.secondaryDevice.getDescription(),
+        state.secondaryDevice.getCrossAdapterSupport());
+      state.multiGpuFallbackReason = MultiGpuFallbackReason::Available;
+      NAU_LOG_WARNING("DX12: secondary WARP test device enabled; this is not a second hardware GPU");
+      return;
+    }
+    state.secondaryDevice.reset();
+    set_multi_gpu_fallback(MultiGpuFallbackReason::DeviceCreationFailed);
+    return;
+  }
 
   // Explicit primary selection by LUID, monitor or WARP bypasses the normal candidate list.
   if (candidates.empty())

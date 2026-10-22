@@ -179,6 +179,33 @@ TEST(MultiGpuDevice, CreationFailureLeavesNoDeviceOrAdapterReference)
     adapter->Release();
 }
 
+TEST(MultiGpuDevice, ExplicitWarpTestModeStillRejectsThePrimaryAdapter)
+{
+    SecondaryGpuDevice device;
+    const auto adapter = make_adapter();
+    adapter->info.Flags = DXGI_ADAPTER_FLAG_SOFTWARE;
+    EXPECT_EQ(device.init(adapter.Get(), adapter->info.AdapterLuid, D3D_FEATURE_LEVEL_11_0, fail_create, true), E_INVALIDARG);
+    // A distinct software adapter reaches device creation only through the explicit opt-in.
+    EXPECT_EQ(device.init(adapter.Get(), {}, D3D_FEATURE_LEVEL_11_0, fail_create), E_INVALIDARG);
+    EXPECT_EQ(device.init(adapter.Get(), {}, D3D_FEATURE_LEVEL_11_0, fail_create, true), DXGI_ERROR_UNSUPPORTED);
+}
+
+TEST(MultiGpuDevice, CreatesRealWarpWithExplicitTestOptIn)
+{
+    ComPtr<IDXGIFactory4> factory;
+    ASSERT_HRESULT_SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)));
+    ComPtr<IDXGIAdapter1> warp;
+    ASSERT_HRESULT_SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp)));
+    SecondaryGpuDevice device;
+    EXPECT_EQ(device.init(warp.Get(), {}, D3D_FEATURE_LEVEL_11_0, D3D12CreateDevice), E_INVALIDARG);
+    ASSERT_HRESULT_SUCCEEDED(device.init(warp.Get(), {}, D3D_FEATURE_LEVEL_11_0, D3D12CreateDevice, true));
+    ASSERT_NE(device.getDevice(), nullptr);
+    EXPECT_HRESULT_SUCCEEDED(device.getCrossAdapterSupport().queryResult);
+    EXPECT_TRUE(drv3d_dx12::is_software_device(device.getDescription()));
+    device.reset();
+    EXPECT_EQ(device.getDevice(), nullptr);
+}
+
 TEST(MultiGpuDevice, OwnsDeviceQueriesCapabilitiesAndReleasesOnResetAndFailure)
 {
     ComPtr<IDXGIFactory4> factory;

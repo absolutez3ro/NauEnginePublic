@@ -24,8 +24,8 @@ namespace drv3d_dx12
 
     inline bool is_secondary_gpu_candidate(const DXGI_ADAPTER_DESC1& candidate, LUID primary_luid)
     {
-        const bool sameAdapter = candidate.AdapterLuid.LowPart == primary_luid.LowPart &&
-                                 candidate.AdapterLuid.HighPart == primary_luid.HighPart;
+        const bool sameAdapter =
+            candidate.AdapterLuid.LowPart == primary_luid.LowPart && candidate.AdapterLuid.HighPart == primary_luid.HighPart;
         return !is_software_device(candidate) && !sameAdapter;
     }
 
@@ -57,7 +57,7 @@ namespace drv3d_dx12
         SecondaryGpuDevice(const SecondaryGpuDevice&) = delete;
         SecondaryGpuDevice& operator=(const SecondaryGpuDevice&) = delete;
 
-        HRESULT init(IDXGIAdapter1* candidate, LUID primary_luid, D3D_FEATURE_LEVEL feature_level, PFN_D3D12_CREATE_DEVICE create_device)
+        HRESULT init(IDXGIAdapter1* candidate, LUID primary_luid, D3D_FEATURE_LEVEL feature_level, PFN_D3D12_CREATE_DEVICE create_device, bool allowWarpForTesting = false)
         {
             reset();
             if (!candidate || !create_device)
@@ -70,7 +70,10 @@ namespace drv3d_dx12
             {
                 return hr;
             }
-            if (!is_secondary_gpu_candidate(info, primary_luid))
+            const bool distinctWarpForTesting =
+                allowWarpForTesting && is_software_device(info) &&
+                (info.AdapterLuid.LowPart != primary_luid.LowPart || info.AdapterLuid.HighPart != primary_luid.HighPart);
+            if (!is_secondary_gpu_candidate(info, primary_luid) && !distinctWarpForTesting)
             {
                 return E_INVALIDARG;
             }
