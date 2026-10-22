@@ -8,7 +8,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 if(WIN32)
-    add_executable(test_multi_gpu test_multi_gpu.cpp test_device_resource.cpp test_device_fullscreen_pass.cpp test_main.cpp)
+    add_executable(test_multi_gpu test_multi_gpu.cpp test_multi_gpu_fence.cpp test_multi_gpu_transfer.cpp test_device_resource.cpp test_device_fullscreen_pass.cpp test_main.cpp)
     if(TARGET Render AND NOT BUILD_SHARED_LIBS)
         target_link_libraries(test_multi_gpu PRIVATE Render)
         target_compile_definitions(test_multi_gpu PRIVATE NAU_MGPU_TEST_ENGINE_ALLOCATOR)
