@@ -5,8 +5,10 @@
 #include <iostream>
 #include <vector>
 
+#include "device_resource.h"
 #include "multi_gpu_device.h"
 #include "nau/directx/d3d12sdklayers.h"
+#include "test_fullscreen_pass_utils.h"
 
 using drv3d_dx12::CrossAdapterSupport;
 using drv3d_dx12::is_secondary_gpu_candidate;
@@ -82,6 +84,38 @@ namespace
     {
         return injectedDevice.CopyTo(iid, result);
     }
+
+    /**
+     * @brief Verifies native resource ownership on the selected second physical GPU.
+     */
+    void checkSecondaryResources(ID3D12Device* secondaryDevice, ID3D12Device* primaryDevice)
+    {
+        mgpu_test::TestResourceAllocator allocator;
+        ASSERT_HRESULT_SUCCEEDED(allocator.init(secondaryDevice));
+        drv3d_dx12::DeviceResource target;
+        drv3d_dx12::DeviceResource buffer;
+        ASSERT_HRESULT_SUCCEEDED(target.createRenderTarget(&allocator, 64, 64));
+        ASSERT_HRESULT_SUCCEEDED(buffer.createBuffer(&allocator, 1024, D3D12_HEAP_TYPE_DEFAULT));
+        for (const drv3d_dx12::DeviceResource* resource : {&target, &buffer})
+        {
+            ComPtr<ID3D12Device> owner;
+            ASSERT_HRESULT_SUCCEEDED(resource->getResource()->GetDevice(IID_PPV_ARGS(&owner)));
+            EXPECT_EQ(owner.Get(), secondaryDevice);
+            EXPECT_NE(owner.Get(), primaryDevice);
+        }
+        // No commands were submitted; resources are released before the caller resets the device.
+    }
+
+    /**
+     * @brief MG-10 acceptance on the selected second physical GPU: a fullscreen VS/PS draws into GPU 1's own
+     * texture, the result is read back and checked pixel by pixel, and every object belongs to GPU 1.
+     */
+    void checkSecondaryPass(ID3D12Device* secondaryDevice, ID3D12Device* primaryDevice)
+    {
+        constexpr UINT WIDTH = 1920;
+        constexpr UINT HEIGHT = 1080;
+        mgpu_test::runPassAndVerify(secondaryDevice, primaryDevice, WIDTH, HEIGHT);
+    }
 }  // namespace
 
 TEST(MultiGpuSelection, RequiresDifferentLuidAndHardware)
@@ -145,6 +179,33 @@ TEST(MultiGpuDevice, CreationFailureLeavesNoDeviceOrAdapterReference)
     adapter->Release();
 }
 
+TEST(MultiGpuDevice, ExplicitWarpTestModeStillRejectsThePrimaryAdapter)
+{
+    SecondaryGpuDevice device;
+    const auto adapter = make_adapter();
+    adapter->info.Flags = DXGI_ADAPTER_FLAG_SOFTWARE;
+    EXPECT_EQ(device.init(adapter.Get(), adapter->info.AdapterLuid, D3D_FEATURE_LEVEL_11_0, fail_create, true), E_INVALIDARG);
+    // A distinct software adapter reaches device creation only through the explicit opt-in.
+    EXPECT_EQ(device.init(adapter.Get(), {}, D3D_FEATURE_LEVEL_11_0, fail_create), E_INVALIDARG);
+    EXPECT_EQ(device.init(adapter.Get(), {}, D3D_FEATURE_LEVEL_11_0, fail_create, true), DXGI_ERROR_UNSUPPORTED);
+}
+
+TEST(MultiGpuDevice, CreatesRealWarpWithExplicitTestOptIn)
+{
+    ComPtr<IDXGIFactory4> factory;
+    ASSERT_HRESULT_SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)));
+    ComPtr<IDXGIAdapter1> warp;
+    ASSERT_HRESULT_SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp)));
+    SecondaryGpuDevice device;
+    EXPECT_EQ(device.init(warp.Get(), {}, D3D_FEATURE_LEVEL_11_0, D3D12CreateDevice), E_INVALIDARG);
+    ASSERT_HRESULT_SUCCEEDED(device.init(warp.Get(), {}, D3D_FEATURE_LEVEL_11_0, D3D12CreateDevice, true));
+    ASSERT_NE(device.getDevice(), nullptr);
+    EXPECT_HRESULT_SUCCEEDED(device.getCrossAdapterSupport().queryResult);
+    EXPECT_TRUE(drv3d_dx12::is_software_device(device.getDescription()));
+    device.reset();
+    EXPECT_EQ(device.getDevice(), nullptr);
+}
+
 TEST(MultiGpuDevice, OwnsDeviceQueriesCapabilitiesAndReleasesOnResetAndFailure)
 {
     ComPtr<IDXGIFactory4> factory;
@@ -152,7 +213,9 @@ TEST(MultiGpuDevice, OwnsDeviceQueriesCapabilitiesAndReleasesOnResetAndFailure)
     ComPtr<IDXGIAdapter1> warp;
     ASSERT_HRESULT_SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp)));
     if (FAILED(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&injectedDevice))))
+    {
         GTEST_SKIP() << "D3D12 WARP unavailable";
+    }
 
     auto adapter = make_adapter();
     {
@@ -190,12 +253,16 @@ namespace
             ComPtr<IDXGIAdapter1> adapter;
             const HRESULT hr = factory->EnumAdapters1(index, &adapter);
             if (hr == DXGI_ERROR_NOT_FOUND)
+            {
                 break;
+            }
             ASSERT_HRESULT_SUCCEEDED(hr);
             DXGI_ADAPTER_DESC1 desc = {};
             ASSERT_HRESULT_SUCCEEDED(adapter->GetDesc1(&desc));
             if (!is_secondary_gpu_candidate(desc, primaryLuid))
+            {
                 continue;
+            }
             if (!primary)
             {
                 if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&primary))))
@@ -213,7 +280,9 @@ namespace
             }
             SecondaryGpuDevice secondary;
             if (FAILED(secondary.init(adapter.Get(), primaryLuid, D3D_FEATURE_LEVEL_11_0, D3D12CreateDevice)))
+            {
                 continue;
+            }
             EXPECT_NE(secondary.getDevice(), primary.Get());
             EXPECT_HRESULT_SUCCEEDED(secondary.getCrossAdapterSupport().queryResult);
             const auto& support = secondary.getCrossAdapterSupport();
@@ -221,6 +290,10 @@ namespace
                        << desc.AdapterLuid.LowPart << L", CrossAdapterRowMajorTextureSupported="
                        << support.options.CrossAdapterRowMajorTextureSupported << L", CrossNodeSharingTier="
                        << support.options.CrossNodeSharingTier << std::endl;
+            // Exercise the production resource component on the selected physical GPU 1.
+            // WARP is excluded by the adapter selection above.
+            ASSERT_NO_FATAL_FAILURE(checkSecondaryResources(secondary.getDevice(), primary.Get()));
+            ASSERT_NO_FATAL_FAILURE(checkSecondaryPass(secondary.getDevice(), primary.Get()));
             secondary.reset();
             EXPECT_EQ(secondary.getDevice(), nullptr);
             return;
@@ -238,18 +311,24 @@ TEST(MultiGpuHardware, DebugLayerShutdown)
 {
     ComPtr<ID3D12Debug> debug;
     if (FAILED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+    {
         GTEST_SKIP() << "D3D12 debug layer unavailable";
+    }
     debug->EnableDebugLayer();
 
     ComPtr<IDXGIInfoQueue> queue;
     ComPtr<IDXGIDebug1> dxgiDebug;
     if (FAILED(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&queue))) ||
         FAILED(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&dxgiDebug))))
+    {
         GTEST_SKIP() << "DXGI debug diagnostics unavailable";
+    }
     queue->ClearStoredMessages(DXGI_DEBUG_ALL);
     check_hardware_pair();
     if (::testing::Test::HasFailure() || ::testing::Test::IsSkipped())
+    {
         return;
+    }
     ASSERT_HRESULT_SUCCEEDED(dxgiDebug->ReportLiveObjects(DXGI_DEBUG_ALL,
                                                           static_cast<DXGI_DEBUG_RLO_FLAGS>(DXGI_DEBUG_RLO_DETAIL | DXGI_DEBUG_RLO_IGNORE_INTERNAL)));
     for (UINT64 index = 0; index < queue->GetNumStoredMessages(DXGI_DEBUG_ALL); ++index)
