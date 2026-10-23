@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "ambient_occlusion_profiler.h"
 #include "gpu_profiler/gpu_profiler.h"
 #include "nau/app/global_properties.h"
 #include "nau/assets/asset_manager.h"
@@ -207,6 +208,7 @@ namespace nau::render
             desc.rawBytecodeSize = raw->bytecode.size();
             desc.blurBytecode = blur->bytecode.data();
             desc.blurBytecodeSize = blur->bytecode.size();
+            desc.profiler = createSsaoProfiler();
             m_secondary = d3d::mgpu::createSsaoProducer(desc);
             NAU_LOG_INFO("SSAO: secondary pass ready={}, size={}x{}", m_secondary != nullptr, info.w, info.h);
         }
