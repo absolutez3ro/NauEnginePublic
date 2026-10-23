@@ -28,7 +28,9 @@ namespace nau::PEPEngine::Graphics
         Count
     };
 
-    class GDevice : std::enable_shared_from_this<GDevice>
+    // B: public base, so make_shared sets the weak self-reference used by shared_from_this() (was private in A,
+    // and GDevice.cpp created separate owners with std::shared_ptr<GDevice>(this): double delete at process exit).
+    class GDevice : public std::enable_shared_from_this<GDevice>
     {
         ComPtr<ID3D12Device> device;
         ComPtr<IDXGIAdapter3> adapter;

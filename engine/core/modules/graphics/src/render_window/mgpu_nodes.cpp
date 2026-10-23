@@ -17,7 +17,7 @@ namespace nau::render
     // nau::mgpu::bridge::setEnabled() can still change it at run time afterwards.
     // It only has an effect in a build with NAU_ENABLE_MGPU (preset win_vs2022_x64_mgpu) on a machine with two distinct
     // GPUs; with one GPU the bridge reports that it is unavailable and rendering is unchanged.
-    constexpr bool MGPU_TRANSFER_ENABLED = false;
+    constexpr bool MGPU_TRANSFER_ENABLED = true; // TEST BUILD (local change, not committed): was false
 #endif
 
     void RenderWindowImpl::createMgpuNodes()
@@ -26,9 +26,11 @@ namespace nau::render
         static const bool switchApplied = (nau::mgpu::bridge::setEnabled(MGPU_TRANSFER_ENABLED), true);
         static_cast<void>(switchApplied);
 
-        // Lives in the debug stage, so it is switched together with the other debug nodes (disableRenderStages).
+        // TEST BUILD (local change, not committed): the node was added to m_debugNodes, but the debug stage is disabled
+        // right after the render graph is created (GraphicsImpl::createRenderWindow), so it never ran. It is kept in
+        // its own handle now and is always enabled.
         // The node exists even while the Mgpu path is switched off: it then returns right away (see updateMgpuTransfer).
-        m_debugNodes.addNode(
+        m_mgpuNode = (
             dabfg::register_node(nau::utils::format("{}_{}", "mgpu_transfer", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
             registry.orderMeAfter(nau::utils::format("{}_{}", "post_fx_nodes", m_swapchain).c_str());

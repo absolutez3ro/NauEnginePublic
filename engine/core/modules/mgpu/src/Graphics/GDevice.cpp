@@ -102,7 +102,7 @@ namespace nau::PEPEngine::Graphics
 
     void GDevice::InitialCommandQueue()
     {
-        auto Device = std::shared_ptr<GDevice>(this);
+        auto Device = shared_from_this(); // B: was std::shared_ptr<GDevice>(this), a second owner of *this
         for (UINT i = 0; i != static_cast<UINT>(GQueueType::Count); ++i)
         {
             queues[i] = std::make_shared<GCommandQueue>(Device, GQueueTypeToCommandListType(static_cast<GQueueType>(i)));
@@ -117,7 +117,7 @@ namespace nau::PEPEngine::Graphics
 
         timestampResultBuffer = Lazy<GResource>([resultBufferSize, this]
         {
-            return GResource(std::shared_ptr<GDevice>(this), CD3DX12_RESOURCE_DESC::Buffer(resultBufferSize),
+            return GResource(shared_from_this(), CD3DX12_RESOURCE_DESC::Buffer(resultBufferSize),
                              name + L" TimestampBuffer", nullptr, D3D12_RESOURCE_STATE_COPY_DEST,
                              CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK));
         });
@@ -170,7 +170,7 @@ namespace nau::PEPEngine::Graphics
 
     void GDevice::InitialDescriptorAllocator()
     {
-        auto Device = std::shared_ptr<GDevice>(this);
+        auto Device = shared_from_this(); // B: was std::shared_ptr<GDevice>(this), a second owner of *this
         for (UINT i = 0; i != D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES; ++i)
         {
             graphicAllocators[i] = std::make_shared<GAllocator>(Device,

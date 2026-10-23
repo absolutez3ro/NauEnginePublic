@@ -131,6 +131,10 @@ namespace nau::render
         void releaseMgpuTransfer();
 
         MgpuTransferState m_mgpuTransfer;
+
+        // TEST BUILD (local change, not committed): the "mgpu_transfer" node is kept outside the debug stage, which
+        // GraphicsImpl::createRenderWindow disables. Declared after m_mgpuTransfer, so it is unregistered first.
+        dabfg::NodeHandle m_mgpuNode;
 #endif
 
         eastl::map<NauRenderStage, GraphNodes&> m_graphStages = {
