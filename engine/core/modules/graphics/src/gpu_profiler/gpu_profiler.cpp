@@ -450,6 +450,27 @@ namespace nau::gpu_profiler
         }
     }
 
+    void GpuProfiler::recordTransferHalf(const char* name, GpuIndex srcGpu, GpuIndex dstGpu, TransferHalf half, const TransferTiming& timing)
+    {
+        if (!m_config.enabled || srcGpu >= MaxGpus || dstGpu >= MaxGpus || srcGpu == dstGpu ||
+            timing.frame == 0 || timing.frequency == 0 || timing.end < timing.begin)
+        {
+            return;
+        }
+        const GpuIndex gpu = half == TransferHalf::Source ? srcGpu : dstGpu;
+        Scope scope;
+        scope.transfer = TransferInfo{name ? name : "<unnamed>", srcGpu, dstGpu, half};
+        scope.name = scope.transfer->name + transferSuffix(half);
+        FrameRecord record;
+        record.frame = timing.frame;
+        record.calibration = timing.calibration;
+        record.calibration.valid = record.calibration.valid && record.calibration.cpuFrequency != 0;
+        const double ms = double(timing.end - timing.begin) * 1000.0 / double(timing.frequency);
+        writeRow(timing.frame, scope.name, eastl::to_string(gpu), ms);
+        accumulate(m_gpus[gpu], scope.name, ms);
+        addTransferHalf(timing.frequency, record, scope, timing.begin, timing.end, ms);
+    }
+
     void GpuProfiler::writeFrame(GpuIndex gpu, const FrameRecord& rec)
     {
         GpuState& state = m_gpus[gpu];
@@ -469,7 +490,7 @@ namespace nau::gpu_profiler
 
             if (s.transfer)
             {
-                addTransferHalf(gpu, rec, s, b, e, ms);
+                addTransferHalf(state.frequency, rec, s, b, e, ms);
             }
         }
 
@@ -502,7 +523,7 @@ namespace nau::gpu_profiler
         ++it->second.count;
     }
 
-    void GpuProfiler::addTransferHalf(GpuIndex gpu, const FrameRecord& rec, const Scope& scope, uint64_t begin, uint64_t end, double ms)
+    void GpuProfiler::addTransferHalf(uint64_t frequency, const FrameRecord& rec, const Scope& scope, uint64_t begin, uint64_t end, double ms)
     {
         const TransferInfo& info = *scope.transfer;
         auto it = eastl::find_if(m_transfers.begin(), m_transfers.end(), [&](const TransferRecord& t)
@@ -523,7 +544,7 @@ namespace nau::gpu_profiler
         half.begin = begin;
         half.end = end;
         half.ms = ms;
-        half.frequency = m_gpus[gpu].frequency;
+        half.frequency = frequency;
         half.calibration = rec.calibration;
 
         if (it->halves[0].ready && it->halves[1].ready)

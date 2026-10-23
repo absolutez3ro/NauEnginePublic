@@ -38,6 +38,11 @@ namespace drv3d_dx12
 
     HRESULT DeviceResource::createRenderTarget(IDeviceResourceAllocator* allocator, UINT width, UINT height)
     {
+        return createTexture(allocator, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    }
+
+    HRESULT DeviceResource::createTexture(IDeviceResourceAllocator* allocator, UINT width, UINT height, DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags)
+    {
         if (width == 0 || height == 0 || width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
             height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION)
         {
@@ -50,14 +55,15 @@ namespace drv3d_dx12
         desc.Height = height;
         desc.DepthOrArraySize = 1;
         desc.MipLevels = 1;
-        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.Format = format;
         desc.SampleDesc.Count = 1;
         desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        desc.Flags = flags;
 
         D3D12_CLEAR_VALUE clear = {};
         clear.Format = desc.Format;
-        return create(allocator, {desc, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON, &clear});
+        return create(allocator, {desc, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON,
+                                  (flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0 ? &clear : nullptr});
     }
 
     HRESULT DeviceResource::createBuffer(IDeviceResourceAllocator* allocator, UINT64 size, D3D12_HEAP_TYPE heapType)

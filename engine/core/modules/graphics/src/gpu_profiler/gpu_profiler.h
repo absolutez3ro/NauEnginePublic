@@ -94,6 +94,26 @@ namespace nau::gpu_profiler
 
     const char* toString(GpuMode mode);
 
+    struct TimestampCalibration
+    {
+        bool valid = false;
+        uint64_t gpuTicks = 0;
+        uint64_t cpuTicks = 0;
+        uint64_t cpuFrequency = 0;
+    };
+
+    /**
+     * @brief Resolved timestamps from one queue, read after its fence completes.
+     */
+    struct TransferTiming
+    {
+        uint64_t frame = 0;
+        uint64_t begin = 0;
+        uint64_t end = 0;
+        uint64_t frequency = 0;
+        TimestampCalibration calibration;
+    };
+
     struct Config
     {
         bool enabled = false;
@@ -138,6 +158,16 @@ namespace nau::gpu_profiler
         // endScope() on the same GPU.
         void beginTransfer(const char* name, GpuIndex srcGpu, GpuIndex dstGpu, TransferHalf half);
 
+        uint64_t frameIndex() const
+        {
+            return m_frameIndex;
+        }
+        /**
+         * @brief Records a COPY measurement with its queue's frequency and calibration.
+         * Both halves must carry the sending frame's index. Call on the render thread after resolve completes.
+         */
+        void recordTransferHalf(const char* name, GpuIndex srcGpu, GpuIndex dstGpu, TransferHalf half, const TransferTiming& timing);
+
     private:
         struct TransferInfo
         {
@@ -155,13 +185,7 @@ namespace nau::gpu_profiler
             eastl::optional<TransferInfo> transfer;
         };
 
-        struct Calibration
-        {
-            bool valid = false;
-            uint64_t gpuTicks = 0;
-            uint64_t cpuTicks = 0;
-            uint64_t cpuFrequency = 0;
-        };
+        using Calibration = TimestampCalibration;
 
         struct FrameRecord
         {
@@ -218,7 +242,7 @@ namespace nau::gpu_profiler
         void writeFrame(GpuIndex gpu, const FrameRecord& rec);
         void writeRow(uint64_t frame, const eastl::string& pass, const eastl::string& gpu, double ms);
         void accumulate(GpuState& state, const eastl::string& name, double ms);
-        void addTransferHalf(GpuIndex gpu, const FrameRecord& rec, const Scope& scope, uint64_t begin, uint64_t end, double ms);
+        void addTransferHalf(uint64_t frequency, const FrameRecord& rec, const Scope& scope, uint64_t begin, uint64_t end, double ms);
         void writeTransfer(const TransferRecord& rec);
         void dropStaleTransfers();
         void logSummary(GpuIndex gpu);

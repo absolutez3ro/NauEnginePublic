@@ -3,12 +3,14 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 #pragma once
 
+#include <EASTL/shared_ptr.h>
 #include <wrl/client.h>
 
 #include <cstdint>
 #include <cwchar>
 
 #include "multi_gpu_fence.h"
+#include "nau/3d/multi_gpu_transfer_types.h"
 #include "nau/directx/d3d12.h"
 
 namespace drv3d_dx12
@@ -97,6 +99,7 @@ namespace drv3d_dx12
         uint64_t slotSize = 0;
         uint64_t lastSent = 0;
         uint64_t lastReceived = 0;
+        eastl::shared_ptr<d3d::mgpu::ITransferProfiler> profiler;
 
         static bool sameDevice(ID3D12DeviceChild* child, ID3D12Device* device)
         {
@@ -227,10 +230,18 @@ namespace drv3d_dx12
         {
             if (FAILED(recording.list->Close()))
             {
+                if (profiler)
+                {
+                    profiler->cancel(end == PRODUCER);
+                }
                 return 0;
             }
             ID3D12CommandList* lists[] = {recording.list.Get()};
             sides[end].queue->ExecuteCommandLists(1, lists);
+            if (profiler)
+            {
+                profiler->submitted(end == PRODUCER);
+            }
             const uint64_t value = fence.enqueueSignal(sides[end].queue.Get());
             // A failed signal leaves no value to wait for; keep the allocator out of rotation for good.
             recording.fenceValue = value ? value : UINT64_MAX;
@@ -285,6 +296,25 @@ namespace drv3d_dx12
         ~CrossAdapterChannel()
         {
             reset();
+        }
+
+        /**
+         * @brief Attaches an observer before the first send; retained until reset drains the queues.
+         */
+        void setProfiler(eastl::shared_ptr<d3d::mgpu::ITransferProfiler> observer)
+        {
+            if (!*this || lastSent != 0 || profiler)
+            {
+                return;
+            }
+            profiler = eastl::move(observer);
+            if (profiler)
+            {
+                for (uint32_t end = 0; end < END_COUNT; ++end)
+                {
+                    profiler->attach(end == PRODUCER, sides[end].device.Get(), sides[end].queue.Get());
+                }
+            }
         }
 
         /**
@@ -405,6 +435,11 @@ namespace drv3d_dx12
             {
                 consumed.waitOnCpu(consumed.issuedValue(), INFINITE);
             }
+            if (profiler)
+            {
+                profiler->detach();
+                profiler.reset();
+            }
             for (Side& side : sides)
             {
                 side = {};
@@ -479,12 +514,20 @@ namespace drv3d_dx12
             {
                 return {};
             }
-            recordCopy(list, source, source_offset, layout, sides[PRODUCER].slots[ticket % slotCount].Get(), true);
             if (!enqueueExternalWait(PRODUCER, source_ready) ||
                 (slot.consumedValue != 0 && !consumed.enqueueWait(sides[PRODUCER].queue.Get(), slot.consumedValue)))
             {
                 list->Close();
                 return {};
+            }
+            if (profiler)
+            {
+                profiler->beginCopy(true, list, ticket);
+            }
+            recordCopy(list, source, source_offset, layout, sides[PRODUCER].slots[ticket % slotCount].Get(), true);
+            if (profiler)
+            {
+                profiler->endCopy(true, list);
             }
             const uint64_t value = submit(PRODUCER, *recording, written);
             if (!value)
@@ -530,11 +573,19 @@ namespace drv3d_dx12
             {
                 return {};
             }
-            recordCopy(list, destination, destination_offset, layout, sides[CONSUMER].slots[ticket % slotCount].Get(), false);
             if (!enqueueExternalWait(CONSUMER, destination_free) || !written.enqueueWait(sides[CONSUMER].queue.Get(), slot.writtenValue))
             {
                 list->Close();
                 return {};
+            }
+            if (profiler)
+            {
+                profiler->beginCopy(false, list, ticket);
+            }
+            recordCopy(list, destination, destination_offset, layout, sides[CONSUMER].slots[ticket % slotCount].Get(), false);
+            if (profiler)
+            {
+                profiler->endCopy(false, list);
             }
             const uint64_t value = submit(CONSUMER, *recording, consumed);
             if (!value)

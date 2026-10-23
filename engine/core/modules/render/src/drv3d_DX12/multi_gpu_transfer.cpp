@@ -201,6 +201,7 @@ d3d::mgpu::TransferChannelHandle d3d::mgpu::create_transfer_channel(const Transf
                       static_cast<uint32_t>(hr));
         return nullptr;
     }
+    result->channel.setProfiler(desc.profiler);
     return result.release();
 }
 
@@ -280,12 +281,13 @@ d3d::mgpu::SecondarySend d3d::mgpu::send_from_secondary(TransferChannelHandle ch
     };
 }
 
-d3d::mgpu::SecondarySyncPoint d3d::mgpu::receive_on_secondary(TransferChannelHandle channel, TransferTicket ticket, void* native_destination)
+d3d::mgpu::SecondarySyncPoint d3d::mgpu::receive_on_secondary(TransferChannelHandle channel, TransferTicket ticket, void* native_destination, SecondarySyncPoint destination_free)
 {
     if (!channel || channel->direction != TransferDirection::PrimaryToSecondary)
     {
         return {};
     }
-    const auto ready = channel->channel.receive(ticket, static_cast<ID3D12Resource*>(native_destination), {});
+    const drv3d_dx12::CrossAdapterSyncPoint ready = channel->channel.receive(ticket, static_cast<ID3D12Resource*>(native_destination),
+                                                                             {static_cast<ID3D12Fence*>(destination_free.nativeFence), destination_free.value});
     return {ready.fence, ready.value};
 }
