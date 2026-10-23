@@ -5,6 +5,7 @@
 
 #include <EASTL/unique_ptr.h>
 #include "nau/3d/dag_drv3d.h"
+#include "nau/3d/tql.h"
 //#include "nau/perfMon/dag_graphStat.h"
 //#include <debug/dag_log.h>
 
