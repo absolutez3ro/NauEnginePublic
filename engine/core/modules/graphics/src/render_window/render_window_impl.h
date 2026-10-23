@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "ambient_occlusion.h"
+#include "graphics_assets/texture_asset.h"
 #include "graphics_nodes.h"
 #include "graphics_scene.h"
 #include "multi_gpu_demo.h"
@@ -72,6 +74,7 @@ namespace nau::render
 
     private:
         void createGBufferNodes();
+        void createAmbientOcclusionNodes();
         void createOutlineNodes();
 
         void resizeResolutions();
@@ -121,6 +124,8 @@ namespace nau::render
         eastl::shared_ptr<GraphicsScene> m_graphicsScene = nullptr;
 
         eastl::unique_ptr<render::PostFxRenderer> m_postFXRenderer;
+        eastl::unique_ptr<AmbientOcclusion> m_ambientOcclusion;
+        TextureAssetView::Ptr m_ssaoNeutralTexture;
         eastl::unique_ptr<MultiGpuDemo> m_multiGpuDemo;
         dabfg::NodeHandle m_multiGpuDemoNode;
         eastl::unique_ptr<render::EnvironmentRenderer> m_environmentRenderer;
