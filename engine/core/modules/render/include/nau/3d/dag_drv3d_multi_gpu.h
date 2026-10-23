@@ -162,8 +162,10 @@ namespace d3d::mgpu
      * @param ticket Value returned by send_from_primary().
      * @param native_destination ID3D12Resource * on GPU 1 matching the channel's payload, in D3D12_RESOURCE_STATE_COMMON
      *        and not used by the technique until the returned point is reached.
+     * @param destination_free Last use of the destination on GPU 1. The copy queue waits for it before overwriting;
+     *        this is required when reusing an input texture that a previous render submission may still read.
      * @return Point that the technique's queues on GPU 1 must wait for before reading destination;
      *         {nullptr, 0} on failure.
      */
-    NAU_RENDER_EXPORT SecondarySyncPoint receive_on_secondary(TransferChannelHandle channel, TransferTicket ticket, void* native_destination);
+    NAU_RENDER_EXPORT SecondarySyncPoint receive_on_secondary(TransferChannelHandle channel, TransferTicket ticket, void* native_destination, SecondarySyncPoint destination_free = {});
 }  // namespace d3d::mgpu

@@ -259,13 +259,15 @@ namespace nau::sample
         auto& sceneFactory = getServiceProvider().get<scene::ISceneFactory>();
 
         {  // choose camera control kind: from scene object or standalone detached camera (from cam. manager):
-            constexpr CamControlKind CameraControlKind = CamControlKind::UseCameraManager;
+            const bool ssaoOverview = getServiceProvider().get<GlobalProperties>()
+                                          .getValue<bool>("sample/ssao/enabled").value_or(false);
+            const CamControlKind cameraControlKind = ssaoOverview ? CamControlKind::UseSceneObject : CamControlKind::UseCameraManager;
 
             auto scene_00 = sceneFactory.createEmptyScene();
             scene_00->setName("scene_00");
 
             ObjectWeakRef<SceneObject> cameraObject;
-            if (CameraControlKind == CamControlKind::UseSceneObject)
+            if (cameraControlKind == CamControlKind::UseSceneObject)
             {
                 cameraObject = scene_00->getRoot().attachChild(sceneFactory.createSceneObject<scene::CameraComponent>());
             }
@@ -274,7 +276,11 @@ namespace nau::sample
                 cameraObject = scene_00->getRoot().attachChild(sceneFactory.createSceneObject());
             }
             cameraObject->setName("Camera.Main");
-            cameraObject->addComponent<CameraControl>().setCamControlKind(CameraControlKind);
+            CameraControl& cameraControl = cameraObject->addComponent<CameraControl>();
+            if (!ssaoOverview)
+            {
+                cameraControl.setCamControlKind(cameraControlKind);
+            }
 
             scene_00->getRoot().addComponent<SceneReloader>();
             scene_00->getRoot().addComponent<AssetReloader>();
@@ -291,6 +297,15 @@ namespace nau::sample
             
 
             co_await sceneManager.activateScene(std::move(scene_00));
+            if (ssaoOverview)
+            {
+                // Scene cameras are registered by activation, before becoming the main camera.
+                cameraControl.setCamControlKind(cameraControlKind);
+                // The default camera starts inside the helmet at the origin.
+                // Start the AO comparison above the scene; regular camera controls remain available.
+                cameraObject->setTranslation({0.0f, 5.0f, 10.0f});
+                cameraObject->setRotation(math::quat::rotationX(-0.25f));
+            }
         }
         nau::async::TaskCollection sceneLoaders;
 

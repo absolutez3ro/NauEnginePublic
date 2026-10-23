@@ -4,6 +4,7 @@
 #include "nau/3d/multi_gpu_fullscreen.h"
 
 #include "device_fullscreen_pass.h"
+#include "device_ssao_pass.h"
 #include "nau/3d/dag_drv3d_multi_gpu.h"
 #include "nau_device_resource_allocator.h"
 
@@ -108,5 +109,6 @@ namespace d3d::mgpu
     void collectFullscreenResources()
     {
         drv3d_dx12::DeviceFullscreenPass::collectRetiredResources();
+        drv3d_dx12::DeviceSsaoPass::collectRetiredResources();
     }
 }  // namespace d3d::mgpu

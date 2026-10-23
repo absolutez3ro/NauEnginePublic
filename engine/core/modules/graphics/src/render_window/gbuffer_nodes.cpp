@@ -142,6 +142,12 @@ namespace nau::render
         {
             registry.orderMeAfter(nau::utils::format("{}_{}", "CSM", m_swapchain).c_str());
 
+            auto ambientOcclusion = registry.readTexture(nau::utils::format("ssao_texture_{}", m_swapchain).c_str())
+                                        .optional()
+                                        .atStage(dabfg::Stage::PS_OR_CS)
+                                        .useAs(dabfg::Usage::SHADER_RESOURCE)
+                                        .handle();
+
             auto resolveTarget = registry
                                      .createTexture2d(nau::utils::format("{}_{}", "resolve_texture", m_swapchain).c_str(), dabfg::History::ClearZeroOnFirstFrame,
                                                       dabfg::Texture2dCreateInfo{
@@ -150,7 +156,7 @@ namespace nau::render
                                      .useAs(dabfg::Usage::COLOR_ATTACHMENT)
                                      .handle();
 
-            return [resolveTarget, this]()
+            return [resolveTarget, ambientOcclusion, this]()
             {
                 if (m_graphicsScene->hasCamera())
                 {
@@ -183,6 +189,14 @@ namespace nau::render
                     const auto envIntensityVec = math::Vector4(envIntensity, 0, 0, 0);
                     shader_globals::setVariable("envIntensity", &envIntensityVec);
 
+                    const BaseTexture* ssaoTexture = m_ambientOcclusion ? ambientOcclusion.get() : nullptr;
+                    const math::Vector4 ssaoControl = ssaoTexture
+                                                         ? m_ambientOcclusion->getResolveControl()
+                                                         : math::Vector4(0.0f);
+                    shader_globals::setVariable("ssaoControl", &ssaoControl);
+                    // Keep the shader's SRV valid even when the optional AO pass is absent.
+                    d3d::settex(6, ssaoTexture ? const_cast<BaseTexture*>(ssaoTexture) : m_ssaoNeutralTexture->getTexture());
+
                     m_csm->setCascadesToShader(m_gBuffer->getResolveShading()->getMaterial());
                     m_gBuffer->resolve(resolveTarget.get(),
                                        m_environmentRenderer->getIrradianceMap(),
@@ -199,6 +213,7 @@ namespace nau::render
                     m_graphicsScene->renderLights();
 
                     m_gBuffer->flushResolve();
+                    d3d::settex(6, nullptr);
 
                 }
             };

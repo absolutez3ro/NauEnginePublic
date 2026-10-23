@@ -36,6 +36,12 @@ namespace nau::render
 
         async::TaskCollection loadTasks;
 
+        if (m_swapchain == DEFAULT_SWAPID && AmbientOcclusion::isRequested())
+        {
+            m_ambientOcclusion = eastl::make_unique<AmbientOcclusion>();
+            loadTasks.push(m_ambientOcclusion->loadAssets());
+        }
+
         if (m_swapchain == DEFAULT_SWAPID && MultiGpuDemo::isRequested())
         {
             m_multiGpuDemo = eastl::make_unique<MultiGpuDemo>();
@@ -55,6 +61,8 @@ namespace nau::render
         loadTasks.push(openShaderAsset("file:/res/shaders/cache/shader_cache.nsbc+[cs_gen_reflection_map.cs.csmain]", genReflectionMapComputeShader));
         ReloadableAssetView::Ptr hdrPanorama;
         loadTasks.push(openTextureAsset("file:/res/textures/hdri/default_cubemap_2k.hdr", hdrPanorama));
+        ReloadableAssetView::Ptr ssaoNeutralView;
+        loadTasks.push(openTextureAsset("file:/content/textures/white_8x8.png", ssaoNeutralView));
 
         loadTasks.push(openMaterialAsset({"file:/res/materials/pixel_data_extraction.nmat_json"}, m_pixelDataExtractionMaterial));
 
@@ -68,6 +76,13 @@ namespace nau::render
         loadTasks.push(openMaterialAsset({"file:/res/materials/pp_deferred_resolve.nmat_json"}, matPPResolve));
 
         co_await loadTasks.awaitCompletion();
+        ssaoNeutralView->getTyped<TextureAssetView>(m_ssaoNeutralTexture);
+
+        if (!shader_globals::containsName("ssaoControl"))
+        {
+            const math::Vector4 disabled(0.0f);
+            shader_globals::addVariable("ssaoControl", sizeof(disabled), &disabled);
+        }
 
         matPPResolve->enableAutoSetTextures(false);
         matPPTonemap->enableAutoSetTextures(false);
@@ -112,6 +127,7 @@ namespace nau::render
         m_outlineRenderer = eastl::make_unique<render::PostFxRenderer>(outlineTonemap);
 
         createGBufferNodes();
+        createAmbientOcclusionNodes();
 
         m_environmentNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "render_envi", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
@@ -169,6 +185,11 @@ namespace nau::render
         m_postFxNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "post_fx_nodes", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
+            auto ambientOcclusion = registry.readTexture(nau::utils::format("ssao_texture_{}", m_swapchain).c_str())
+                                        .optional()
+                                        .atStage(dabfg::Stage::PS_OR_CS)
+                                        .useAs(dabfg::Usage::SHADER_RESOURCE)
+                                        .handle();
             auto resolveTexture = registry.readTexture(nau::utils::format("{}_{}", "resolve_texture", m_swapchain).c_str())
                                       .atStage(dabfg::Stage::PS_OR_CS)
                                       .useAs(dabfg::Usage::SHADER_RESOURCE)
@@ -181,6 +202,12 @@ namespace nau::render
             {
                 setRenderTarget();
                 d3d::clearview(CLEAR_TARGET | CLEAR_ZBUFFER | CLEAR_STENCIL, nau::math::E3DCOLOR(0, 0, 0), 0, 0);
+                if (m_ambientOcclusion && m_ambientOcclusion->isDebugView() && ambientOcclusion.get())
+                {
+                    m_ambientOcclusion->drawDebug(d3d::get_back_buffer_rt(m_swapchain), const_cast<BaseTexture*>(ambientOcclusion.get()));
+                    m_ambientOcclusion->capturePresentation(d3d::get_back_buffer_rt(m_swapchain));
+                    return;
+                }
                 d3d::set_srgb_backbuffer_write(true);
 
                 d3d::settex(0, const_cast<BaseTexture*>(resolveTexture.get()));
@@ -191,6 +218,10 @@ namespace nau::render
                 // m_postFXRenderer->render("Reinhard");
 
                 d3d::set_srgb_backbuffer_write(false);
+                if (m_ambientOcclusion)
+                {
+                    m_ambientOcclusion->capturePresentation(d3d::get_back_buffer_rt(m_swapchain));
+                }
             };
         }));
 

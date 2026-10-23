@@ -19,6 +19,7 @@ namespace nau
             NAU_MODULE_EXPORT_CLASS(GraphicsImpl);
             NAU_MODULE_EXPORT_CLASS(nau::render::RenderWindowImpl);
             NAU_MODULE_EXPORT_SERVICE(nau::render::MultiGpuDemoInput);
+            NAU_MODULE_EXPORT_SERVICE(nau::render::AmbientOcclusionInput);
         }
         void deinitialize() override
         {

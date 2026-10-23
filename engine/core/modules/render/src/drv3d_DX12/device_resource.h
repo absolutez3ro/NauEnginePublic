@@ -44,6 +44,9 @@ namespace drv3d_dx12
          */
         HRESULT createRenderTarget(IDeviceResourceAllocator* allocator, UINT width, UINT height);
 
+        /** @brief Creates a single-mip texture through the device-local allocator, initially in COMMON. */
+        HRESULT createTexture(IDeviceResourceAllocator* allocator, UINT width, UINT height, DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE);
+
         /**
          * @brief Creates a buffer with the initial state required by its heap type.
          * @param allocator Owning allocator; must outlive this resource. nullptr never falls back to GPU 0.
