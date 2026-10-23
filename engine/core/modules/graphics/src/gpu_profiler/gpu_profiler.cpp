@@ -344,9 +344,9 @@ namespace nau::gpu_profiler
         }
 
         GpuState& state = m_gpus[gpu];
-        Scope scope;
+        // A scope that cannot be measured is still added, so that endScope() closes the right one.
+        Scope& scope = state.current.scopes.emplace_back();
         scope.name = name ? name : "<unnamed>";
-        // A scope that cannot be measured is still pushed, so that endScope() closes the right one.
         if (state.source->canIssue())
         {
             scope.begin = acquireQuery(state);
@@ -354,8 +354,7 @@ namespace nau::gpu_profiler
             issueTimestamp(state, scope.begin);
         }
 
-        state.current.scopes.push_back(eastl::move(scope));
-        state.openScopes.push_back(state.current.scopes.size() - 1);
+        state.openScopes.emplace_back(state.current.scopes.size() - 1);
     }
 
     void GpuProfiler::endScope(GpuIndex gpu)
