@@ -10,9 +10,22 @@
 
 namespace nau::render
 {
+#if defined(NAU_ENABLE_MGPU)
+    // MANUAL SWITCH of the Mgpu path of the render pipeline: a second GPU produces an image, it travels through a
+    // shared heap to the Mgpu device on Nau's adapter and is written into a Nau texture (logged every
+    // MGPU_TRANSFER_PERIOD_FRAMES frames). The value is applied once, when the first render graph is created;
+    // nau::mgpu::bridge::setEnabled() can still change it at run time afterwards.
+    // It only has an effect in a build with NAU_ENABLE_MGPU (preset win_vs2022_x64_mgpu) on a machine with two distinct
+    // GPUs; with one GPU the bridge reports that it is unavailable and rendering is unchanged.
+    constexpr bool MGPU_TRANSFER_ENABLED = false;
+#endif
+
     void RenderWindowImpl::createMgpuNodes()
     {
 #if defined(NAU_ENABLE_MGPU)
+        static const bool switchApplied = (nau::mgpu::bridge::setEnabled(MGPU_TRANSFER_ENABLED), true);
+        static_cast<void>(switchApplied);
+
         // Lives in the debug stage, so it is switched together with the other debug nodes (disableRenderStages).
         // The node exists even while the Mgpu path is switched off: it then returns right away (see updateMgpuTransfer).
         m_debugNodes.addNode(

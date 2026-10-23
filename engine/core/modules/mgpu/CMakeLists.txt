@@ -21,8 +21,6 @@ nau_add_module(${TargetName}
 )
 
 # Third-party dependencies of the MGPU infrastructure (A: packages.config)
-find_package(assimp CONFIG REQUIRED)
-find_package(directxmesh CONFIG REQUIRED)
 find_package(directxtex CONFIG REQUIRED)
 find_package(directxtk12 CONFIG REQUIRED)
 
@@ -52,14 +50,9 @@ set_target_properties(WinPixEventRuntime PROPERTIES
 )
 
 target_link_libraries(${TargetName} PUBLIC
-  assimp::assimp
-  Microsoft::DirectXMesh
   Microsoft::DirectXTex
   Microsoft::DirectXTK12
   WinPixEventRuntime
-  CoreInput
-  CoreScene
-  imgui
   d3d12
   dxgi
   d3dcompiler
@@ -70,34 +63,20 @@ target_link_libraries(${TargetName} PUBLIC
 # e.g. &CD3DX12_HEAP_PROPERTIES(...)); B defaults to /permissive-.
 target_compile_options(${TargetName} PRIVATE /permissive)
 
-# Camera.cpp is the only Mgpu file that includes Nau math headers; they need the default conformance mode
-# (Vectormath::Comparators operators are not found with /permissive).
-set_source_files_properties(src/Common/Camera.cpp PROPERTIES COMPILE_OPTIONS /permissive- SKIP_PRECOMPILE_HEADERS ON)
-
-# A's Window.cpp calls assert(hWnd, "message") with two arguments (C4002); B builds with warnings as errors.
-target_compile_options(${TargetName} PRIVATE /wd4002)
-
 # A builds all projects with CharacterSet=Unicode.
 target_compile_definitions(${TargetName} PUBLIC NOMINMAX UNICODE _UNICODE)
 
 # Tells nau/mgpu/bridge/mgpu_bridge.h to declare the real bridge instead of the inline stubs.
 target_compile_definitions(${TargetName} PUBLIC NAU_ENABLE_MGPU=1)
 
-# Replacement for Build/SampleResources.targets in A: shared shaders and data are copied
-# next to the executable after build. Project-specific files copied later override common ones.
+# Replacement for Build/SampleResources.targets in A: the shaders of the Mgpu core (MipMapCS.hlsl for
+# GTexture::GenerateMipMaps, Quad.hlsl) and the PIX runtime are copied next to the executable after build.
 set(MGPU_SHARED_SHADERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders/Common CACHE PATH "MGPU shared shaders")
-set(MGPU_SHARED_DATA_DIR "D:/MGPU/Multi-GPU-Render-DX12/Data/Common" CACHE PATH "MGPU shared runtime data (not stored in the repository)")
 
 function(mgpu_copy_runtime_resources Target)
   if(EXISTS ${MGPU_SHARED_SHADERS_DIR})
     add_custom_command(TARGET ${Target} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_directory ${MGPU_SHARED_SHADERS_DIR} $<TARGET_FILE_DIR:${Target}>/Shaders)
-  endif()
-  if(EXISTS ${MGPU_SHARED_DATA_DIR})
-    add_custom_command(TARGET ${Target} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_directory ${MGPU_SHARED_DATA_DIR} $<TARGET_FILE_DIR:${Target}>/Data)
-  else()
-    message(WARNING "MGPU_SHARED_DATA_DIR does not exist: ${MGPU_SHARED_DATA_DIR}")
   endif()
   add_custom_command(TARGET ${Target} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:WinPixEventRuntime> $<TARGET_FILE_DIR:${Target}>)
@@ -121,8 +100,7 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include
 
 nau_install(${TargetName} core)
 
-# Section 15: A/MGPU-ShadowMap as an executable (and the bridge transfer check without Nau). Only for the static runtime: Mgpu has no DLL exports.
+# Bridge transfer check without Nau (needs two GPUs). Only for the static runtime: Mgpu has no DLL exports.
 if(NOT BUILD_SHARED_LIBS)
-  add_subdirectory(samples/ShadowMap)
   add_subdirectory(samples/BridgeTransferTest)
 endif()

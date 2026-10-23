@@ -8,8 +8,6 @@
       "name": "directx-dxc",
       "version>=": "2024-03-07"
     },
-    "assimp",
-    "directxmesh",
     {
       "name": "directxtex",
       "features": [

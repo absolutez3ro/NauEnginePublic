@@ -50,7 +50,7 @@ else()
 endif()
 
 # Mgpu transfer bridge (engine/core/modules/mgpu): links the Mgpu module into Graphics so a second GPU can feed the
-# render pipeline. The runtime on/off switch is nau::mgpu::bridge::setEnabled(); this option only decides whether the
+# render pipeline. The manual on/off switch is MGPU_TRANSFER_ENABLED in graphics/src/render_window/mgpu_nodes.cpp; this option only decides whether the
 # code is built in. Preset: win_vs2022_x64_mgpu.
 option(NAU_ENABLE_MGPU "Link the Mgpu transfer bridge into Graphics" OFF)
 if (NAU_ENABLE_MGPU)

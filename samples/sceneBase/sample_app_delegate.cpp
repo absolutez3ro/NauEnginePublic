@@ -16,17 +16,8 @@
 #include "nau/scene/internal/scene_listener.h"
 #include "nau/scene/internal/scene_manager_internal.h"
 
-#if defined(NAU_ENABLE_MGPU)
-#include "nau/mgpu/bridge/mgpu_bridge.h"
-#endif
-
 namespace nau::sample
 {
-    // Manual switch of the Mgpu transfer path (second GPU -> shared heap -> Nau texture, logged every 60 frames).
-    // Only has an effect in a build with NAU_ENABLE_MGPU (preset win_vs2022_x64_mgpu) on a machine with two
-    // distinct GPUs; on a single GPU the bridge reports that it is unavailable and rendering is unchanged.
-    constexpr bool kEnableMgpuTransfer = false;
-
     class DemoSceneListener final : public scene::ISceneListener
     {
     public:
@@ -74,10 +65,6 @@ namespace nau::sample
     private:
         Result<> initializeServices() override
         {
-#if defined(NAU_ENABLE_MGPU)
-            nau::mgpu::bridge::setEnabled(kEnableMgpuTransfer);
-#endif
-
             getServiceProvider().addService<TextureImportSettingsProvider>();
             getServiceProvider().addClass<nau::sample::CameraControl>();
             getServiceProvider().addClass<nau::sample::MyRotator>();

@@ -114,7 +114,7 @@ namespace nau::render
 
 #if defined(NAU_ENABLE_MGPU)
         // Mgpu transfer path: a second GPU produces a test image, it travels through a shared heap to the Mgpu
-        // device on Nau's adapter and is written into a Nau texture. Switch: nau::mgpu::bridge::setEnabled().
+        // device on Nau's adapter and is written into a Nau texture. Switch: MGPU_TRANSFER_ENABLED in mgpu_nodes.cpp.
         struct MgpuTransferState
         {
             // The bridge is tried once per enable: a failed initialization is not retried every frame.
