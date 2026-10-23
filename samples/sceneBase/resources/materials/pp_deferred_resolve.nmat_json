@@ -9,6 +9,7 @@
         "depth_gbuf": "file:/content/textures/white_8x8.png",
         "irradianceMap": "file:/content/textures/white_8x8.png",
         "reflectionMap": "file:/content/textures/white_8x8.png",
+        "ssaoMap": "file:/content/textures/white_8x8.png",
       },
       "shaders": [
         "file:/res/shaders/cache/shader_cache.nsbc+[deferred_resolve.vs.vsmain]",

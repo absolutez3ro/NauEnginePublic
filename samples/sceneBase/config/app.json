@@ -20,6 +20,13 @@
         "secondaryWarpForTesting": false
     },
     "sample": {
+        "ssao": {
+            "enabled": false,
+            "mode": 1,
+            "radius": 0.5,
+            "blur": true,
+            "useSecondary": true
+        },
         "mgpuDemo": {
             "enabled": false,
             "useSecondary": true

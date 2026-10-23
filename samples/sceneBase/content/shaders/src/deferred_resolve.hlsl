@@ -11,6 +11,7 @@
 
 TextureCube irradianceMap: register(t4);
 TextureCube reflectionMap: register(t5);
+Texture2D<float> ssaoMap : register(t6);
 
 GLOBAL_CBUFFER(SceneBuffer) : register(b0)
 {
@@ -19,6 +20,7 @@ GLOBAL_CBUFFER(SceneBuffer) : register(b0)
     float4 lightDirection;
     float4 lightColorIntensity;
     float4 envIntensity;
+    float4 ssaoControl; // Apply SSAO, show AO only, reserved.
 };
 
 VsOutputResolve VSMain(uint id : SV_VertexID)
@@ -39,6 +41,11 @@ half3 getSkyReflection(float linearRoughness, float3 roughReflection, float NoV)
 
 float4 PSMain(VsOutputResolve input) : SV_Target
 {
+    float screenAo = 1.0;
+    if (ssaoControl.x > 0.0)
+    {
+        screenAo = ssaoMap.Load(int3(int2(input.position.xy), 0));
+    }
     const float rawDepth = depth_gbuf.SampleLevel(default_sampler, input.texCoord, 0).x;
     if(rawDepth == 0)
     {
@@ -77,13 +84,13 @@ float4 PSMain(VsOutputResolve input) : SV_Target
 	const float3 kS = F_SchlickRoughness(F0, NoV, gbuffer.linearRoughness);
     const float3 kD = lerp(float3(1.0, 1.0, 1.0) - kS, float3(0.0, 0.0, 0.0), gbuffer.metallness);
 
-	half3 envAmbientDiffuseLighting = half3(kD * irradiance) * gbuffer.diffuseColor * gbuffer.ao;
+	half3 envAmbientDiffuseLighting = half3(kD * irradiance) * gbuffer.diffuseColor * gbuffer.ao * screenAo;
 
 	const float3 reflectionVec = 2 * NdotV * gbuffer.normal - view;
 	float3 roughR = getRoughReflectionVec(reflectionVec, gbuffer.normal, ggx_alpha);
 
     half3 enviBRDF = EnvBRDFApprox(specularColor, gbuffer.roughness, NoV);
-	half3 envAmbientReflection = getSkyReflection(gbuffer.linearRoughness, roughR, NoV) * enviBRDF * gbuffer.ao;
+	half3 envAmbientReflection = getSkyReflection(gbuffer.linearRoughness, roughR, NoV) * enviBRDF * gbuffer.ao * screenAo;
 
 	half3 result = standardBRDF( NoV, NoL, gbuffer.diffuseColor, ggx_alpha, gbuffer.linearRoughness, specularColor, gbuffer.extracted_albedo_ao, lightDir, view, gbuffer.normal) * shadowTerm * lightColor
 		+ envAmbientDiffuseLighting + envAmbientReflection + gbuffer.emissionColor;
