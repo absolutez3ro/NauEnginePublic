@@ -1,0 +1,17 @@
+{
+    "name": "mgpu_demo",
+    "pipelines": {
+        "default": {
+            "properties": {
+                "g_passConstants": [0, 960, 540, 0]
+            },
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[mgpu_demo.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[mgpu_demo.ps.psmain]"
+            ],
+            "cullMode": "None",
+            "depthMode": "Disabled",
+            "blendMode": "Opaque"
+        }
+    }
+}
