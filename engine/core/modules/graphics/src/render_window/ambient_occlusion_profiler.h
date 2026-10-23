@@ -10,4 +10,5 @@
 namespace nau::render
 {
     eastl::shared_ptr<d3d::mgpu::ISsaoProfiler> createSsaoProfiler();
-}
+    eastl::shared_ptr<d3d::mgpu::ITransferProfiler> createSsaoTransferProfiler(const char* name, bool fromPrimary);
+}  // namespace nau::render

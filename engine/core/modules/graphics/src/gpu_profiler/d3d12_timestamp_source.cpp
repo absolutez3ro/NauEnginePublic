@@ -21,10 +21,19 @@ namespace nau::gpu_profiler
         }
 
         const D3D12_COMMAND_LIST_TYPE type = queue->GetDesc().Type;
-        if (type != D3D12_COMMAND_LIST_TYPE_DIRECT && type != D3D12_COMMAND_LIST_TYPE_COMPUTE)
+        const bool copy = type == D3D12_COMMAND_LIST_TYPE_COPY;
+        if (type != D3D12_COMMAND_LIST_TYPE_DIRECT && type != D3D12_COMMAND_LIST_TYPE_COMPUTE && !copy)
         {
-            NAU_LOG_WARNING("GPU profiler: D3D12 timestamps are supported on direct and compute queues only");
             return false;
+        }
+        if (copy)
+        {
+            D3D12_FEATURE_DATA_D3D12_OPTIONS3 options = {};
+            if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options, sizeof(options))) ||
+                !options.CopyQueueTimestampQueriesSupported)
+            {
+                return false;
+            }
         }
 
         uint64_t frequency = 0;
@@ -35,7 +44,7 @@ namespace nau::gpu_profiler
         }
 
         D3D12_QUERY_HEAP_DESC heapDesc = {};
-        heapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+        heapDesc.Type = copy ? D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP : D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
         heapDesc.Count = capacity;
         Microsoft::WRL::ComPtr<ID3D12QueryHeap> heap;
         if (FAILED(device->CreateQueryHeap(&heapDesc, IID_PPV_ARGS(&heap))))

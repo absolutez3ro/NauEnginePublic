@@ -3,6 +3,10 @@
 // Copyright 2026 N-GINN LLC. All rights reserved.
 #pragma once
 
+#include <EASTL/shared_ptr.h>
+
+#include "nau/3d/multi_gpu_transfer_types.h"
+
 namespace d3d::mgpu
 {
     /** @brief Optional render-thread observer. Retained with pending native work, including after retirement. */
@@ -22,6 +26,10 @@ namespace d3d::mgpu
         virtual void resolve(void* list) = 0;
         virtual void submitted() = 0;
         virtual void detach() = 0;
+        virtual eastl::shared_ptr<ITransferProfiler> createTransferProfiler(const char* name, bool fromPrimary)
+        {
+            return {};
+        }
     };
 
     /** @brief Column-major matrices and parameters matching ssao_common.hlsli exactly. */

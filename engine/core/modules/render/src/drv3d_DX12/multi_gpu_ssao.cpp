@@ -61,13 +61,16 @@ namespace d3d::mgpu
             channel.direction = TransferDirection::PrimaryToSecondary;
             channel.format = TEXFMT_G16R16F;
             channel.name = "SSAO normals GPU 0 -> GPU 1";
+            channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_normals", true) : nullptr;
             producer->normals = create_transfer_channel(channel);
             channel.format = TEXFMT_DEPTH32;
             channel.name = "SSAO depth GPU 0 -> GPU 1";
+            channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_depth", true) : nullptr;
             producer->depth = create_transfer_channel(channel);
             channel.direction = TransferDirection::SecondaryToPrimary;
             channel.format = TEXFMT_R8;
             channel.name = "SSAO result GPU 1 -> GPU 0";
+            channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_result", false) : nullptr;
             producer->output = create_transfer_channel(channel);
             result = producer->normals && producer->depth && producer->output ? S_OK : E_FAIL;
         }

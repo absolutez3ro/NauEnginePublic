@@ -702,6 +702,83 @@ TEST(MultiGpuTransferPair, WaitsForTheTechniqueBeforeTouchingItsResources)
     EXPECT_EQ(countMismatches(download(gpus[0], destination.Get()), makePattern(4096, 50)), 0u);
 }
 
+TEST(MultiGpuTransferPair, ProfilerLivesUntilBothCopyQueuesDrain)
+{
+    class Observer final : public d3d::mgpu::ITransferProfiler
+    {
+    public:
+        ComPtr<ID3D12CommandQueue> queues[2];
+        ComPtr<ID3D12Fence> fences[2];
+        uint64_t submittedCount[2] = {};
+        TestVector<uint64_t> tickets[2];
+        bool detached = false;
+
+        void attach(bool source, void* device, void* queue) override
+        {
+            const uint32_t side = source ? 0 : 1;
+            queues[side] = static_cast<ID3D12CommandQueue*>(queue);
+            EXPECT_EQ(queues[side]->GetDesc().Type, D3D12_COMMAND_LIST_TYPE_COPY);
+            ASSERT_HRESULT_SUCCEEDED(static_cast<ID3D12Device*>(device)->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fences[side])));
+        }
+        void beginCopy(bool source, void* list, uint64_t ticket) override
+        {
+            EXPECT_EQ(static_cast<ID3D12GraphicsCommandList*>(list)->GetType(), D3D12_COMMAND_LIST_TYPE_COPY);
+            tickets[source ? 0 : 1].push_back(ticket);
+        }
+        void endCopy(bool, void*) override
+        {
+        }
+        void submitted(bool source) override
+        {
+            const uint32_t side = source ? 0 : 1;
+            ASSERT_HRESULT_SUCCEEDED(queues[side]->Signal(fences[side].Get(), ++submittedCount[side]));
+        }
+        void cancel(bool) override
+        {
+            ADD_FAILURE() << "Valid copies must not be canceled";
+        }
+        void detach() override
+        {
+            for (uint32_t side = 0; side < 2; ++side)
+            {
+                EXPECT_GE(fences[side]->GetCompletedValue(), submittedCount[side]);
+            }
+            detached = true;
+        }
+    };
+    TestGpu gpus[2];
+    if (!makeTwoDevices(gpus))
+    {
+        GTEST_SKIP() << "A hardware pair or hardware + WARP is required";
+    }
+    CrossAdapterChannel channel;
+    const D3D12_RESOURCE_DESC desc = bufferDesc(4096);
+    ASSERT_HRESULT_SUCCEEDED(channel.init(gpus[0].device.Get(), gpus[1].device.Get(), gpus[0].device.Get(), desc, 2, L"profiled"));
+    auto observer = eastl::allocate_shared<Observer>(eastl::allocator_malloc{});
+    eastl::weak_ptr<Observer> lifetime = observer;
+    channel.setProfiler(observer);
+    auto source = createResource(gpus[0], desc);
+    auto destination = createResource(gpus[1], desc);
+    for (uint64_t frame = 1; frame <= 3; ++frame)
+    {
+        const auto pattern = makePattern(4096, static_cast<uint32_t>(frame));
+        upload(gpus[0], source.Get(), pattern);
+        const auto sent = channel.send(source.Get(), {});
+        ASSERT_EQ(sent.ticket, frame);
+        const auto received = channel.receive(sent.ticket, destination.Get(), {});
+        ASSERT_TRUE(waitFence(received.fence, received.value, 10000));
+        EXPECT_EQ(countMismatches(download(gpus[1], destination.Get()), pattern), 0u);
+    }
+    EXPECT_EQ(observer->tickets[0], observer->tickets[1]);
+    EXPECT_EQ(observer->submittedCount[0], 3u);
+    EXPECT_EQ(observer->submittedCount[1], 3u);
+    EXPECT_FALSE(observer->detached);
+    observer.reset();
+    EXPECT_FALSE(lifetime.expired());
+    channel.reset();
+    EXPECT_TRUE(lifetime.expired());
+}
+
 TEST(MultiGpuTransferPair, DebugLayerReportsNothingAndNothingLeaks)
 {
     ComPtr<ID3D12Debug> debug;

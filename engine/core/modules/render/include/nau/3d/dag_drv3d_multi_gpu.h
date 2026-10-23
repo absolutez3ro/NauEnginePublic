@@ -4,9 +4,12 @@
 // Moving data between two GPUs (multi-GPU contract). Declarations only: the DX12 implementation follows separately.
 #pragma once
 
+#include <EASTL/shared_ptr.h>
+
 #include <cstdint>
 
 #include "nau/3d/dag_drv3d.h"  // d3d::GpuId, d3d::has_secondary_gpu(), NAU_RENDER_EXPORT (MG-06)
+#include "nau/3d/multi_gpu_transfer_types.h"
 
 class BaseTexture;
 class Sbuffer;
@@ -50,8 +53,9 @@ namespace d3d::mgpu
         uint32_t format = 0;    ///< TEXFMT_* value shared by both endpoints.
         uint32_t byteSize = 0;  ///< Buffer payload only.
         TransferDirection direction = TransferDirection::SecondaryToPrimary;
-        uint32_t slotCount = 2;      ///< Shared copies in flight; at least 2, so the producer can write frame N+1 while frame N is read.
-        const char* name = nullptr;  ///< Debug name of the shared resources.
+        uint32_t slotCount = 2;                         ///< Shared copies in flight; at least 2, so the producer can write frame N+1 while frame N is read.
+        const char* name = nullptr;                     ///< Debug name of the shared resources.
+        eastl::shared_ptr<ITransferProfiler> profiler;  ///< Optional observer, retained until the queues drain.
     };
 
     struct TransferChannel;

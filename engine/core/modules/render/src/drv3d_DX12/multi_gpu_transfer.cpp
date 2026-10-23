@@ -201,6 +201,7 @@ d3d::mgpu::TransferChannelHandle d3d::mgpu::create_transfer_channel(const Transf
                       static_cast<uint32_t>(hr));
         return nullptr;
     }
+    result->channel.setProfiler(desc.profiler);
     return result.release();
 }
 

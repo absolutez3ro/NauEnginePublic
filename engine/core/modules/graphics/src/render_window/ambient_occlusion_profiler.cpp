@@ -75,6 +75,11 @@ namespace nau::render
                 }
             }
 
+            eastl::shared_ptr<d3d::mgpu::ITransferProfiler> createTransferProfiler(const char* name, bool fromPrimary) override
+            {
+                return createSsaoTransferProfiler(name, fromPrimary);
+            }
+
         private:
             gpu_profiler::D3D12TimestampSource m_source;
             bool m_registered = false;

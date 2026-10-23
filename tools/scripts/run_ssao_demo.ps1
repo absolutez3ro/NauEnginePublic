@@ -118,6 +118,17 @@ try {
                 foreach ($pass in @('ssao_raw', 'ssao_blur_h', 'ssao_blur_v')) {
                     if (!($timings | Where-Object { $_.gpu -eq '1' -and $_.pass -eq $pass -and [double]$_.ms -gt 0 })) { throw "No GPU 1 timing for $pass" }
                 }
+                foreach ($transfer in @('ssao_normals', 'ssao_depth', 'ssao_result')) {
+                    $bothSupported = $true
+                    foreach ($half in @('src', 'dst')) {
+                        if ($log.Contains("transfer '$transfer' $half copy timestamps unavailable")) {
+                            $bothSupported = $false
+                            continue
+                        }
+                        if (!($timings | Where-Object { $_.pass -eq "$transfer/$half" -and [double]$_.ms -ge 0 })) { throw "No COPY timing for $transfer/$half" }
+                    }
+                    if ($bothSupported -and !($timings | Where-Object { $_.pass -eq "$transfer/sum" })) { throw "No paired COPY timing for $transfer" }
+                }
             }
         }
     }

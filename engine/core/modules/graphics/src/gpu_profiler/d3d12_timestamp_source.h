@@ -6,7 +6,7 @@
 //
 // Timestamps are written with EndQuery into a D3D12_QUERY_HEAP_TYPE_TIMESTAMP heap, resolved with ResolveQueryData into
 // a readback buffer and become readable once a fence signaled after the command list has been passed by the queue.
-// All timestamps are taken on one queue (direct or compute); the frequency is GetTimestampFrequency of that queue.
+// All timestamps are taken on one queue; the frequency is GetTimestampFrequency of that queue.
 //
 // ITimestampSource does not know about command lists, so the owner of the command list drives the source:
 //
@@ -44,7 +44,7 @@ namespace nau::gpu_profiler
         D3D12TimestampSource(const D3D12TimestampSource&) = delete;
         D3D12TimestampSource& operator=(const D3D12TimestampSource&) = delete;
 
-        // `queue` must be a direct or compute queue of `device`; copy queues need a different query heap type.
+        // COPY uses COPY_QUEUE_TIMESTAMP only when OPTIONS3 advertises support; other queues use TIMESTAMP.
         bool init(ID3D12Device* device, ID3D12CommandQueue* queue, uint32_t capacity = DefaultCapacity);
         void shutdown();
         bool isValid() const
