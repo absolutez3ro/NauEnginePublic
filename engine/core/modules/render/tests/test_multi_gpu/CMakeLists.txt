@@ -14,7 +14,7 @@ target_include_directories(test_multi_gpu_status PRIVATE "../../src/drv3d_DX12")
 add_test(NAME MultiGpuFallbackStatus COMMAND test_multi_gpu_status)
 
 if(WIN32)
-    add_executable(test_multi_gpu test_multi_gpu.cpp)
+    add_executable(test_multi_gpu test_multi_gpu.cpp test_multi_gpu_fence.cpp)
 
     target_sources(test_multi_gpu PRIVATE ../../../../../3rdparty_libs/EASTL/source/assert.cpp)
     target_compile_features(test_multi_gpu PRIVATE cxx_std_20)
