@@ -26,6 +26,10 @@ namespace nau::PEPEngine::Graphics
         static ComPtr<IDXGIFactory4> CreateFactory();
         static ComPtr<IDXGIFactory4> dxgiFactory;
 
+        // B: first use initialization, see GDeviceFactory.cpp.
+        static void EnsureInitialized();
+        static bool debugLayerEnabled;
+
         static bool CheckTearingSupport();
         static Lazy<bool> isTearingSupport;
 
@@ -38,6 +42,10 @@ namespace nau::PEPEngine::Graphics
         static std::vector<ComPtr<IDXGIAdapter3>> adapters;
 
     public:
+        // B: must be called before the first use of the factory; the debug layer (Debug builds) is on by default.
+        // When Mgpu runs inside a process that already owns a D3D12 device (Nau) it has to stay off.
+        static void SetDebugLayerEnabled(bool enabled);
+
         static ComPtr<IDXGISwapChain4> CreateSwapChain(const std::shared_ptr<GDevice>& device,
                                                        DXGI_SWAP_CHAIN_DESC1& desc,
                                                        HWND hwnd);

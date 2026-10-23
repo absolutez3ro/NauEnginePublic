@@ -80,6 +80,9 @@ target_compile_options(${TargetName} PRIVATE /wd4002)
 # A builds all projects with CharacterSet=Unicode.
 target_compile_definitions(${TargetName} PUBLIC NOMINMAX UNICODE _UNICODE)
 
+# Tells nau/mgpu/bridge/mgpu_bridge.h to declare the real bridge instead of the inline stubs.
+target_compile_definitions(${TargetName} PUBLIC NAU_ENABLE_MGPU=1)
+
 # Replacement for Build/SampleResources.targets in A: shared shaders and data are copied
 # next to the executable after build. Project-specific files copied later override common ones.
 set(MGPU_SHARED_SHADERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders/Common CACHE PATH "MGPU shared shaders")
@@ -118,7 +121,8 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include
 
 nau_install(${TargetName} core)
 
-# Section 15: A/MGPU-ShadowMap as an executable. Only for the static runtime: Mgpu has no DLL exports.
+# Section 15: A/MGPU-ShadowMap as an executable (and the bridge transfer check without Nau). Only for the static runtime: Mgpu has no DLL exports.
 if(NOT BUILD_SHARED_LIBS)
   add_subdirectory(samples/ShadowMap)
+  add_subdirectory(samples/BridgeTransferTest)
 endif()

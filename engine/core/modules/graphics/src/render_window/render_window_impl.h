@@ -13,6 +13,11 @@
 #include "nau/render/render_window.h"
 #include "render/daBfg/bfg.h"
 
+#if defined(NAU_ENABLE_MGPU)
+#include "nau/3d/dag_resPtr.h"
+#include "nau/mgpu/bridge/mgpu_bridge.h"
+#endif
+
 namespace nau
 {
     class GraphicsImpl;
@@ -73,6 +78,9 @@ namespace nau::render
         void createGBufferNodes();
         void createOutlineNodes();
 
+        // Registers the "mgpu_transfer" node. Without NAU_ENABLE_MGPU it registers nothing.
+        void createMgpuNodes();
+
         void resizeResolutions();
 
     private:
@@ -103,6 +111,27 @@ namespace nau::render
         GraphNodes m_debugNodes;
 
         dabfg::NodeHandle m_csmNode;
+
+#if defined(NAU_ENABLE_MGPU)
+        // Mgpu transfer path: a second GPU produces a test image, it travels through a shared heap to the Mgpu
+        // device on Nau's adapter and is written into a Nau texture. Switch: nau::mgpu::bridge::setEnabled().
+        struct MgpuTransferState
+        {
+            // The bridge is tried once per enable: a failed initialization is not retried every frame.
+            bool initAttempted = false;
+            uint32_t frameCounter = 0;
+            nau::mgpu::bridge::TransferBridge bridge;
+            TexPtr stagingTexture; // CPU-writable (system memory) copy of the received image
+            TexPtr targetTexture; // GPU texture that receives the image from the staging texture
+        };
+
+        static constexpr uint32_t MGPU_TRANSFER_PERIOD_FRAMES = 60;
+
+        void updateMgpuTransfer();
+        void releaseMgpuTransfer();
+
+        MgpuTransferState m_mgpuTransfer;
+#endif
 
         eastl::map<NauRenderStage, GraphNodes&> m_graphStages = {
             {    NauRenderStage::GBufferStage,     m_gBufferNodes},

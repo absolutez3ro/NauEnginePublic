@@ -18,6 +18,17 @@ target_link_libraries(${TargetName} PRIVATE
     VFX
 )
 
+# Mgpu transfer bridge (root option NAU_ENABLE_MGPU, preset win_vs2022_x64_mgpu). The sample only calls
+# nau::mgpu::bridge::setEnabled(), see sample_app_delegate.cpp.
+if(NAU_ENABLE_MGPU)
+  target_compile_definitions(${TargetName} PRIVATE NAU_ENABLE_MGPU=1)
+  target_include_directories(${TargetName} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../engine/core/modules/mgpu/include)
+
+  # Mgpu links WinPixEventRuntime (import library of a DLL): the DLL has to sit next to the executable.
+  add_custom_command(TARGET ${TargetName} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:WinPixEventRuntime> $<TARGET_FILE_DIR:${TargetName}>)
+endif()
+
 target_precompile_headers(${TargetName} PRIVATE pch.h)
 target_include_directories(${TargetName} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/content/shaders/include)
 

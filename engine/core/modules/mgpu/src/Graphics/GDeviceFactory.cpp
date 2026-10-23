@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cwchar>
 #include <string>
+#include <mutex>
+
 namespace nau::PEPEngine::Graphics
 {
     namespace
@@ -187,16 +189,37 @@ namespace nau::PEPEngine::Graphics
         }
     }
 
-    ComPtr<IDXGIFactory4> GDeviceFactory::dxgiFactory = CreateFactory();
+    // B: A creates the factory, the adapters and the devices during static initialization. Inside Nau that would run
+    // at process start (and enable the D3D12 debug layer) even when Mgpu is switched off, so the same steps now run
+    // in the same order on first use (EnsureInitialized).
+    ComPtr<IDXGIFactory4> GDeviceFactory::dxgiFactory;
     Lazy<bool> GDeviceFactory::isTearingSupport = Lazy<bool>(CheckTearingSupport);
-    std::vector<ComPtr<IDXGIAdapter3>> GDeviceFactory::adapters = GetAdapters();
-    std::vector<std::shared_ptr<GDevice>> GDeviceFactory::hardwareDevices = CreateDevices();
+    std::vector<ComPtr<IDXGIAdapter3>> GDeviceFactory::adapters;
+    std::vector<std::shared_ptr<GDevice>> GDeviceFactory::hardwareDevices;
+    bool GDeviceFactory::debugLayerEnabled = true;
     std::shared_ptr<GDevice> GDeviceFactory::wrapDevice = nullptr;
     std::vector<std::shared_ptr<GDevice>> GDeviceFactory::devicesWithWarp;
+
+    void GDeviceFactory::SetDebugLayerEnabled(const bool enabled)
+    {
+        debugLayerEnabled = enabled;
+    }
+
+    void GDeviceFactory::EnsureInitialized()
+    {
+        static std::once_flag initialized;
+        std::call_once(initialized, []
+        {
+            dxgiFactory = CreateFactory();
+            adapters = GetAdapters();
+            hardwareDevices = CreateDevices();
+        });
+    }
 
     ComPtr<IDXGIFactory4> GDeviceFactory::CreateFactory()
     {
 #if defined(DEBUG) || defined(_DEBUG)
+        if (debugLayerEnabled)
         {
             ComPtr<ID3D12Debug> debugController;
             ThrowIfFailed(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)));
@@ -212,7 +235,10 @@ namespace nau::PEPEngine::Graphics
 
         UINT createFactoryFlags = 0;
 #if defined(DEBUG) || defined(_DEBUG)
-        createFactoryFlags = DXGI_CREATE_FACTORY_DEBUG;
+        if (debugLayerEnabled)
+        {
+            createFactoryFlags = DXGI_CREATE_FACTORY_DEBUG;
+        }
 #endif
 
         ThrowIfFailed(CreateDXGIFactory2(createFactoryFlags, IID_PPV_ARGS(&factory)));
@@ -224,7 +250,7 @@ namespace nau::PEPEngine::Graphics
     {
         std::vector<ComPtr<IDXGIAdapter3>> existAdapters;
 
-        auto adapterInfos = EnumerateAdapters(GetFactory());
+        auto adapterInfos = EnumerateAdapters(dxgiFactory);
         LogAdapterSelection(adapterInfos);
 
         existAdapters.reserve(adapterInfos.size());
@@ -288,6 +314,8 @@ namespace nau::PEPEngine::Graphics
     ComPtr<IDXGISwapChain4> GDeviceFactory::CreateSwapChain(const std::shared_ptr<GDevice>& device,
                                                             DXGI_SWAP_CHAIN_DESC1& desc, const HWND hwnd)
     {
+        EnsureInitialized();
+
         ComPtr<IDXGISwapChain4> swapChain;
 
         desc.Flags = IsTearingSupport()
@@ -314,17 +342,21 @@ namespace nau::PEPEngine::Graphics
 
     ComPtr<IDXGIFactory4> GDeviceFactory::GetFactory()
     {
+        EnsureInitialized();
         return dxgiFactory;
     }
 
     std::shared_ptr<GDevice>& GDeviceFactory::GetDevice(const UINT adapterIndex)
     {
+        EnsureInitialized();
         return hardwareDevices[adapterIndex];
     }
 
 
     std::vector<std::shared_ptr<GDevice>>& GDeviceFactory::GetAllDevices(const bool useWrap)
     {
+        EnsureInitialized();
+
         if (!useWrap)
         {
             return hardwareDevices;
@@ -349,6 +381,7 @@ namespace nau::PEPEngine::Graphics
 
     bool GDeviceFactory::IsTearingSupport()
     {
+        EnsureInitialized();
         return isTearingSupport.value();
     }
 }

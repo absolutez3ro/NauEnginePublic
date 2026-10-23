@@ -289,6 +289,7 @@ namespace nau::render
         }
 
         createOutlineNodes();
+        createMgpuNodes();
     }
 
 }  // namespace nau::render

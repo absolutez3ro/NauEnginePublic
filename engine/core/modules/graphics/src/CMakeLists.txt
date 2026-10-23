@@ -62,6 +62,16 @@ target_link_libraries(${TargetName} PRIVATE
     VFX
 )
 
+# Optional Mgpu transfer bridge (root option NAU_ENABLE_MGPU, switch: nau::mgpu::bridge::setEnabled()).
+# Graphics may only include nau/mgpu/bridge/mgpu_bridge.h: the other Mgpu headers leak global using-directives and
+# macros (PI). For the same reason Mgpu is linked LINK_ONLY, so its usage requirements (UNICODE, include directories,
+# definitions) are not inherited; the include directory and NAU_ENABLE_MGPU are added by hand below.
+if(NAU_ENABLE_MGPU)
+    target_link_libraries(${TargetName} PRIVATE $<LINK_ONLY:Mgpu>)
+    target_include_directories(${TargetName} PRIVATE ${moduleRoot}/../mgpu/include)
+    target_compile_definitions(${TargetName} PRIVATE NAU_ENABLE_MGPU=1)
+endif()
+
 target_link_libraries(${TargetName} PUBLIC
     Render
     CoreInput
