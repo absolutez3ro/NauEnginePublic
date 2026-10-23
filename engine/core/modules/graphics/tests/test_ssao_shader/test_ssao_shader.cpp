@@ -1,8 +1,7 @@
 // test_ssao_shader.cpp
 //
 // Copyright 2026 N-GINN LLC. All rights reserved.
-// Execute the production HLSL on WARP. D3D11 is only a compact shader test harness;
-// the SceneBaseSample runtime test separately exercises Nau's D3D12 frame graph.
+// Production HLSL tests on WARP; D3D12 integration is covered by SceneBaseSample.
 #include <EASTL/allocator_malloc.h>
 #include <EASTL/array.h>
 #include <EASTL/vector.h>
@@ -47,6 +46,13 @@ namespace
     class ShaderIncludes final : public ID3DInclude
     {
     public:
+        ShaderIncludes() = default;
+        ShaderIncludes(const ShaderIncludes&) = delete;
+        ShaderIncludes(ShaderIncludes&&) = delete;
+        ShaderIncludes& operator=(const ShaderIncludes&) = delete;
+        ShaderIncludes& operator=(ShaderIncludes&&) = delete;
+        ~ShaderIncludes() = default;
+
         HRESULT Open(D3D_INCLUDE_TYPE, LPCSTR name, LPCVOID, LPCVOID* data, UINT* bytes) override
         {
             if (std::strcmp(name, "ssao_common.hlsli") != 0)
@@ -78,6 +84,14 @@ namespace
 
     class SsaoShader : public ::testing::Test
     {
+    public:
+        SsaoShader() = default;
+        SsaoShader(const SsaoShader&) = delete;
+        SsaoShader(SsaoShader&&) = delete;
+        SsaoShader& operator=(const SsaoShader&) = delete;
+        SsaoShader& operator=(SsaoShader&&) = delete;
+        ~SsaoShader() override = default;
+
     protected:
         void SetUp() override
         {

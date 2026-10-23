@@ -4,7 +4,7 @@
 
 float2 PSPackNormals(float4 position : SV_Position) : SV_Target
 {
-    // AO only needs the sphere-map pair, not roughness/metalness from the other G-buffer channels.
+    // Normals occupy .xy; .zw contains roughness and metalness.
     return aoNormals.Load(int3(int2(position.xy), 0)).xy;
 }
 

@@ -34,17 +34,24 @@ namespace d3d::mgpu
         failed
     };
 
-    /** @brief Render-thread API. Owns a GPU 1 pass and depth/normals/AO channels, using Nau's heap pool. */
+    /**
+     * @brief Creates a GPU 1 pass and its channels using Nau's heap pool. Call on the render thread.
+     */
     NAU_RENDER_EXPORT SsaoProducer* createSsaoProducer(const SsaoProducerDesc& desc);
-    /** @brief Polls native command slots before preparing/sending inputs; never waits on the CPU. */
+    /**
+     * @brief Polls command slots before preparing inputs; never waits on the CPU.
+     */
     NAU_RENDER_EXPORT bool isSsaoBusy(const SsaoProducer* producer);
-    /** @brief Moves this frame's inputs to GPU 1, computes SSAO and both blur passes, returns AO to GPU 0.
+    /**
+     * @brief Computes SSAO on GPU 1 and returns the result to GPU 0.
      * Inputs: TEXFMT_G16R16F sphere-map normals, TEXFMT_DEPTH32 depth. Output: TEXFMT_R8, all of desc's size.
      * busy submits no complete result; the caller may display its last valid AO map or compute on GPU 0.
      * rawDestination is an optional TEXFMT_R32F validation-only copy of the unfiltered GPU 1 result.
      */
     NAU_RENDER_EXPORT SsaoResult renderSsao(SsaoProducer* producer, const SsaoConstants& constants, bool blur, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, BaseTexture* rawDestination = nullptr);
-    /** @brief Drains channels before releasing native resources; call before driver shutdown and on resize. */
+    /**
+     * @brief Drains channels before releasing resources. Call before driver shutdown and on resize.
+     */
     NAU_RENDER_EXPORT void destroySsaoProducer(SsaoProducer* producer);
     NAU_RENDER_EXPORT void collectSsaoResources();
 }  // namespace d3d::mgpu

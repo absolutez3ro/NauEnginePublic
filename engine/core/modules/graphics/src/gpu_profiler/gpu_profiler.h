@@ -102,7 +102,9 @@ namespace nau::gpu_profiler
         uint64_t cpuFrequency = 0;
     };
 
-    /** @brief Resolved timestamps from one queue, read only after that queue's fence completed. */
+    /**
+     * @brief Resolved timestamps from one queue, read after its fence completes.
+     */
     struct TransferTiming
     {
         uint64_t frame = 0;
@@ -160,8 +162,10 @@ namespace nau::gpu_profiler
         {
             return m_frameIndex;
         }
-        // Render-thread API for independently driven COPY queues. Uses the supplied queue frequency/calibration,
-        // leaving the registered DIRECT sources unchanged. Both halves must carry the sending frame's index.
+        /**
+         * @brief Records a COPY measurement with its queue's frequency and calibration.
+         * Both halves must carry the sending frame's index. Call on the render thread after resolve completes.
+         */
         void recordTransferHalf(const char* name, GpuIndex srcGpu, GpuIndex dstGpu, TransferHalf half, const TransferTiming& timing);
 
     private:

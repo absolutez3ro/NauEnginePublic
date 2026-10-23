@@ -21,67 +21,77 @@ namespace drv3d_dx12
 
     class DeviceSsaoPass::State
     {
+        friend class DeviceSsaoPass;
+
     public:
+        State() = default;
+        State(const State&) = delete;
+        State(State&&) = delete;
+        State& operator=(const State&) = delete;
+        State& operator=(State&&) = delete;
         ~State()
         {
-            if (profiler)
+            if (m_profiler)
             {
-                profiler->detach();
+                m_profiler->detach();
             }
-            if (mapped)
+            if (m_mapped)
             {
-                constants.getResource()->Unmap(0, nullptr);
+                m_constants.getResource()->Unmap(0, nullptr);
             }
-            if (event)
+            if (m_event)
             {
-                CloseHandle(event);
+                CloseHandle(m_event);
             }
         }
 
         HRESULT init(const DeviceSsaoPassDesc& desc);
-        HRESULT createDescriptors();
-        HRESULT createPipelines(const DeviceSsaoPassDesc& desc);
         HRESULT canSubmit() const;
         HRESULT execute(const d3d::mgpu::SsaoConstants& data, bool blur, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady);
         HRESULT wait(DWORD timeoutMs);
         HRESULT waitOn(CrossAdapterSyncPoint point, UINT index);
-        HRESULT signal();
-        void barrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
         bool removed() const
         {
-            return device && FAILED(device->GetDeviceRemovedReason());
+            return m_device && FAILED(m_device->GetDeviceRemovedReason());
         }
 
-        // Resources are destroyed before the shared allocator and device, including after retirement.
-        Microsoft::WRL::ComPtr<ID3D12Device> device;
-        eastl::shared_ptr<IDeviceResourceAllocator> allocator;
-        eastl::shared_ptr<d3d::mgpu::ISsaoProfiler> profiler;
-        DeviceResource normals;
-        DeviceResource depth;
-        DeviceResource targets[PASS_COUNT];
-        DeviceResource constants;
-        Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
-        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocators[FRAME_COUNT];
-        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
-        Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-        Microsoft::WRL::ComPtr<ID3D12Fence> dependencies[4];
-        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> srvHeap;
-        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap;
-        Microsoft::WRL::ComPtr<ID3D12RootSignature> root;
-        Microsoft::WRL::ComPtr<ID3D12PipelineState> rawPso;
-        Microsoft::WRL::ComPtr<ID3D12PipelineState> blurPso;
-        Microsoft::WRL::ComPtr<ID3D12PipelineState> outputPso;
-        HANDLE event = nullptr;
-        uint8_t* mapped = nullptr;
-        UINT width = 0;
-        UINT height = 0;
-        UINT srvStride = 0;
-        UINT rtvStride = 0;
-        UINT64 serial = 0;
-        UINT64 submissions = 0;
-        UINT64 slotValues[FRAME_COUNT] = {};
-        bool signalPending = false;
-        State* nextRetired = nullptr;
+    private:
+        HRESULT createDescriptors();
+        HRESULT createPipelines(const DeviceSsaoPassDesc& desc);
+        HRESULT signal();
+        void barrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
+
+    private:
+        // Declaration order keeps the device and allocator alive until the resources are destroyed.
+        Microsoft::WRL::ComPtr<ID3D12Device> m_device;
+        eastl::shared_ptr<IDeviceResourceAllocator> m_allocator;
+        eastl::shared_ptr<d3d::mgpu::ISsaoProfiler> m_profiler;
+        DeviceResource m_normals;
+        DeviceResource m_depth;
+        DeviceResource m_targets[PASS_COUNT];
+        DeviceResource m_constants;
+        Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_queue;
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_commandAllocators[FRAME_COUNT];
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_list;
+        Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
+        Microsoft::WRL::ComPtr<ID3D12Fence> m_dependencies[4];
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvHeap;
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> m_root;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> m_rawPso;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> m_blurPso;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> m_outputPso;
+        HANDLE m_event = nullptr;
+        uint8_t* m_mapped = nullptr;
+        UINT m_width = 0;
+        UINT m_height = 0;
+        UINT m_srvStride = 0;
+        UINT m_rtvStride = 0;
+        UINT64 m_serial = 0;
+        UINT64 m_submissions = 0;
+        UINT64 m_slotValues[FRAME_COUNT] = {};
+        bool m_signalPending = false;
+        State* m_nextRetired = nullptr;
     };
 
     DeviceSsaoPass::State* DeviceSsaoPass::s_retired = nullptr;
@@ -89,14 +99,14 @@ namespace drv3d_dx12
 
     DeviceSsaoPass::~DeviceSsaoPass()
     {
-        if (m_state && m_state->profiler)
+        if (m_state && m_state->m_profiler)
         {
-            m_state->profiler->detach();
+            m_state->m_profiler->detach();
         }
         reset(0);
         if (m_state)
         {
-            m_state->nextRetired = s_retired;
+            m_state->m_nextRetired = s_retired;
             s_retired = m_state.release();
             OutputDebugStringA("SSAO: retired pending GPU 1 resources.\n");
         }
@@ -147,13 +157,13 @@ namespace drv3d_dx12
             State* state = *current;
             if (SUCCEEDED(state->wait(0)) || state->removed())
             {
-                *current = state->nextRetired;
+                *current = state->m_nextRetired;
                 delete state;
             }
             else
             {
                 ++pending;
-                current = &state->nextRetired;
+                current = &state->m_nextRetired;
             }
         }
         return pending;
@@ -177,78 +187,78 @@ namespace drv3d_dx12
 
     CrossAdapterSyncPoint DeviceSsaoPass::getReadyPoint() const
     {
-        return m_state ? CrossAdapterSyncPoint{m_state->fence.Get(), m_state->serial} : CrossAdapterSyncPoint{};
+        return m_state ? CrossAdapterSyncPoint{m_state->m_fence.Get(), m_state->m_serial} : CrossAdapterSyncPoint{};
     }
 
     ID3D12Resource* DeviceSsaoPass::getNormals() const
     {
-        return m_state ? m_state->normals.getResource() : nullptr;
+        return m_state ? m_state->m_normals.getResource() : nullptr;
     }
     ID3D12Resource* DeviceSsaoPass::getDepth() const
     {
-        return m_state ? m_state->depth.getResource() : nullptr;
+        return m_state ? m_state->m_depth.getResource() : nullptr;
     }
     ID3D12Resource* DeviceSsaoPass::getResult(bool raw) const
     {
-        return m_state ? m_state->targets[raw ? 0 : 2].getResource() : nullptr;
+        return m_state ? m_state->m_targets[raw ? 0 : 2].getResource() : nullptr;
     }
 
     HRESULT DeviceSsaoPass::State::init(const DeviceSsaoPassDesc& desc)
     {
-        device = desc.allocator->getDevice();
-        allocator = desc.allocator;
-        width = desc.width;
-        height = desc.height;
+        m_device = desc.allocator->getDevice();
+        m_allocator = desc.allocator;
+        m_width = desc.width;
+        m_height = desc.height;
         D3D12_COMMAND_QUEUE_DESC queueDesc = {};
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        HRESULT result = device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue));
+        HRESULT result = m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_queue));
         for (UINT slot = 0; SUCCEEDED(result) && slot < FRAME_COUNT; ++slot)
         {
-            result = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocators[slot]));
+            result = m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_commandAllocators[slot]));
         }
         if (SUCCEEDED(result))
         {
-            result = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocators[0].Get(), nullptr, IID_PPV_ARGS(&list));
+            result = m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocators[0].Get(), nullptr, IID_PPV_ARGS(&m_list));
         }
         if (SUCCEEDED(result))
         {
-            result = list->Close();
+            result = m_list->Close();
         }
         if (SUCCEEDED(result))
         {
-            result = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+            result = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence));
         }
         if (SUCCEEDED(result))
         {
-            event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-            if (!event)
+            m_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (!m_event)
             {
                 result = HRESULT_FROM_WIN32(GetLastError());
             }
         }
         if (SUCCEEDED(result))
         {
-            result = normals.createTexture(allocator.get(), width, height, DXGI_FORMAT_R16G16_FLOAT);
+            result = m_normals.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R16G16_FLOAT);
         }
         // CrossAdapterChannel transports raw rows, so an R32_FLOAT endpoint receives the engine's typeless DEPTH32 bytes.
         if (SUCCEEDED(result))
         {
-            result = depth.createTexture(allocator.get(), width, height, DXGI_FORMAT_R32_FLOAT);
+            result = m_depth.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R32_FLOAT);
         }
         for (UINT pass = 0; SUCCEEDED(result) && pass < PASS_COUNT; ++pass)
         {
-            result = targets[pass].createTexture(allocator.get(), width, height, pass == 2 ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+            result = m_targets[pass].createTexture(m_allocator.get(), m_width, m_height, pass == 2 ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         }
         if (SUCCEEDED(result))
         {
-            result = constants.createBuffer(allocator.get(), FRAME_COUNT * PASS_COUNT * CONSTANT_BYTES, D3D12_HEAP_TYPE_UPLOAD);
+            result = m_constants.createBuffer(m_allocator.get(), FRAME_COUNT * PASS_COUNT * CONSTANT_BYTES, D3D12_HEAP_TYPE_UPLOAD);
         }
         if (SUCCEEDED(result))
         {
             const D3D12_RANGE noRead = {0, 0};
             void* data = nullptr;
-            result = constants.getResource()->Map(0, &noRead, &data);
-            mapped = static_cast<uint8_t*>(data);
+            result = m_constants.getResource()->Map(0, &noRead, &data);
+            m_mapped = static_cast<uint8_t*>(data);
         }
         if (SUCCEEDED(result))
         {
@@ -260,8 +270,8 @@ namespace drv3d_dx12
         }
         if (SUCCEEDED(result) && desc.profiler)
         {
-            profiler = desc.profiler;
-            profiler->attach(device.Get(), queue.Get());
+            m_profiler = desc.profiler;
+            m_profiler->attach(m_device.Get(), m_queue.Get());
         }
         return result;
     }
@@ -271,26 +281,26 @@ namespace drv3d_dx12
         D3D12_DESCRIPTOR_HEAP_DESC desc = {};
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         desc.NumDescriptors = PASS_COUNT;
-        HRESULT result = device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&rtvHeap));
+        HRESULT result = m_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&m_rtvHeap));
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         desc.NumDescriptors = PASS_COUNT * 3;
         desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (SUCCEEDED(result))
         {
-            result = device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&srvHeap));
+            result = m_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&m_srvHeap));
         }
         if (FAILED(result))
         {
             return result;
         }
-        srvStride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        rtvStride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        m_srvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        m_rtvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         for (UINT pass = 0; pass < PASS_COUNT; ++pass)
         {
-            D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
-            rtv.ptr += pass * rtvStride;
-            device->CreateRenderTargetView(targets[pass].getResource(), nullptr, rtv);
-            ID3D12Resource* inputs[] = {normals.getResource(), depth.getResource(), pass == 0 ? depth.getResource() : targets[pass - 1].getResource()};
+            D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+            rtv.ptr += pass * m_rtvStride;
+            m_device->CreateRenderTargetView(m_targets[pass].getResource(), nullptr, rtv);
+            ID3D12Resource* inputs[] = {m_normals.getResource(), m_depth.getResource(), pass == 0 ? m_depth.getResource() : m_targets[pass - 1].getResource()};
             for (UINT input = 0; input < 3; ++input)
             {
                 D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
@@ -298,9 +308,9 @@ namespace drv3d_dx12
                 srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                 srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
                 srv.Texture2D.MipLevels = 1;
-                D3D12_CPU_DESCRIPTOR_HANDLE handle = srvHeap->GetCPUDescriptorHandleForHeapStart();
-                handle.ptr += (pass * 3 + input) * srvStride;
-                device->CreateShaderResourceView(inputs[input], &srv, handle);
+                D3D12_CPU_DESCRIPTOR_HANDLE handle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+                handle.ptr += (pass * 3 + input) * m_srvStride;
+                m_device->CreateShaderResourceView(inputs[input], &srv, handle);
             }
         }
         return S_OK;
@@ -329,14 +339,14 @@ namespace drv3d_dx12
         HRESULT result = D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1_0, &serialized, &errors);
         if (SUCCEEDED(result))
         {
-            result = device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(&root));
+            result = m_device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(&m_root));
         }
         if (FAILED(result))
         {
             return result;
         }
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-        pso.pRootSignature = root.Get();
+        pso.pRootSignature = m_root.Get();
         pso.VS = desc.vertexShader;
         pso.PS = desc.rawShader;
         D3D12_RENDER_TARGET_BLEND_DESC& blend = pso.BlendState.RenderTarget[0];
@@ -357,24 +367,24 @@ namespace drv3d_dx12
         pso.NumRenderTargets = 1;
         pso.RTVFormats[0] = DXGI_FORMAT_R32_FLOAT;
         pso.SampleDesc.Count = 1;
-        result = device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&rawPso));
+        result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_rawPso));
         pso.PS = desc.blurShader;
         if (SUCCEEDED(result))
         {
-            result = device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&blurPso));
+            result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_blurPso));
         }
         pso.RTVFormats[0] = DXGI_FORMAT_R8_UNORM;
         if (SUCCEEDED(result))
         {
-            result = device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&outputPso));
+            result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_outputPso));
         }
         return result;
     }
 
     HRESULT DeviceSsaoPass::State::signal()
     {
-        const HRESULT result = queue->Signal(fence.Get(), serial);
-        signalPending = FAILED(result);
+        const HRESULT result = m_queue->Signal(m_fence.Get(), m_serial);
+        m_signalPending = FAILED(result);
         return result;
     }
 
@@ -384,47 +394,47 @@ namespace drv3d_dx12
         {
             return point.value == 0 ? S_OK : E_INVALIDARG;
         }
-        if (signalPending || point.value == UINT64_MAX || serial >= UINT64_MAX - 1)
+        if (m_signalPending || point.value == UINT64_MAX || m_serial >= UINT64_MAX - 1)
         {
             return DXGI_ERROR_INVALID_CALL;
         }
         Microsoft::WRL::ComPtr<ID3D12Device> owner;
-        if (FAILED(point.fence->GetDevice(IID_PPV_ARGS(&owner))) || owner.Get() != device.Get() ||
-            (dependencies[index] && dependencies[index].Get() != point.fence))
+        if (FAILED(point.fence->GetDevice(IID_PPV_ARGS(&owner))) || owner.Get() != m_device.Get() ||
+            (m_dependencies[index] && m_dependencies[index].Get() != point.fence))
         {
             return E_INVALIDARG;
         }
-        dependencies[index] = point.fence;
-        const HRESULT result = queue->Wait(point.fence, point.value);
+        m_dependencies[index] = point.fence;
+        const HRESULT result = m_queue->Wait(point.fence, point.value);
         if (FAILED(result))
         {
             return result;
         }
-        ++serial;
+        ++m_serial;
         return signal();
     }
 
     HRESULT DeviceSsaoPass::State::canSubmit() const
     {
-        if (signalPending || serial >= UINT64_MAX - 4)
+        if (m_signalPending || m_serial >= UINT64_MAX - 4)
         {
             return DXGI_ERROR_INVALID_CALL;
         }
-        const UINT64 completed = fence->GetCompletedValue();
+        const UINT64 completed = m_fence->GetCompletedValue();
         if (completed == UINT64_MAX)
         {
             return DXGI_ERROR_DEVICE_REMOVED;
         }
-        return completed >= slotValues[submissions % FRAME_COUNT] ? S_OK : DXGI_ERROR_WAS_STILL_DRAWING;
+        return completed >= m_slotValues[m_submissions % FRAME_COUNT] ? S_OK : DXGI_ERROR_WAS_STILL_DRAWING;
     }
 
     HRESULT DeviceSsaoPass::State::wait(DWORD timeoutMs)
     {
-        if (!fence)
+        if (!m_fence)
         {
             return S_OK;
         }
-        if (signalPending)
+        if (m_signalPending)
         {
             const HRESULT result = signal();
             if (FAILED(result))
@@ -435,12 +445,12 @@ namespace drv3d_dx12
         const ULONGLONG start = GetTickCount64();
         for (;;)
         {
-            const UINT64 completed = fence->GetCompletedValue();
+            const UINT64 completed = m_fence->GetCompletedValue();
             if (completed == UINT64_MAX)
             {
                 return DXGI_ERROR_DEVICE_REMOVED;
             }
-            if (completed >= serial)
+            if (completed >= m_serial)
             {
                 return S_OK;
             }
@@ -449,12 +459,12 @@ namespace drv3d_dx12
             {
                 return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
             }
-            const HRESULT result = fence->SetEventOnCompletion(serial, event);
+            const HRESULT result = m_fence->SetEventOnCompletion(m_serial, m_event);
             if (FAILED(result))
             {
                 return result;
             }
-            const DWORD status = WaitForSingleObject(event, timeoutMs - static_cast<DWORD>(elapsed));
+            const DWORD status = WaitForSingleObject(m_event, timeoutMs - static_cast<DWORD>(elapsed));
             if (status == WAIT_FAILED)
             {
                 return HRESULT_FROM_WIN32(GetLastError());
@@ -467,7 +477,7 @@ namespace drv3d_dx12
         D3D12_RESOURCE_BARRIER transition = {};
         transition.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         transition.Transition = {resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, before, after};
-        list->ResourceBarrier(1, &transition);
+        m_list->ResourceBarrier(1, &transition);
     }
 
     HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, bool blur, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady)
@@ -477,68 +487,68 @@ namespace drv3d_dx12
         {
             return result;
         }
-        const UINT slot = static_cast<UINT>(submissions % FRAME_COUNT);
-        result = commandAllocators[slot]->Reset();
+        const UINT slot = static_cast<UINT>(m_submissions % FRAME_COUNT);
+        result = m_commandAllocators[slot]->Reset();
         if (SUCCEEDED(result))
         {
-            result = list->Reset(commandAllocators[slot].Get(), rawPso.Get());
+            result = m_list->Reset(m_commandAllocators[slot].Get(), m_rawPso.Get());
         }
         if (FAILED(result))
         {
             return result;
         }
-        ID3D12DescriptorHeap* heaps[] = {srvHeap.Get()};
-        list->SetDescriptorHeaps(1, heaps);
-        list->SetGraphicsRootSignature(root.Get());
-        const D3D12_VIEWPORT viewport = {0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1};
-        const D3D12_RECT scissor = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-        list->RSSetViewports(1, &viewport);
-        list->RSSetScissorRects(1, &scissor);
-        list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        barrier(normals.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        barrier(depth.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Get()};
+        m_list->SetDescriptorHeaps(1, heaps);
+        m_list->SetGraphicsRootSignature(m_root.Get());
+        const D3D12_VIEWPORT viewport = {0, 0, static_cast<float>(m_width), static_cast<float>(m_height), 0, 1};
+        const D3D12_RECT scissor = {0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height)};
+        m_list->RSSetViewports(1, &viewport);
+        m_list->RSSetScissorRects(1, &scissor);
+        m_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        barrier(m_normals.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        barrier(m_depth.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         for (UINT pass = 0; pass < PASS_COUNT; ++pass)
         {
-            if (profiler)
+            if (m_profiler)
             {
-                constexpr const char* names[] = {"ssao_raw", "ssao_blur_h", "ssao_blur_v"};
-                profiler->beginPass(list.Get(), names[pass]);
+                constexpr const char* PASS_NAMES[] = {"ssao_raw", "ssao_blur_h", "ssao_blur_v"};
+                m_profiler->beginPass(m_list.Get(), PASS_NAMES[pass]);
             }
             d3d::mgpu::SsaoConstants parameters = data;
             parameters.filter[0] = blur && pass == 1 ? 1.0f : 0.0f;
             parameters.filter[1] = blur && pass == 2 ? 1.0f : 0.0f;
             const UINT offset = (slot * PASS_COUNT + pass) * CONSTANT_BYTES;
-            std::memcpy(mapped + offset, &parameters, sizeof(parameters));
-            list->SetGraphicsRootConstantBufferView(0, constants.getResource()->GetGPUVirtualAddress() + offset);
-            D3D12_GPU_DESCRIPTOR_HANDLE srv = srvHeap->GetGPUDescriptorHandleForHeapStart();
-            srv.ptr += pass * 3 * srvStride;
-            list->SetGraphicsRootDescriptorTable(1, srv);
-            list->SetPipelineState(pass == 0 ? rawPso.Get() : (pass == 1 ? blurPso.Get() : outputPso.Get()));
-            ID3D12Resource* target = targets[pass].getResource();
+            std::memcpy(m_mapped + offset, &parameters, sizeof(parameters));
+            m_list->SetGraphicsRootConstantBufferView(0, m_constants.getResource()->GetGPUVirtualAddress() + offset);
+            D3D12_GPU_DESCRIPTOR_HANDLE srv = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
+            srv.ptr += pass * 3 * m_srvStride;
+            m_list->SetGraphicsRootDescriptorTable(1, srv);
+            m_list->SetPipelineState(pass == 0 ? m_rawPso.Get() : (pass == 1 ? m_blurPso.Get() : m_outputPso.Get()));
+            ID3D12Resource* target = m_targets[pass].getResource();
             barrier(target, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            list->DiscardResource(target, nullptr);
-            D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
-            rtv.ptr += pass * rtvStride;
-            list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-            list->DrawInstanced(3, 1, 0, 0);
+            m_list->DiscardResource(target, nullptr);
+            D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+            rtv.ptr += pass * m_rtvStride;
+            m_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+            m_list->DrawInstanced(3, 1, 0, 0);
             barrier(target, D3D12_RESOURCE_STATE_RENDER_TARGET,
                     pass == 2 ? D3D12_RESOURCE_STATE_COMMON : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            if (profiler)
+            if (m_profiler)
             {
-                profiler->endPass();
+                m_profiler->endPass();
             }
         }
         for (UINT pass = 0; pass < 2; ++pass)
         {
-            barrier(targets[pass].getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+            barrier(m_targets[pass].getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         }
-        barrier(normals.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
-        barrier(depth.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
-        if (profiler)
+        barrier(m_normals.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+        barrier(m_depth.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+        if (m_profiler)
         {
-            profiler->resolve(list.Get());
+            m_profiler->resolve(m_list.Get());
         }
-        result = list->Close();
+        result = m_list->Close();
         if (SUCCEEDED(result))
         {
             result = waitOn(normalsReady, 0);
@@ -551,14 +561,14 @@ namespace drv3d_dx12
         {
             return result;
         }
-        ID3D12CommandList* lists[] = {list.Get()};
-        queue->ExecuteCommandLists(1, lists);
-        if (profiler)
+        ID3D12CommandList* lists[] = {m_list.Get()};
+        m_queue->ExecuteCommandLists(1, lists);
+        if (m_profiler)
         {
-            profiler->submitted();
+            m_profiler->submitted();
         }
-        slotValues[slot] = ++serial;
-        ++submissions;
+        m_slotValues[slot] = ++m_serial;
+        ++m_submissions;
         return signal();
     }
 }  // namespace drv3d_dx12

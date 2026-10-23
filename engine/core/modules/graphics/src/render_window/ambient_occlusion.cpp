@@ -261,7 +261,6 @@ namespace nau::render
         {
             if (capturing && m_validateSecondary)
             {
-                // Reference and secondary results use identical inputs and matrices from this frame.
                 drawRaw(raw, normals, depth);
                 drawBlur(horizontal, raw, true);
                 TextureInfo info;
@@ -269,7 +268,7 @@ namespace nau::render
                 BaseTexture* reference = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ssao_reference");
                 if (reference)
                 {
-                    // Keep the reference before R8 rounding: compare computation and quantization separately.
+                    // Compare against R32F before quantizing the output to R8.
                     drawBlur(reference, horizontal, false);
                     capture(reference, "reference", 1);
                     reference->destroy();
@@ -305,7 +304,6 @@ namespace nau::render
             }
         }
         m_historyFrame = 0;
-        // A real failure, disabled MGPU, or the first busy frame without history uses current-frame AO on GPU 0.
         drawRaw(raw, normals, depth);
         drawBlur(horizontal, raw, true);
         drawBlur(filtered, horizontal, false);
@@ -404,7 +402,7 @@ namespace nau::render
     void AmbientOcclusion::drawBlur(BaseTexture* target, BaseTexture* source, bool horizontal)
     {
         NAU_GPU_TIMER(horizontal ? "ssao_blur_h" : "ssao_blur_v");
-        // A zero step reduces the filter to the center sample, useful for inspecting the unfiltered result.
+        // A zero step samples only the center texel when blur is disabled.
         const float x = m_blur && horizontal ? 1.0f : 0.0f;
         const float y = m_blur && !horizontal ? 1.0f : 0.0f;
         m_blurMaterial->setProperty("default", "aoFilter", math::Vector4(x, y, m_blurDepthThreshold, m_mode != 0 ? 1.0f : 0.0f));
@@ -448,7 +446,6 @@ namespace nau::render
         {
             return;
         }
-        // Opt-in validation readback. Rendering normally stays entirely on the GPU.
         void* pixels = nullptr;
         int stride = 0;
         if (!texture->lockimg(&pixels, stride, 0, TEXLOCK_READ) || !pixels)

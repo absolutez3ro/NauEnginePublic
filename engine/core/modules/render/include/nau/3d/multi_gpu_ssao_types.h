@@ -9,7 +9,9 @@
 
 namespace d3d::mgpu
 {
-    /** @brief Optional render-thread observer. Retained with pending native work, including after retirement. */
+    /**
+     * @brief Render-thread observer retained until pending native work completes, including after retirement.
+     */
     class ISsaoProfiler
     {
     public:
@@ -26,13 +28,12 @@ namespace d3d::mgpu
         virtual void resolve(void* list) = 0;
         virtual void submitted() = 0;
         virtual void detach() = 0;
-        virtual eastl::shared_ptr<ITransferProfiler> createTransferProfiler(const char* name, bool fromPrimary)
-        {
-            return {};
-        }
+        virtual eastl::shared_ptr<ITransferProfiler> createTransferProfiler(const char* name, bool fromPrimary) = 0;
     };
 
-    /** @brief Column-major matrices and parameters matching ssao_common.hlsli exactly. */
+    /**
+     * @brief Column-major matrices and parameters matching ssao_common.hlsli.
+     */
     struct SsaoConstants
     {
         float projection[16] = {};

@@ -13,6 +13,10 @@ namespace nau::render
         {
         public:
             SsaoProfiler() = default;
+            SsaoProfiler(const SsaoProfiler&) = delete;
+            SsaoProfiler(SsaoProfiler&&) = delete;
+            SsaoProfiler& operator=(const SsaoProfiler&) = delete;
+            SsaoProfiler& operator=(SsaoProfiler&&) = delete;
             ~SsaoProfiler() override
             {
                 detach();

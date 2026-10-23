@@ -1,6 +1,5 @@
 // Copyright 2026 N-GINN LLC. All rights reserved.
-// SSAO adaptation of Mikhanil/Multi-GPU-Render-DX12, commit 9146f83f.
-// See doc/ambient_occlusion.md for the algorithm and coordinate-system differences.
+// Adapted from Bogdanov M.K.'s Multi-GPU-Render-DX12, commit 9146f83f.
 #ifndef NAU_SSAO_COMMON
 #define NAU_SSAO_COMMON
 
@@ -13,7 +12,7 @@ cbuffer AmbientOcclusionConstants : register(b0)
     float4 aoFilter;     // Horizontal pixel step, vertical pixel step, depth threshold, enabled.
 };
 
-Texture2D<float4> aoNormals : register(t0); // Nau's packed WORLD-space normals.
+Texture2D<float4> aoNormals : register(t0); // Sphere-map world normals in .xy.
 Texture2D<float> aoDepth : register(t1);    // Reversed-Z: background = 0.
 Texture2D<float> aoInput : register(t2);
 
@@ -31,7 +30,7 @@ float3 reconstructViewPosition(float2 uv, float depth)
 
 float3 readViewNormal(int2 pixel)
 {
-    // Same sphere-map decoding as gbuffer_base.hlsli, at full float precision.
+    // Matches sphere-map decoding in gbuffer_base.hlsli.
     float2 encoded = aoNormals.Load(int3(pixel, 0)).xy * 2.0 - 1.0;
     float lengthSquared = dot(encoded, encoded);
     float3 worldNormal = float3(2.0 * encoded * sqrt(max(0.0, 1.0 - lengthSquared)), 1.0 - 2.0 * lengthSquared);

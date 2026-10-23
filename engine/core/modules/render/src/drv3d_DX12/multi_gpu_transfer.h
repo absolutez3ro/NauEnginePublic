@@ -298,7 +298,9 @@ namespace drv3d_dx12
             reset();
         }
 
-        /** @brief Attaches an observer before the first send; it stays alive until reset drains the queues. */
+        /**
+         * @brief Attaches an observer before the first send; retained until reset drains the queues.
+         */
         void setProfiler(eastl::shared_ptr<d3d::mgpu::ITransferProfiler> observer)
         {
             if (!*this || lastSent != 0 || profiler)

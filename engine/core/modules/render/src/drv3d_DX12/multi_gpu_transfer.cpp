@@ -287,7 +287,7 @@ d3d::mgpu::SecondarySyncPoint d3d::mgpu::receive_on_secondary(TransferChannelHan
     {
         return {};
     }
-    const auto ready = channel->channel.receive(ticket, static_cast<ID3D12Resource*>(native_destination),
-                                                {static_cast<ID3D12Fence*>(destination_free.nativeFence), destination_free.value});
+    const drv3d_dx12::CrossAdapterSyncPoint ready = channel->channel.receive(ticket, static_cast<ID3D12Resource*>(native_destination),
+                                                                             {static_cast<ID3D12Fence*>(destination_free.nativeFence), destination_free.value});
     return {ready.fence, ready.value};
 }

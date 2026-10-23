@@ -38,9 +38,9 @@ namespace d3d::mgpu
         {
             return nullptr;
         }
-        const auto allocator = eastl::make_shared<drv3d_dx12::NauDeviceResourceAllocator>();
+        const eastl::shared_ptr<drv3d_dx12::NauDeviceResourceAllocator> allocator = eastl::make_shared<drv3d_dx12::NauDeviceResourceAllocator>();
         HRESULT result = allocator->init(static_cast<ID3D12Device*>(get_device(SECONDARY_GPU)));
-        auto producer = eastl::make_unique<SsaoProducer>();
+        eastl::unique_ptr<SsaoProducer> producer = eastl::make_unique<SsaoProducer>();
         if (SUCCEEDED(result))
         {
             drv3d_dx12::DeviceSsaoPassDesc pass;

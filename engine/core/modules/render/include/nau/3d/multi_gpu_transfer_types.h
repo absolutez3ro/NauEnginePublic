@@ -7,7 +7,8 @@
 
 namespace d3d::mgpu
 {
-    /** @brief Optional render-thread observer of the channel's native COPY lists.
+    /**
+     * @brief Render-thread observer of the channel's native COPY lists.
      * attach is called once per side. endCopy resolves queries before Close; submitted follows ExecuteCommandLists.
      * cancel discards a list that was not executed. detach runs after both channel queues have drained.
      * source=true selects the sending side; ticket identifies the same transfer on both sides.

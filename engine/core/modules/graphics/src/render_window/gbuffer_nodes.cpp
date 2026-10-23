@@ -142,11 +142,11 @@ namespace nau::render
         {
             registry.orderMeAfter(nau::utils::format("{}_{}", "CSM", m_swapchain).c_str());
 
-            auto ambientOcclusion = registry.readTexture(nau::utils::format("ssao_texture_{}", m_swapchain).c_str())
-                                        .optional()
-                                        .atStage(dabfg::Stage::PS_OR_CS)
-                                        .useAs(dabfg::Usage::SHADER_RESOURCE)
-                                        .handle();
+            const dabfg::VirtualResourceHandle<const BaseTexture, true, true> ambientOcclusion = registry.readTexture(nau::utils::format("ssao_texture_{}", m_swapchain).c_str())
+                                                                                                     .optional()
+                                                                                                     .atStage(dabfg::Stage::PS_OR_CS)
+                                                                                                     .useAs(dabfg::Usage::SHADER_RESOURCE)
+                                                                                                     .handle();
 
             auto resolveTarget = registry
                                      .createTexture2d(nau::utils::format("{}_{}", "resolve_texture", m_swapchain).c_str(), dabfg::History::ClearZeroOnFirstFrame,

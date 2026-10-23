@@ -12,7 +12,6 @@
 
 namespace nau::render
 {
-    /** @brief Keeps F7 taps until the render thread consumes them. */
     class AmbientOcclusionInput final : public IWindowMessageHandler,
                                         public IRttiObject
     {
@@ -37,7 +36,6 @@ namespace nau::render
         std::atomic<uint32_t> m_deviceSwitchRequests = 0;
     };
 
-    /** @brief SSAO on GPU 0 or GPU 1. Primary textures and resize/lifetime belong to the frame graph. */
     class AmbientOcclusion final
     {
     public:

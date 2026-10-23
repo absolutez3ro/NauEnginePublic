@@ -299,10 +299,9 @@ namespace nau::sample
             co_await sceneManager.activateScene(std::move(scene_00));
             if (ssaoOverview)
             {
-                // Scene cameras are registered by activation, before becoming the main camera.
+                // Register the scene camera before selecting it as the main camera.
                 cameraControl.setCamControlKind(cameraControlKind);
-                // The default camera starts inside the helmet at the origin.
-                // Start the AO comparison above the scene; regular camera controls remain available.
+                // The default position is inside the helmet; start above the scene.
                 cameraObject->setTranslation({0.0f, 5.0f, 10.0f});
                 cameraObject->setRotation(math::quat::rotationX(-0.25f));
             }

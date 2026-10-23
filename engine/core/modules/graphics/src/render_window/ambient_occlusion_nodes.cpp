@@ -23,10 +23,10 @@ namespace nau::render
                     .useAs(dabfg::Usage::COLOR_ATTACHMENT)
                     .handle();
             };
-            auto raw = createTarget("ssao_raw_texture");
-            auto horizontal = createTarget("ssao_horizontal_texture");
-            auto filtered = createTarget("ssao_texture", TEXFMT_R8);
-            auto packedNormals = createTarget("ssao_normals_texture", TEXFMT_G16R16F);
+            const dabfg::VirtualResourceHandle<BaseTexture, true, false> raw = createTarget("ssao_raw_texture");
+            const dabfg::VirtualResourceHandle<BaseTexture, true, false> horizontal = createTarget("ssao_horizontal_texture");
+            const dabfg::VirtualResourceHandle<BaseTexture, true, false> filtered = createTarget("ssao_texture", TEXFMT_R8);
+            const dabfg::VirtualResourceHandle<BaseTexture, true, false> packedNormals = createTarget("ssao_normals_texture", TEXFMT_G16R16F);
             return [this, raw, horizontal, filtered, packedNormals]()
             {
                 if (!m_graphicsScene->hasCamera())
@@ -35,7 +35,6 @@ namespace nau::render
                     d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
                     return;
                 }
-                // The same G-buffer inputs and projection are consumed by either device for this frame.
                 const CameraNode& camera = m_graphicsScene->getMainCamera();
                 d3d::setview(0, 0, m_gBuffer->getWidth(), m_gBuffer->getHeight(), 0.0f, 1.0f);
                 m_ambientOcclusion->beginFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), m_windowHandle);

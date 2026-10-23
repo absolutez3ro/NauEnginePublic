@@ -21,14 +21,21 @@
 namespace
 {
     using Microsoft::WRL::ComPtr;
-    template <typename T>
-    using TestVector = eastl::vector<T, eastl::allocator_malloc>;
+    template <typename TValue>
+    using TestVector = eastl::vector<TValue, eastl::allocator_malloc>;
     constexpr UINT WIDTH = 79;
     constexpr UINT HEIGHT = 53;
 
     class SsaoInclude final : public ID3DInclude
     {
     public:
+        SsaoInclude() = default;
+        SsaoInclude(const SsaoInclude&) = delete;
+        SsaoInclude(SsaoInclude&&) = delete;
+        SsaoInclude& operator=(const SsaoInclude&) = delete;
+        SsaoInclude& operator=(SsaoInclude&&) = delete;
+        ~SsaoInclude() = default;
+
         HRESULT Open(D3D_INCLUDE_TYPE, LPCSTR name, LPCVOID, LPCVOID* data, UINT* size) override
         {
             if (std::strcmp(name, "ssao_common.hlsli") != 0)
@@ -65,6 +72,12 @@ namespace
             m_detached(detached)
         {
         }
+        RetirementProfiler(const RetirementProfiler&) = delete;
+        RetirementProfiler(RetirementProfiler&&) = delete;
+        RetirementProfiler& operator=(const RetirementProfiler&) = delete;
+        RetirementProfiler& operator=(RetirementProfiler&&) = delete;
+        ~RetirementProfiler() override = default;
+
         void attach(void*, void*) override
         {
         }
@@ -84,6 +97,10 @@ namespace
         {
             m_detached = true;
         }
+        eastl::shared_ptr<d3d::mgpu::ITransferProfiler> createTransferProfiler(const char*, bool) override
+        {
+            return {};
+        }
 
     private:
         bool& m_detached;
@@ -91,6 +108,14 @@ namespace
 
     class DeviceSsao : public ::testing::Test
     {
+    public:
+        DeviceSsao() = default;
+        DeviceSsao(const DeviceSsao&) = delete;
+        DeviceSsao(DeviceSsao&&) = delete;
+        DeviceSsao& operator=(const DeviceSsao&) = delete;
+        DeviceSsao& operator=(DeviceSsao&&) = delete;
+        ~DeviceSsao() override = default;
+
     protected:
         void SetUp() override
         {
@@ -137,10 +162,10 @@ namespace
             ASSERT_HRESULT_SUCCEEDED(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_copyAllocator.Get(), nullptr, IID_PPV_ARGS(&m_copyList)));
             ASSERT_HRESULT_SUCCEEDED(m_copyList->Close());
             ASSERT_HRESULT_SUCCEEDED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_copyFence)));
-            constexpr float projectionA = 0.1f / 99.9f;
-            constexpr float projectionB = 10.0f / 99.9f;
-            const float projection[] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, projectionA, -1, 0, 0, projectionB, 0};
-            const float inverse[] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1 / projectionB, 0, 0, -1, projectionA / projectionB};
+            constexpr float PROJECTION_A = 0.1f / 99.9f;
+            constexpr float PROJECTION_B = 10.0f / 99.9f;
+            const float projection[] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, PROJECTION_A, -1, 0, 0, PROJECTION_B, 0};
+            const float inverse[] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1 / PROJECTION_B, 0, 0, -1, PROJECTION_A / PROJECTION_B};
             const float view[] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
             std::memcpy(m_constants.projection, projection, sizeof(projection));
             std::memcpy(m_constants.inverseProjection, inverse, sizeof(inverse));

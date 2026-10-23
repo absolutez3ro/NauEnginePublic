@@ -185,11 +185,11 @@ namespace nau::render
         m_postFxNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "post_fx_nodes", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
-            auto ambientOcclusion = registry.readTexture(nau::utils::format("ssao_texture_{}", m_swapchain).c_str())
-                                        .optional()
-                                        .atStage(dabfg::Stage::PS_OR_CS)
-                                        .useAs(dabfg::Usage::SHADER_RESOURCE)
-                                        .handle();
+            const dabfg::VirtualResourceHandle<const BaseTexture, true, true> ambientOcclusion = registry.readTexture(nau::utils::format("ssao_texture_{}", m_swapchain).c_str())
+                                                                                                     .optional()
+                                                                                                     .atStage(dabfg::Stage::PS_OR_CS)
+                                                                                                     .useAs(dabfg::Usage::SHADER_RESOURCE)
+                                                                                                     .handle();
             auto resolveTexture = registry.readTexture(nau::utils::format("{}_{}", "resolve_texture", m_swapchain).c_str())
                                       .atStage(dabfg::Stage::PS_OR_CS)
                                       .useAs(dabfg::Usage::SHADER_RESOURCE)
