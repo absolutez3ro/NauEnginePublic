@@ -33,6 +33,7 @@
 #include "render/daBfg/bfg.h"
 #include "gpu_profiler/gpu_profiler.h"
 #include "gpu_profiler/gpu_profiler_selftest.h"
+#include "nau/3d/multi_gpu_fullscreen.h"
 
 #define USE_SHADER_CACHE 1
 #define VIEWPORT_AUTO_RESIZE 0
@@ -336,6 +337,7 @@ namespace nau
         }
 #endif
         d3d::driver_command(DRV3D_COMMAND_ACQUIRE_OWNERSHIP, NULL, NULL, NULL);
+        d3d::mgpu::collectFullscreenResources();
         gpu_profiler::GpuProfiler::instance().init();
         gpu_profiler::SelfTest::instance().init();
         gpu_profiler::GpuProfiler::instance().beginFrame();
@@ -425,6 +427,7 @@ namespace nau
         gpu_profiler::SelfTest::instance().shutdown();
         gpu_profiler::GpuProfiler::instance().shutdown();
         dabfg::shutdown();
+        d3d::mgpu::collectFullscreenResources();
         d3d::release_driver();
     }
 

@@ -36,6 +36,12 @@ namespace nau::render
 
         async::TaskCollection loadTasks;
 
+        if (m_swapchain == DEFAULT_SWAPID && MultiGpuDemo::isRequested())
+        {
+            m_multiGpuDemo = eastl::make_unique<MultiGpuDemo>();
+            loadTasks.push(m_multiGpuDemo->loadAssets());
+        }
+
         MaterialAssetView::Ptr matPPTonemap;
         loadTasks.push(openMaterialAsset({"file:/res/materials/pp_tonemap.nmat_json"}, matPPTonemap));
 
@@ -289,6 +295,20 @@ namespace nau::render
         }
 
         createOutlineNodes();
+
+        if (m_multiGpuDemo)
+        {
+            m_multiGpuDemoNode = dabfg::register_node("mgpu_demo_present", DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
+            {
+                registry.orderMeAfter(nau::utils::format("debug_gui_{}", m_swapchain).c_str());
+                registry.orderMeAfter(nau::utils::format("draw_outline_{}", m_swapchain).c_str());
+                registry.executionHas(dabfg::SideEffects::External);
+                return [this]()
+                {
+                    m_multiGpuDemo->render(d3d::get_back_buffer_rt(m_swapchain), m_windowHandle);
+                };
+            });
+        }
     }
 
 }  // namespace nau::render

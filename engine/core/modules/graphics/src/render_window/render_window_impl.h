@@ -6,6 +6,7 @@
 
 #include "graphics_nodes.h"
 #include "graphics_scene.h"
+#include "multi_gpu_demo.h"
 #include "nau/async/work_queue.h"
 #include "nau/math/dag_color.h"
 #include "nau/render/deferredRenderer.h"
@@ -120,6 +121,8 @@ namespace nau::render
         eastl::shared_ptr<GraphicsScene> m_graphicsScene = nullptr;
 
         eastl::unique_ptr<render::PostFxRenderer> m_postFXRenderer;
+        eastl::unique_ptr<MultiGpuDemo> m_multiGpuDemo;
+        dabfg::NodeHandle m_multiGpuDemoNode;
         eastl::unique_ptr<render::EnvironmentRenderer> m_environmentRenderer;
 
         void* m_windowHandle;
