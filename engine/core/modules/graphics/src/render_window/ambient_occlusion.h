@@ -51,7 +51,7 @@ namespace nau::render
         static bool isRequested();
         async::Task<> loadAssets();
         void beginFrame(const math::Matrix4& view, const math::Matrix4& projection, void* windowHandle);
-        void renderFrame(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* filtered, BaseTexture* normals, BaseTexture* depth);
+        void renderFrame(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* filtered, BaseTexture* normals, BaseTexture* depth, BaseTexture* packedNormals);
         void drawRaw(BaseTexture* target, BaseTexture* normals, BaseTexture* depth);
         void drawBlur(BaseTexture* target, BaseTexture* source, bool horizontal);
         void drawDebug(BaseTexture* target, BaseTexture* source);
@@ -61,10 +61,13 @@ namespace nau::render
 
     private:
         void draw(BaseTexture* target, MaterialAssetView& material);
+        void packNormals(BaseTexture* target, BaseTexture* normals);
         void capture(BaseTexture* texture, const char* name, uint32_t components) const;
         void captureDepth() const;
         void prepareSecondary(BaseTexture* target);
-        void updateDeviceStatus(bool secondary);
+        void updateDeviceStatus(bool secondary, bool reused = false);
+        void cacheResult(BaseTexture* texture);
+        bool reuseResult(BaseTexture* texture);
 
     private:
         MaterialAssetView::Ptr m_rawMaterial;
@@ -81,6 +84,10 @@ namespace nau::render
         uint32_t m_secondaryFrames = 0;
         uint32_t m_primaryFrames = 0;
         uint32_t m_busyFrames = 0;
+        uint32_t m_reusedFrames = 0;
+        uint32_t m_historyFrame = 0;
+        uint32_t m_busyAtFrame = 0;
+        BaseTexture* m_history = nullptr;
         uint32_t m_autoDeviceSwitchFrames = 0;
         uint32_t m_failAtFrame = 0;
         bool m_secondaryAttempted = false;
@@ -88,6 +95,7 @@ namespace nau::render
         bool m_validateSecondary = false;
         bool m_warpForTesting = false;
         BaseTexture* m_normals = nullptr;
+        BaseTexture* m_sourceNormals = nullptr;
         BaseTexture* m_depth = nullptr;
         math::Vector4 m_parameters = math::Vector4(0.5f, 0.2f, 1.0f, 0.05f);
         float m_blurDepthThreshold = 0.2f;

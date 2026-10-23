@@ -35,6 +35,18 @@
             "depthMode": "Disabled",
             "blendMode": "Opaque"
         },
+        "packNormals": {
+            "blendMode": "Opaque",
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.pspacknormals]"
+            ],
+            "cullMode": "None",
+            "properties": {
+                "aoNormals": "file:/content/textures/white_8x8.png"
+            },
+            "depthMode": "Disabled"
+        },
         "debug": {
             "blendMode": "Opaque",
             "shaders": [

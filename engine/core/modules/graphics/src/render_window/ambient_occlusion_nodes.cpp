@@ -15,18 +15,19 @@ namespace nau::render
                                                     [this](dabfg::Registry registry)
         {
             registry.orderMeAfter(nau::utils::format("fill_gbuffer_{}", m_swapchain).c_str());
-            const auto createTarget = [this, &registry](const char* name)
+            const auto createTarget = [this, &registry](const char* name, unsigned format = TEXFMT_R32F)
             {
                 return registry.createTexture2d(nau::utils::format("{}_{}", name, m_swapchain).c_str(), dabfg::History::No,
-                                                dabfg::Texture2dCreateInfo{TEXFMT_R32F | TEXCF_RTARGET, registry.getResolution(m_resolutionName.c_str())})
+                                                dabfg::Texture2dCreateInfo{format | TEXCF_RTARGET, registry.getResolution(m_resolutionName.c_str())})
                     .atStage(dabfg::Stage::POST_RASTER)
                     .useAs(dabfg::Usage::COLOR_ATTACHMENT)
                     .handle();
             };
             auto raw = createTarget("ssao_raw_texture");
             auto horizontal = createTarget("ssao_horizontal_texture");
-            auto filtered = createTarget("ssao_texture");
-            return [this, raw, horizontal, filtered]()
+            auto filtered = createTarget("ssao_texture", TEXFMT_R8);
+            auto packedNormals = createTarget("ssao_normals_texture", TEXFMT_G16R16F);
+            return [this, raw, horizontal, filtered, packedNormals]()
             {
                 if (!m_graphicsScene->hasCamera())
                 {
@@ -42,7 +43,7 @@ namespace nau::render
                 d3d::set_depth(nullptr, DepthAccess::RW);
                 m_gBuffer->resourceBarrier(RB_RO_SRV | RB_STAGE_PIXEL);
                 m_ambientOcclusion->renderFrame(raw.get(), horizontal.get(), filtered.get(),
-                                                m_gBuffer->getRt(DeferredRenderTarget::GBUF_NORMAL_ROUGH_MET), m_gBuffer->getDepth());
+                                                m_gBuffer->getRt(DeferredRenderTarget::GBUF_NORMAL_ROUGH_MET), m_gBuffer->getDepth(), packedNormals.get());
             };
         }));
     }

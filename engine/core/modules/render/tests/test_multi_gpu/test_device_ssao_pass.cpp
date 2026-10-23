@@ -58,6 +58,37 @@ namespace
         TestVector<char> m_text;
     };
 
+    class RetirementProfiler final : public d3d::mgpu::ISsaoProfiler
+    {
+    public:
+        explicit RetirementProfiler(bool& detached) :
+            m_detached(detached)
+        {
+        }
+        void attach(void*, void*) override
+        {
+        }
+        void beginPass(void*, const char*) override
+        {
+        }
+        void endPass() override
+        {
+        }
+        void resolve(void*) override
+        {
+        }
+        void submitted() override
+        {
+        }
+        void detach() override
+        {
+            m_detached = true;
+        }
+
+    private:
+        bool& m_detached;
+    };
+
     class DeviceSsao : public ::testing::Test
     {
     protected:
@@ -181,8 +212,8 @@ namespace
                     {
                         if (input == 0)
                         {
-                            row[x * 4] = row[x * 4 + 1] = 0.5f;
-                            row[x * 4 + 2] = row[x * 4 + 3] = 0.0f;
+                            uint16_t* packed = reinterpret_cast<uint16_t*>(row);
+                            packed[x * 2] = packed[x * 2 + 1] = 0x3800;  // float16(0.5), sphere-map +Z.
                         }
                         else
                         {
@@ -246,7 +277,18 @@ namespace
             TestVector<float> result(WIDTH * HEIGHT);
             for (UINT y = 0; y < HEIGHT; ++y)
             {
-                std::memcpy(result.data() + y * WIDTH, static_cast<uint8_t*>(data) + y * footprint.Footprint.RowPitch, WIDTH * sizeof(float));
+                const uint8_t* row = static_cast<uint8_t*>(data) + y * footprint.Footprint.RowPitch;
+                if (desc.Format == DXGI_FORMAT_R8_UNORM)
+                {
+                    for (UINT x = 0; x < WIDTH; ++x)
+                    {
+                        result[y * WIDTH + x] = row[x] / 255.0f;
+                    }
+                }
+                else
+                {
+                    std::memcpy(result.data() + y * WIDTH, row, WIDTH * sizeof(float));
+                }
             }
             readback.getResource()->Unmap(0, nullptr);
             return result;
@@ -299,6 +341,22 @@ namespace
         EXPECT_GT(occluded, 10u);
     }
 
+    TEST_F(DeviceSsao, CompactTransportPreservesRawPrecisionAndBoundsOutputQuantization)
+    {
+        EXPECT_EQ(m_pass.getNormals()->GetDesc().Format, DXGI_FORMAT_R16G16_FLOAT);
+        EXPECT_EQ(m_pass.getResult()->GetDesc().Format, DXGI_FORMAT_R8_UNORM);
+        EXPECT_EQ(m_pass.getResult(true)->GetDesc().Format, DXGI_FORMAT_R32_FLOAT);
+        fillInputs(true);
+        ASSERT_HRESULT_SUCCEEDED(m_pass.execute(m_constants, false));
+        const TestVector<float> raw = read(true);
+        const TestVector<float> result = read();
+        for (UINT pixel = 0; pixel < result.size(); ++pixel)
+        {
+            EXPECT_LE(std::abs(result[pixel] - raw[pixel]), 0.5f / 255.0f + 0.000001f);
+            EXPECT_NEAR(result[pixel] * 255.0f, std::round(result[pixel] * 255.0f), 0.00001f);
+        }
+    }
+
     TEST_F(DeviceSsao, InFlightConstantSlotsReturnBusyInsteadOfBlocking)
     {
         fillInputs(false);
@@ -330,6 +388,8 @@ namespace
     TEST_F(DeviceSsao, DestructionRetiresBlockedWorkWithoutFreeingItsHeap)
     {
         const size_t baseline = m_allocator->getAllocationCount();
+        bool profilerDetached = false;
+        eastl::weak_ptr<d3d::mgpu::ISsaoProfiler> profilerLifetime;
         ComPtr<ID3D12Fence> gate;
         ASSERT_HRESULT_SUCCEEDED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate)));
         drv3d_dx12::CrossAdapterSyncPoint completion;
@@ -342,16 +402,21 @@ namespace
             desc.vertexShader = {m_vertex->GetBufferPointer(), m_vertex->GetBufferSize()};
             desc.rawShader = {m_raw->GetBufferPointer(), m_raw->GetBufferSize()};
             desc.blurShader = {m_blur->GetBufferPointer(), m_blur->GetBufferSize()};
+            desc.profiler = eastl::allocate_shared<RetirementProfiler>(eastl::allocator_malloc{}, profilerDetached);
+            profilerLifetime = desc.profiler;
             ASSERT_HRESULT_SUCCEEDED(blocked.init(desc));
             fillInputs(false, false, &blocked);
             ASSERT_HRESULT_SUCCEEDED(blocked.execute(m_constants, true, {gate.Get(), 1}));
             completion = blocked.getReadyPoint();
         }
         EXPECT_EQ(drv3d_dx12::DeviceSsaoPass::collectRetiredResources(), 1u);
+        EXPECT_TRUE(profilerDetached);
+        EXPECT_FALSE(profilerLifetime.expired());
         EXPECT_GT(m_allocator->getAllocationCount(), baseline);
         EXPECT_HRESULT_SUCCEEDED(gate->Signal(1));
         wait(completion);
         EXPECT_EQ(drv3d_dx12::DeviceSsaoPass::collectRetiredResources(), 0u);
+        EXPECT_TRUE(profilerLifetime.expired());
         EXPECT_EQ(m_allocator->getAllocationCount(), baseline);
     }
 }  // namespace

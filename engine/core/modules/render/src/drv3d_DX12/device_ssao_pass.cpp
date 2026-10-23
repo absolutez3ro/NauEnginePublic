@@ -24,6 +24,10 @@ namespace drv3d_dx12
     public:
         ~State()
         {
+            if (profiler)
+            {
+                profiler->detach();
+            }
             if (mapped)
             {
                 constants.getResource()->Unmap(0, nullptr);
@@ -51,6 +55,7 @@ namespace drv3d_dx12
         // Resources are destroyed before the shared allocator and device, including after retirement.
         Microsoft::WRL::ComPtr<ID3D12Device> device;
         eastl::shared_ptr<IDeviceResourceAllocator> allocator;
+        eastl::shared_ptr<d3d::mgpu::ISsaoProfiler> profiler;
         DeviceResource normals;
         DeviceResource depth;
         DeviceResource targets[PASS_COUNT];
@@ -59,12 +64,13 @@ namespace drv3d_dx12
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocators[FRAME_COUNT];
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
         Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-        Microsoft::WRL::ComPtr<ID3D12Fence> dependencies[3];
+        Microsoft::WRL::ComPtr<ID3D12Fence> dependencies[4];
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> srvHeap;
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap;
         Microsoft::WRL::ComPtr<ID3D12RootSignature> root;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> rawPso;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> blurPso;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> outputPso;
         HANDLE event = nullptr;
         uint8_t* mapped = nullptr;
         UINT width = 0;
@@ -83,6 +89,10 @@ namespace drv3d_dx12
 
     DeviceSsaoPass::~DeviceSsaoPass()
     {
+        if (m_state && m_state->profiler)
+        {
+            m_state->profiler->detach();
+        }
         reset(0);
         if (m_state)
         {
@@ -160,9 +170,9 @@ namespace drv3d_dx12
         return m_state ? m_state->execute(constants, blur, normalsReady, depthReady) : DXGI_ERROR_INVALID_CALL;
     }
 
-    HRESULT DeviceSsaoPass::releaseOutput(CrossAdapterSyncPoint released)
+    HRESULT DeviceSsaoPass::releaseOutput(CrossAdapterSyncPoint released, bool raw)
     {
-        return m_state ? m_state->waitOn(released, 2) : DXGI_ERROR_INVALID_CALL;
+        return m_state ? m_state->waitOn(released, raw ? 3 : 2) : DXGI_ERROR_INVALID_CALL;
     }
 
     CrossAdapterSyncPoint DeviceSsaoPass::getReadyPoint() const
@@ -218,7 +228,7 @@ namespace drv3d_dx12
         }
         if (SUCCEEDED(result))
         {
-            result = normals.createTexture(allocator.get(), width, height, DXGI_FORMAT_R32G32B32A32_FLOAT);
+            result = normals.createTexture(allocator.get(), width, height, DXGI_FORMAT_R16G16_FLOAT);
         }
         // CrossAdapterChannel transports raw rows, so an R32_FLOAT endpoint receives the engine's typeless DEPTH32 bytes.
         if (SUCCEEDED(result))
@@ -227,7 +237,7 @@ namespace drv3d_dx12
         }
         for (UINT pass = 0; SUCCEEDED(result) && pass < PASS_COUNT; ++pass)
         {
-            result = targets[pass].createTexture(allocator.get(), width, height, DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+            result = targets[pass].createTexture(allocator.get(), width, height, pass == 2 ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         }
         if (SUCCEEDED(result))
         {
@@ -247,6 +257,11 @@ namespace drv3d_dx12
         if (SUCCEEDED(result))
         {
             result = createPipelines(desc);
+        }
+        if (SUCCEEDED(result) && desc.profiler)
+        {
+            profiler = desc.profiler;
+            profiler->attach(device.Get(), queue.Get());
         }
         return result;
     }
@@ -279,7 +294,7 @@ namespace drv3d_dx12
             for (UINT input = 0; input < 3; ++input)
             {
                 D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-                srv.Format = input == 0 ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R32_FLOAT;
+                srv.Format = input == 0 ? DXGI_FORMAT_R16G16_FLOAT : DXGI_FORMAT_R32_FLOAT;
                 srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                 srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
                 srv.Texture2D.MipLevels = 1;
@@ -347,6 +362,11 @@ namespace drv3d_dx12
         if (SUCCEEDED(result))
         {
             result = device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&blurPso));
+        }
+        pso.RTVFormats[0] = DXGI_FORMAT_R8_UNORM;
+        if (SUCCEEDED(result))
+        {
+            result = device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&outputPso));
         }
         return result;
     }
@@ -479,6 +499,11 @@ namespace drv3d_dx12
         barrier(depth.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         for (UINT pass = 0; pass < PASS_COUNT; ++pass)
         {
+            if (profiler)
+            {
+                constexpr const char* names[] = {"ssao_raw", "ssao_blur_h", "ssao_blur_v"};
+                profiler->beginPass(list.Get(), names[pass]);
+            }
             d3d::mgpu::SsaoConstants parameters = data;
             parameters.filter[0] = blur && pass == 1 ? 1.0f : 0.0f;
             parameters.filter[1] = blur && pass == 2 ? 1.0f : 0.0f;
@@ -488,7 +513,7 @@ namespace drv3d_dx12
             D3D12_GPU_DESCRIPTOR_HANDLE srv = srvHeap->GetGPUDescriptorHandleForHeapStart();
             srv.ptr += pass * 3 * srvStride;
             list->SetGraphicsRootDescriptorTable(1, srv);
-            list->SetPipelineState(pass == 0 ? rawPso.Get() : blurPso.Get());
+            list->SetPipelineState(pass == 0 ? rawPso.Get() : (pass == 1 ? blurPso.Get() : outputPso.Get()));
             ID3D12Resource* target = targets[pass].getResource();
             barrier(target, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
             list->DiscardResource(target, nullptr);
@@ -498,6 +523,10 @@ namespace drv3d_dx12
             list->DrawInstanced(3, 1, 0, 0);
             barrier(target, D3D12_RESOURCE_STATE_RENDER_TARGET,
                     pass == 2 ? D3D12_RESOURCE_STATE_COMMON : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            if (profiler)
+            {
+                profiler->endPass();
+            }
         }
         for (UINT pass = 0; pass < 2; ++pass)
         {
@@ -505,6 +534,10 @@ namespace drv3d_dx12
         }
         barrier(normals.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         barrier(depth.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+        if (profiler)
+        {
+            profiler->resolve(list.Get());
+        }
         result = list->Close();
         if (SUCCEEDED(result))
         {
@@ -520,6 +553,10 @@ namespace drv3d_dx12
         }
         ID3D12CommandList* lists[] = {list.Get()};
         queue->ExecuteCommandLists(1, lists);
+        if (profiler)
+        {
+            profiler->submitted();
+        }
         slotValues[slot] = ++serial;
         ++submissions;
         return signal();

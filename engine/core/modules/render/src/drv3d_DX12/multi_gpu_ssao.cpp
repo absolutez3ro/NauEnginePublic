@@ -15,11 +15,13 @@ namespace d3d::mgpu
         TransferChannelHandle normals = nullptr;
         TransferChannelHandle depth = nullptr;
         TransferChannelHandle output = nullptr;
+        TransferChannelHandle rawOutput = nullptr;
 
         ~SsaoProducer()
         {
             // Flush primary signals/waits, then finish copies before releasing endpoints and their allocator.
             destroy_transfer_channel(output);
+            destroy_transfer_channel(rawOutput);
             destroy_transfer_channel(normals);
             destroy_transfer_channel(depth);
             const HRESULT result = pass.reset();
@@ -48,6 +50,7 @@ namespace d3d::mgpu
             pass.vertexShader = {desc.vertexBytecode, desc.vertexBytecodeSize};
             pass.rawShader = {desc.rawBytecode, desc.rawBytecodeSize};
             pass.blurShader = {desc.blurBytecode, desc.blurBytecodeSize};
+            pass.profiler = desc.profiler;
             result = producer->pass.init(pass);
         }
         if (SUCCEEDED(result))
@@ -56,14 +59,14 @@ namespace d3d::mgpu
             channel.width = desc.width;
             channel.height = desc.height;
             channel.direction = TransferDirection::PrimaryToSecondary;
-            channel.format = TEXFMT_A32B32G32R32F;
+            channel.format = TEXFMT_G16R16F;
             channel.name = "SSAO normals GPU 0 -> GPU 1";
             producer->normals = create_transfer_channel(channel);
             channel.format = TEXFMT_DEPTH32;
             channel.name = "SSAO depth GPU 0 -> GPU 1";
             producer->depth = create_transfer_channel(channel);
             channel.direction = TransferDirection::SecondaryToPrimary;
-            channel.format = TEXFMT_R32F;
+            channel.format = TEXFMT_R8;
             channel.name = "SSAO result GPU 1 -> GPU 0";
             producer->output = create_transfer_channel(channel);
             result = producer->normals && producer->depth && producer->output ? S_OK : E_FAIL;
@@ -74,6 +77,11 @@ namespace d3d::mgpu
             return nullptr;
         }
         return producer.release();
+    }
+
+    bool isSsaoBusy(const SsaoProducer* producer)
+    {
+        return producer && producer->pass.canSubmit() == DXGI_ERROR_WAS_STILL_DRAWING;
     }
 
     SsaoResult renderSsao(SsaoProducer* producer, const SsaoConstants& constants, bool blur, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, BaseTexture* rawDestination)
@@ -117,6 +125,23 @@ namespace d3d::mgpu
         }
         if (SUCCEEDED(result))
         {
+            if (rawDestination && !producer->rawOutput)
+            {
+                // Validation keeps the unfiltered R32F result; normal rendering allocates no extra channel.
+                const D3D12_RESOURCE_DESC size = producer->pass.getNormals()->GetDesc();
+                TransferChannelDesc channel;
+                channel.width = static_cast<uint32_t>(size.Width);
+                channel.height = size.Height;
+                channel.format = TEXFMT_R32F;
+                channel.direction = TransferDirection::SecondaryToPrimary;
+                channel.name = "SSAO raw validation GPU 1 -> GPU 0";
+                producer->rawOutput = create_transfer_channel(channel);
+                if (!producer->rawOutput)
+                {
+                    report_secondary_gpu_failure(static_cast<uint32_t>(E_FAIL));
+                    return SsaoResult::failed;
+                }
+            }
             const drv3d_dx12::CrossAdapterSyncPoint rendered = producer->pass.getReadyPoint();
             const SecondarySyncPoint ready = {rendered.fence, rendered.value};
             for (bool raw : {true, false})
@@ -126,17 +151,18 @@ namespace d3d::mgpu
                 {
                     continue;
                 }
-                const SecondarySend sent = send_from_secondary(producer->output, producer->pass.getResult(raw), ready);
+                const TransferChannelHandle channel = raw ? producer->rawOutput : producer->output;
+                const SecondarySend sent = send_from_secondary(channel, producer->pass.getResult(raw), ready);
                 if (sent.ticket == 0)
                 {
                     return SsaoResult::busy;
                 }
-                result = producer->pass.releaseOutput({static_cast<ID3D12Fence*>(sent.sourceReleased.nativeFence), sent.sourceReleased.value});
+                result = producer->pass.releaseOutput({static_cast<ID3D12Fence*>(sent.sourceReleased.nativeFence), sent.sourceReleased.value}, raw);
                 if (FAILED(result))
                 {
                     break;
                 }
-                if (!receive_on_primary(producer->output, sent.ticket, target))
+                if (!receive_on_primary(channel, sent.ticket, target))
                 {
                     result = E_FAIL;
                     break;

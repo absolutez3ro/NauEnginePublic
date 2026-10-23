@@ -2,6 +2,12 @@
 // Separable bilateral Gaussian blur following Bogdanov M.K.'s SsaoBlur.hlsl.
 #include "ssao_common.hlsli"
 
+float2 PSPackNormals(float4 position : SV_Position) : SV_Target
+{
+    // AO only needs the sphere-map pair, not roughness/metalness from the other G-buffer channels.
+    return aoNormals.Load(int3(int2(position.xy), 0)).xy;
+}
+
 float PSCopyDepth(float4 position : SV_Position) : SV_Target
 {
     return aoDepth.Load(int3(int2(position.xy), 0));

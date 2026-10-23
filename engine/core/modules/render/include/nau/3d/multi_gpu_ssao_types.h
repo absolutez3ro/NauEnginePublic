@@ -5,6 +5,25 @@
 
 namespace d3d::mgpu
 {
+    /** @brief Optional render-thread observer. Retained with pending native work, including after retirement. */
+    class ISsaoProfiler
+    {
+    public:
+        ISsaoProfiler() = default;
+        ISsaoProfiler(const ISsaoProfiler&) = delete;
+        ISsaoProfiler(ISsaoProfiler&&) = delete;
+        ISsaoProfiler& operator=(const ISsaoProfiler&) = delete;
+        ISsaoProfiler& operator=(ISsaoProfiler&&) = delete;
+        virtual ~ISsaoProfiler() = default;
+
+        virtual void attach(void* device, void* queue) = 0;
+        virtual void beginPass(void* list, const char* name) = 0;
+        virtual void endPass() = 0;
+        virtual void resolve(void* list) = 0;
+        virtual void submitted() = 0;
+        virtual void detach() = 0;
+    };
+
     /** @brief Column-major matrices and parameters matching ssao_common.hlsli exactly. */
     struct SsaoConstants
     {

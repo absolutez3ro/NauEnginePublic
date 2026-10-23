@@ -1,6 +1,10 @@
 compile_configs {
     config {
         stage:t="ps"
+        entry:t="PSPackNormals"
+    }
+    config {
+        stage:t="ps"
         entry:t="PSCopyDepth"
     }
     config {

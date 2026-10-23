@@ -20,6 +20,7 @@ namespace drv3d_dx12
         D3D12_SHADER_BYTECODE vertexShader = {};
         D3D12_SHADER_BYTECODE rawShader = {};
         D3D12_SHADER_BYTECODE blurShader = {};
+        eastl::shared_ptr<d3d::mgpu::ISsaoProfiler> profiler;
     };
 
     /** @brief Three AO draws on one explicit device/queue. Inputs and outputs are COMMON between submissions.
@@ -41,7 +42,7 @@ namespace drv3d_dx12
         HRESULT reset(DWORD timeoutMs = 10000);
         HRESULT canSubmit() const;
         HRESULT execute(const d3d::mgpu::SsaoConstants& constants, bool blur, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {});
-        HRESULT releaseOutput(CrossAdapterSyncPoint released);
+        HRESULT releaseOutput(CrossAdapterSyncPoint released, bool raw = false);
         CrossAdapterSyncPoint getReadyPoint() const;
         ID3D12Resource* getNormals() const;
         ID3D12Resource* getDepth() const;
