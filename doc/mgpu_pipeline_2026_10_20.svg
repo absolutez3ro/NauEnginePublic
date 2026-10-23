@@ -1,0 +1,174 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="2200" viewBox="0 0 1400 2200" role="img" aria-labelledby="title desc">
+<title id="title">Nau и MGPU — цифровой разбор рисунка</title>
+<desc id="desc">Пять схем: учебные зависимости отрисовки, проверенная цепочка Nau, планы переноса теней и AO на GPU 1 и различие AFR, SFR и разделения по проходам.</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="none" stroke="#6e8199" stroke-width="1.5"/></marker></defs>
+<rect width="1400" height="2200" fill="#f7f9fc"/>
+<g font-family="Segoe UI, Arial, sans-serif">
+<text x="48" y="56" font-size="17" fill="#457199" font-weight="600">NAU / MGPU</text>
+<text x="48" y="106" font-size="36" fill="#20334c" font-weight="600">От рисунка к устройствам и проходам</text>
+<text x="48" y="145" font-size="18" fill="#526279" font-weight="400">20 октября 2026  ·  MG-10  ·  функциональная проверка: аппаратный GPU + WARP</text>
+<line x1="48" y1="180" x2="1352" y2="180" stroke="#d7dfe8"/>
+<text x="48" y="223" font-size="22" fill="#457199" font-weight="600">01</text>
+<text x="103" y="223" font-size="26" fill="#20334c" font-weight="600">Учебная схема из тетради</text>
+<text x="103" y="254" font-size="17" fill="#526279" font-weight="400">Восстановлены читаемые блоки; стрелки упорядочены по смыслу зависимостей, а не как точная трассировка фото.</text>
+<rect x="48" y="285" width="230" height="78" rx="12" fill="#e8f0fb" stroke="#abc3df"/>
+<text x="64" y="315" font-size="19" fill="#20334c" font-weight="600">Depth prepass</text>
+<text x="64" y="341" font-size="15" fill="#526279" font-weight="400">Глубина и данные сцены</text>
+<rect x="325" y="285" width="230" height="78" rx="12" fill="#e8f0fb" stroke="#abc3df"/>
+<text x="341" y="315" font-size="19" fill="#20334c" font-weight="600">AO</text>
+<text x="341" y="341" font-size="15" fill="#526279" font-weight="400">Карта затенения</text>
+<rect x="610" y="285" width="285" height="78" rx="12" fill="#e8f0fb" stroke="#abc3df"/>
+<text x="626" y="315" font-size="19" fill="#20334c" font-weight="600">G-buffer</text>
+<text x="626" y="341" font-size="15" fill="#526279" font-weight="400">Color · normals · material</text>
+<rect x="1030" y="285" width="322" height="78" rx="12" fill="#e8f0fb" stroke="#abc3df"/>
+<text x="1046" y="315" font-size="19" fill="#20334c" font-weight="600">Shadow map</text>
+<text x="1046" y="341" font-size="15" fill="#526279" font-weight="400">Глубина со стороны света</text>
+<path d="M278,324 L325,324" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<rect x="610" y="415" width="285" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="626" y="445" font-size="19" fill="#20334c" font-weight="600">Освещение / Light</text>
+<text x="626" y="471" font-size="15" fill="#526279" font-weight="400">Final color</text>
+<path d="M163,363 L163,455 L610,455" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M440,363 L440,435 L610,435" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M752,363 L752,415" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M1191,363 L1191,455 L895,455" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<rect x="48" y="535" width="230" height="78" rx="12" fill="#ffffff" stroke="#cbd5df"/>
+<text x="64" y="565" font-size="19" fill="#20334c" font-weight="600">Decals / emission</text>
+<text x="64" y="591" font-size="15" fill="#526279" font-weight="400">Условный блок рисунка</text>
+<rect x="325" y="535" width="230" height="78" rx="12" fill="#ffffff" stroke="#cbd5df"/>
+<text x="341" y="565" font-size="19" fill="#20334c" font-weight="600">Transparent</text>
+<text x="341" y="591" font-size="15" fill="#526279" font-weight="400">Прозрачные объекты</text>
+<rect x="610" y="535" width="285" height="78" rx="12" fill="#ffffff" stroke="#cbd5df"/>
+<text x="626" y="565" font-size="19" fill="#20334c" font-weight="600">Postprocess</text>
+<text x="626" y="591" font-size="15" fill="#526279" font-weight="400">AA зависит от алгоритма</text>
+<rect x="945" y="535" width="165" height="78" rx="12" fill="#ffffff" stroke="#cbd5df"/>
+<text x="961" y="565" font-size="19" fill="#20334c" font-weight="600">UI</text>
+<text x="961" y="591" font-size="15" fill="#526279" font-weight="400">Интерфейс</text>
+<rect x="1160" y="535" width="192" height="78" rx="12" fill="#ffffff" stroke="#cbd5df"/>
+<text x="1176" y="565" font-size="19" fill="#20334c" font-weight="600">Present</text>
+<text x="1176" y="591" font-size="15" fill="#526279" font-weight="400">Показ кадра</text>
+<path d="M660,493 L660,513 L163,513 L163,535" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M278,574 L325,574" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M555,574 L610,574" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M895,574 L945,574" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M1110,574 L1160,574" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<text x="48" y="650" font-size="16" fill="#526279" font-weight="400">Неразборчивые обозначения справа вверху не восстановлены. Отдельные AO / decals / AA не объявлены готовыми проходами Nau.</text>
+<line x1="48" y1="686" x2="1352" y2="686" stroke="#d7dfe8"/>
+<text x="48" y="729" font-size="22" fill="#457199" font-weight="600">02</text>
+<text x="103" y="729" font-size="26" fill="#20334c" font-weight="600">Проверенная основная цепочка Nau</text>
+<text x="103" y="760" font-size="17" fill="#526279" font-weight="400">gbuffer_nodes.cpp + render_graph.cpp · текущая ветка · дополнительные ветви outline/cubemaps опущены</text>
+<rect x="48" y="790" width="220" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="64" y="820" font-size="19" fill="#20334c" font-weight="600">z-prepass</text>
+<text x="64" y="846" font-size="15" fill="#526279" font-weight="400">Глубина</text>
+<rect x="318" y="790" width="220" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="334" y="820" font-size="19" fill="#20334c" font-weight="600">fill_gbuffer</text>
+<text x="334" y="846" font-size="15" fill="#526279" font-weight="400">Непрозрачная сцена</text>
+<rect x="588" y="790" width="220" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="604" y="820" font-size="19" fill="#20334c" font-weight="600">CSM</text>
+<text x="604" y="846" font-size="15" fill="#526279" font-weight="400">Каскадные тени</text>
+<rect x="858" y="790" width="220" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="874" y="820" font-size="19" fill="#20334c" font-weight="600">gbuffer_resolve</text>
+<text x="874" y="846" font-size="15" fill="#526279" font-weight="400">Освещение</text>
+<rect x="1128" y="790" width="224" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="1144" y="820" font-size="19" fill="#20334c" font-weight="600">render_envi</text>
+<text x="1144" y="846" font-size="15" fill="#526279" font-weight="400">Небо</text>
+<path d="M268,829 L318,829" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M538,829 L588,829" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M808,829 L858,829" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M1078,829 L1128,829" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<rect x="48" y="920" width="285" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="64" y="950" font-size="19" fill="#20334c" font-weight="600">forward_translucent</text>
+<text x="64" y="976" font-size="15" fill="#526279" font-weight="400">Прозрачность</text>
+<rect x="390" y="920" width="240" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="406" y="950" font-size="19" fill="#20334c" font-weight="600">post_fx_nodes</text>
+<text x="406" y="976" font-size="15" fill="#526279" font-weight="400">Tonemap</text>
+<rect x="687" y="920" width="385" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="703" y="950" font-size="19" fill="#20334c" font-weight="600">Billboard · grid · debug · GUI</text>
+<text x="703" y="976" font-size="15" fill="#526279" font-weight="400">Также pixel extraction по запросу</text>
+<rect x="1128" y="920" width="224" height="78" rx="12" fill="#ffffff" stroke="#cbd5df"/>
+<text x="1144" y="950" font-size="19" fill="#20334c" font-weight="600">Present</text>
+<text x="1144" y="976" font-size="15" fill="#526279" font-weight="400">Swapchain</text>
+<path d="M1240,868 L1240,895 L190,895 L190,920" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M333,959 L390,959" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M630,959 L687,959" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M1072,959 L1128,959" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<line x1="48" y1="1040" x2="1352" y2="1040" stroke="#d7dfe8"/>
+<text x="48" y="1083" font-size="22" fill="#457199" font-weight="600">03</text>
+<text x="103" y="1083" font-size="26" fill="#20334c" font-weight="600">Перенос теней на GPU 1 — план интеграции</text>
+<text x="103" y="1114" font-size="17" fill="#526279" font-weight="400">MG-10 создаёт локальные ресурсы и выполняет draw; межадаптерная передача и включение в кадр — следующий этап.</text>
+<text x="48" y="1162" font-size="20" fill="#457199" font-weight="600">GPU 1</text>
+<rect x="176" y="1125" width="250" height="78" rx="12" fill="#e8f0fb" stroke="#abc3df"/>
+<text x="192" y="1155" font-size="19" fill="#20334c" font-weight="600">Shadow pass</text>
+<text x="192" y="1181" font-size="15" fill="#526279" font-weight="400">Нужны геометрия и матрицы</text>
+<rect x="488" y="1125" width="250" height="78" rx="12" fill="#e8f0fb" stroke="#abc3df"/>
+<text x="504" y="1155" font-size="19" fill="#20334c" font-weight="600">Локальная SM</text>
+<text x="504" y="1181" font-size="15" fill="#526279" font-weight="400">Текстура GPU 1</text>
+<rect x="800" y="1125" width="250" height="78" rx="12" fill="#fff2dd" stroke="#e4c98f"/>
+<text x="816" y="1155" font-size="19" fill="#20334c" font-weight="600">Copy → shared</text>
+<text x="816" y="1181" font-size="15" fill="#526279" font-weight="400">После source_ready</text>
+<path d="M426,1164 L488,1164" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M738,1164 L800,1164" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<text x="48" y="1320" font-size="20" fill="#457199" font-weight="600">GPU 0</text>
+<rect x="176" y="1283" width="250" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="192" y="1313" font-size="19" fill="#20334c" font-weight="600">Depth / G-buffer</text>
+<text x="192" y="1339" font-size="15" fill="#526279" font-weight="400">Работа основного GPU</text>
+<rect x="488" y="1283" width="250" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="504" y="1313" font-size="19" fill="#20334c" font-weight="600">Освещение</text>
+<text x="504" y="1339" font-size="15" fill="#526279" font-weight="400">Читает локальную SM</text>
+<rect x="800" y="1283" width="250" height="78" rx="12" fill="#fff2dd" stroke="#e4c98f"/>
+<text x="816" y="1313" font-size="19" fill="#20334c" font-weight="600">Copy из shared</text>
+<text x="816" y="1339" font-size="15" fill="#526279" font-weight="400">Локальная текстура GPU 0</text>
+<rect x="1112" y="1283" width="240" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="1128" y="1313" font-size="19" fill="#20334c" font-weight="600">Post → UI → Present</text>
+<text x="1128" y="1339" font-size="15" fill="#526279" font-weight="400">Продолжение кадра</text>
+<path d="M925,1203 L925,1283" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="7 5"/>
+<path d="M800,1322 L738,1322" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M426,1322 L488,1322" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M613,1361 L613,1385 L1232,1385 L1232,1361" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<text x="1070" y="1180" font-size="17" fill="#526279" font-weight="400">Shared handle</text>
+<text x="1070" y="1205" font-size="17" fill="#526279" font-weight="400">+ fence / value</text>
+<text x="176" y="1246" font-size="17" fill="#526279" font-weight="400">До перезаписи GPU 1 ждёт sourceReleased. GPU 0 ждёт готовность копии перед чтением.</text>
+<line x1="48" y1="1425" x2="1352" y2="1425" stroke="#d7dfe8"/>
+<text x="48" y="1468" font-size="22" fill="#457199" font-weight="600">04</text>
+<text x="103" y="1468" font-size="26" fill="#20334c" font-weight="600">AO — план вашей команды из полной таблицы</text>
+<text x="103" y="1499" font-size="17" fill="#526279" font-weight="400">Гаркуша / Езерский / Климчук · GPU 0 отправляет depth + normals; GPU 1 возвращает AO map перед освещением.</text>
+<text x="48" y="1552" font-size="20" fill="#457199" font-weight="600">GPU 0</text>
+<rect x="176" y="1515" width="285" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="192" y="1545" font-size="19" fill="#20334c" font-weight="600">Depth + fill_gbuffer</text>
+<text x="192" y="1571" font-size="15" fill="#526279" font-weight="400">Текущий источник нормалей</text>
+<rect x="523" y="1515" width="340" height="78" rx="12" fill="#fff2dd" stroke="#e4c98f"/>
+<text x="539" y="1545" font-size="19" fill="#20334c" font-weight="600">Подготовка и передача</text>
+<text x="539" y="1571" font-size="15" fill="#526279" font-weight="400">R32_FLOAT + R16G16_FLOAT</text>
+<rect x="1020" y="1515" width="332" height="78" rx="12" fill="#e7f4ee" stroke="#a4ccb8"/>
+<text x="1036" y="1545" font-size="19" fill="#20334c" font-weight="600">Освещение</text>
+<text x="1036" y="1571" font-size="15" fill="#526279" font-weight="400">Читает AO map R8_UNORM</text>
+<path d="M461,1554 L523,1554" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<text x="48" y="1697" font-size="20" fill="#457199" font-weight="600">GPU 1</text>
+<rect x="523" y="1660" width="340" height="78" rx="12" fill="#e8f0fb" stroke="#abc3df"/>
+<text x="539" y="1690" font-size="19" fill="#20334c" font-weight="600">AO pass</text>
+<text x="539" y="1716" font-size="15" fill="#526279" font-weight="400">Вход: depth + encoded normal</text>
+<rect x="1020" y="1660" width="332" height="78" rx="12" fill="#fff2dd" stroke="#e4c98f"/>
+<text x="1036" y="1690" font-size="19" fill="#20334c" font-weight="600">Передача AO → GPU 0</text>
+<text x="1036" y="1716" font-size="15" fill="#526279" font-weight="400">Цель: 0 кадров задержки</text>
+<path d="M693,1593 L693,1660" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="7 5"/>
+<path d="M863,1699 L1020,1699" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" />
+<path d="M1186,1660 L1186,1593" fill="none" stroke="#6e8199" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="7 5"/>
+<text x="176" y="1785" font-size="17" fill="#526279" font-weight="400">Нормали пока не выходят из z-prepass: ранний AO требует изменения prepass, иначе старт после fill_gbuffer.</text>
+<text x="176" y="1816" font-size="17" fill="#526279" font-weight="400">1920×1080: 17,80 МиБ полезных данных в обе стороны за кадр. Это расчёт объёма, не замер скорости.</text>
+<line x1="48" y1="1885" x2="1352" y2="1885" stroke="#d7dfe8"/>
+<text x="48" y="1928" font-size="22" fill="#457199" font-weight="600">05</text>
+<text x="103" y="1928" font-size="26" fill="#20334c" font-weight="600">Три способа разделить работу</text>
+<text x="103" y="1959" font-size="17" fill="#526279" font-weight="400">Нижний рисунок с shadow map относится к разделению по проходам; его не нужно называть AFR.</text>
+<rect x="48" y="1990" width="390" height="115" rx="12" fill="#e8f0fb" stroke="#abc3df"/>
+<text x="64" y="2020" font-size="19" fill="#20334c" font-weight="600">AFR — целые кадры</text>
+<text x="64" y="2046" font-size="15" fill="#526279" font-weight="400">GPU A: кадры 0, 2   ·   GPU B: 1, 3</text>
+<text x="64" y="2083" font-size="15" fill="#526279" font-weight="400">Нужны согласованные данные между кадрами.</text>
+<rect x="480" y="1990" width="390" height="115" rx="12" fill="#e8f0fb" stroke="#abc3df"/>
+<text x="496" y="2020" font-size="19" fill="#20334c" font-weight="600">SFR — части одного кадра</text>
+<text x="496" y="2046" font-size="15" fill="#526279" font-weight="400">Например: левая / правая часть экрана</text>
+<text x="496" y="2083" font-size="15" fill="#526279" font-weight="400">Результаты частей нужно объединить.</text>
+<rect x="912" y="1990" width="440" height="115" rx="12" fill="#e8f0fb" stroke="#abc3df"/>
+<text x="928" y="2020" font-size="19" fill="#20334c" font-weight="600">Разделение по проходам</text>
+<text x="928" y="2046" font-size="15" fill="#526279" font-weight="400">GPU 1: AO / тени   ·   GPU 0: остальная сцена</text>
+<text x="928" y="2083" font-size="15" fill="#526279" font-weight="400">Нужны передача ресурсов и зависимости.</text>
+<text x="48" y="2160" font-size="16" fill="#526279" font-weight="400">Синий: схема/план  ·  зелёный: основной рендер  ·  охра: передача  ·  данные GPU 1 не становятся shared автоматически.</text>
+</g></svg>

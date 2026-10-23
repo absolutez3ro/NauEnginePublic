@@ -1275,6 +1275,32 @@ void DeviceContext::flushDraws()
   frontFlush();
 }
 
+void DeviceContext::releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint64_t value)
+{
+  DX12_LOCK_FRONT();
+
+  if (image)
+  {
+    commandStream.pushBack(make_command<CmdTransitionTextureForForeignQueue>(image));
+  }
+  // The signal must follow the submit of everything recorded so far: a foreign queue waiting for it must never depend on
+  // a command list that is still open here.
+  commandStream.pushBack(make_command<CmdFlushWithFence>(front.recordingWorkItemProgress));
+  immediateModeExecute();
+  frontFlush();
+
+  commandStream.pushBack(make_command<CmdSignalForeignFence>(fence, value));
+  immediateModeExecute();
+}
+
+void DeviceContext::waitForForeignQueue(ID3D12Fence *fence, uint64_t value)
+{
+  DX12_LOCK_FRONT();
+
+  commandStream.pushBack(make_command<CmdWaitForeignFence>(fence, value));
+  immediateModeExecute();
+}
+
 bool DeviceContext::flushDrawWhenNoQueries()
 {
   DX12_LOCK_FRONT();
@@ -5194,6 +5220,24 @@ void DeviceContext::ExecutionContext::flushComputeState()
   csStageState.flushResourceStates(pipelineHeader.resourceUsageTable.bRegisterUseMask,
     pipelineHeader.resourceUsageTable.tRegisterUseMask, pipelineHeader.resourceUsageTable.uRegisterUseMask, STAGE_CS,
     contextState.resourceStates, contextState.graphicsCommandListBarrierBatch, contextState.graphicsCommandListSplitBarrierTracker);
+}
+
+void DeviceContext::ExecutionContext::transitionTextureForForeignQueue(Image *image)
+{
+  // COPY_QUEUE_SOURCE is COMMON: the state a copy queue of this device can read from and write to.
+  contextState.resourceStates.useTextureAsReadBack(contextState.graphicsCommandListBarrierBatch,
+    contextState.graphicsCommandListSplitBarrierTracker, image, SubresourceIndex::make(0));
+  dirtyTextureState(image);
+}
+
+void DeviceContext::ExecutionContext::signalForeignFence(ID3D12Fence *fence, uint64_t value)
+{
+  device.queues[DeviceQueueType::GRAPHICS].enqueueProgressUpdate(fence, value);
+}
+
+void DeviceContext::ExecutionContext::waitForeignFence(ID3D12Fence *fence, uint64_t value)
+{
+  device.queues[DeviceQueueType::GRAPHICS].syncWith(fence, value);
 }
 
 void DeviceContext::ExecutionContext::textureReadBack(Image *image, HostDeviceSharedMemoryRegion cpu_memory,

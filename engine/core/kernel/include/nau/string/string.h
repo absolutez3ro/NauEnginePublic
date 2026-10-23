@@ -283,7 +283,7 @@ namespace nau
         //! Equality Comparison Operators
         inline std::strong_ordering operator<=>(const string& str) const noexcept
         {
-            return {(signed char)m_data.compare(str.m_data)};
+            return m_data.compare(str.m_data) <=> 0;
         }
 
         inline bool operator==(const string&) const = default;
