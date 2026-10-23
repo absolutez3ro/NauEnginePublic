@@ -3,12 +3,18 @@
 
 #include <cstring>
 
+#include "device_resource.h"
 #include "multi_gpu_test_utils.h"
 #include "multi_gpu_transfer.h"
+#include "test_fullscreen_pass_utils.h"
 
 using drv3d_dx12::CrossAdapterChannel;
 using drv3d_dx12::CrossAdapterFence;
 using drv3d_dx12::CrossAdapterSyncPoint;
+using drv3d_dx12::DeviceFullscreenPass;
+using drv3d_dx12::DeviceFullscreenPassDesc;
+using drv3d_dx12::DeviceResource;
+using drv3d_dx12::FullscreenPassColor;
 using multi_gpu_test::ComPtr;
 using multi_gpu_test::expectNoDebugWarnings;
 using multi_gpu_test::makeHardwarePair;
@@ -231,6 +237,85 @@ namespace
 
 // The full producer -> shared slots -> consumer path, including reuse of the producer's render target.
 // The full-engine test target uses Nau's placed-resource allocator; the standalone target uses its test allocator.
+TEST(MultiGpuIntegration, AnimatedFullscreenPassArrivesOnOtherAdapter)
+{
+    ComPtr<ID3D12Debug> debug;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+    {
+        debug->EnableDebugLayer();
+    }
+    TestGpu gpus[2];
+    if (!makeTwoDevices(gpus))
+    {
+        GTEST_SKIP() << "A hardware pair or hardware + WARP is required";
+    }
+    ComPtr<ID3DBlob> vertexShader = mgpu_test::compileTestShader("vsMain", "vs_5_0");
+    ComPtr<ID3DBlob> pixelShader = mgpu_test::compileTestShader("psMain", "ps_5_0");
+    ASSERT_TRUE(vertexShader && pixelShader);
+    for (UINT producerIndex = 0; producerIndex < 2; ++producerIndex)
+    {
+        TestGpu& producer = gpus[producerIndex];
+        TestGpu& consumer = gpus[1 - producerIndex];
+        eastl::shared_ptr<mgpu_test::TestResourceAllocator> allocator = mgpu_test::makeTestResourceAllocator();
+        eastl::shared_ptr<mgpu_test::TestResourceAllocator> destinationAllocator = mgpu_test::makeTestResourceAllocator();
+        ASSERT_HRESULT_SUCCEEDED(allocator->init(producer.device.Get()));
+        ASSERT_HRESULT_SUCCEEDED(destinationAllocator->init(consumer.device.Get()));
+        for (UINT width : {1920u, 961u})
+        {
+            const UINT height = width == 1920 ? 1080 : 541;
+            SCOPED_TRACE(testing::Message() << "producer " << producerIndex << ", size " << width << 'x' << height);
+            DeviceFullscreenPassDesc desc;
+            desc.allocator = allocator;
+            desc.width = width;
+            desc.height = height;
+            desc.vertexShader = {vertexShader->GetBufferPointer(), vertexShader->GetBufferSize()};
+            desc.pixelShader = {pixelShader->GetBufferPointer(), pixelShader->GetBufferSize()};
+            DeviceFullscreenPass pass;
+            ASSERT_HRESULT_SUCCEEDED(pass.init(desc));
+            DeviceResource destination;
+            ASSERT_HRESULT_SUCCEEDED(destination.createRenderTarget(destinationAllocator.get(), width, height));
+            CrossAdapterChannel channel;
+            ASSERT_HRESULT_SUCCEEDED(channel.init(producer.device.Get(), consumer.device.Get(), consumer.device.Get(),
+                                                  textureDesc(width, height, DXGI_FORMAT_R8G8B8A8_UNORM), 2, L"MG-12 integration"));
+            for (UINT frame = 0; frame < 6; ++frame)
+            {
+                SCOPED_TRACE(testing::Message() << "frame " << frame);
+                const FullscreenPassColor color = {frame / 5.0f, 0.25f, 1.0f - frame / 5.0f, 1.0f};
+                pass.setColor(color);
+                ASSERT_HRESULT_SUCCEEDED(pass.execute(false));
+                const CrossAdapterChannel::Send sent = channel.send(pass.getRenderTarget(),
+                                                                    {pass.getFence(), pass.getLastSubmittedValue()});
+                ASSERT_EQ(sent.ticket, frame + 1u);
+                // The next draw and pass destruction must wait until the transfer has stopped reading the old target.
+                ASSERT_HRESULT_SUCCEEDED(pass.waitForExternalWork(sent.sourceReleased.fence, sent.sourceReleased.value));
+                const CrossAdapterSyncPoint ready = channel.receive(sent.ticket, destination.getResource(), {});
+                ASSERT_NE(ready.fence, nullptr);
+                ASSERT_HRESULT_SUCCEEDED(consumer.queue->Wait(ready.fence, ready.value));
+                const TestVector<uint8_t> pixels = download(consumer, destination.getResource());
+                ASSERT_EQ(pixels.size(), static_cast<size_t>(width) * height * 4);
+                mgpu_test::expectCheckerboard(pixels.data(), width, height, color);
+            }
+            ASSERT_HRESULT_SUCCEEDED(pass.reset());
+            channel.reset();
+            destination.reset();
+        }
+        EXPECT_EQ(allocator->getAllocationCount(), 0u);
+        EXPECT_EQ(destinationAllocator->getAllocationCount(), 0u);
+        ASSERT_HRESULT_SUCCEEDED(allocator->shutdown());
+        ASSERT_HRESULT_SUCCEEDED(destinationAllocator->shutdown());
+    }
+    for (TestGpu& gpu : gpus)
+    {
+        // The engine allocator creates WRITE_COMBINE upload heaps. D3D12 warning #1318 is a performance advisory.
+#if defined(NAU_MGPU_TEST_ENGINE_ALLOCATOR)
+        expectNoDebugWarnings(gpu.device.Get(), true);
+#else
+        expectNoDebugWarnings(gpu.device.Get());
+#endif
+    }
+    EXPECT_EQ(DeviceFullscreenPass::collectRetiredResources(), 0u);
+}
+
 TEST(MultiGpuTransfer, StartsEmptyAndRejectsInvalidSetup)
 {
     CrossAdapterChannel channel;
