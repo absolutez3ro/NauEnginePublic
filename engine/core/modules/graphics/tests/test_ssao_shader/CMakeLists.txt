@@ -1,0 +1,23 @@
+cmake_minimum_required(VERSION 3.24)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    project(NauSsaoShaderTests LANGUAGES CXX)
+    enable_testing()
+endif()
+
+if(NOT WIN32)
+    message(FATAL_ERROR "The SSAO shader tests require Windows WARP")
+endif()
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+if(NOT TARGET gtest_main)
+    add_subdirectory("../../../../../3rdparty_libs/googletest" "googletest")
+endif()
+get_filename_component(NAU_ROOT "../../../../../.." ABSOLUTE)
+add_executable(test_ssao_shader test_ssao_shader.cpp ../../../../../3rdparty_libs/EASTL/source/assert.cpp)
+target_compile_features(test_ssao_shader PRIVATE cxx_std_20)
+target_compile_definitions(test_ssao_shader PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN EASTL_DEBUGPARAMS_LEVEL=0
+    NAU_SSAO_SHADER_DIR="${NAU_ROOT}/samples/sceneBase/content/shaders")
+target_include_directories(test_ssao_shader PRIVATE
+    "../../../../../3rdparty_libs/EASTL/include" "../../../../../3rdparty_libs/EABase/include/Common")
+target_link_libraries(test_ssao_shader PRIVATE gtest_main d3d11 d3dcompiler dxguid)
+include(GoogleTest)
+gtest_discover_tests(test_ssao_shader DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 30)
