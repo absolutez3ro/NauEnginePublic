@@ -1,0 +1,35 @@
+cmake_minimum_required(VERSION 3.24)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    project(NauMultiGpuTests LANGUAGES CXX)
+    enable_testing()
+    if(WIN32)
+        set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+        add_subdirectory("../../../../../3rdparty_libs/googletest" "googletest")
+    endif()
+endif()
+
+add_executable(test_multi_gpu_status test_multi_gpu_status.cpp)
+target_compile_features(test_multi_gpu_status PRIVATE cxx_std_20)
+target_include_directories(test_multi_gpu_status PRIVATE "../../src/drv3d_DX12")
+add_test(NAME MultiGpuFallbackStatus COMMAND test_multi_gpu_status)
+
+if(WIN32)
+    add_executable(test_multi_gpu test_multi_gpu.cpp)
+
+    target_sources(test_multi_gpu PRIVATE ../../../../../3rdparty_libs/EASTL/source/assert.cpp)
+    target_compile_features(test_multi_gpu PRIVATE cxx_std_20)
+    target_compile_definitions(test_multi_gpu PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_include_directories(test_multi_gpu PRIVATE "../../include" "../../src/drv3d_DX12"
+        "../../../../../3rdparty_libs/EASTL/include"
+        "../../../../../3rdparty_libs/EABase/include/Common")
+    if(NOT TARGET Render OR BUILD_SHARED_LIBS)
+        target_compile_definitions(test_multi_gpu PRIVATE EASTL_DEBUGPARAMS_LEVEL=0)
+    endif()
+    target_link_libraries(test_multi_gpu PRIVATE gtest_main d3d12 dxgi dxguid d3dcompiler)
+    if(COMMAND nau_add_compile_options)
+        nau_add_compile_options(test_multi_gpu)
+    endif()
+    include(GoogleTest)
+    gtest_discover_tests(test_multi_gpu DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 10
+        NO_PRETTY_VALUES PROPERTIES TIMEOUT 30)
+endif()
