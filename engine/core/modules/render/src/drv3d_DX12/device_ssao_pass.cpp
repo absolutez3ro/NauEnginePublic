@@ -81,6 +81,7 @@ namespace drv3d_dx12
         Microsoft::WRL::ComPtr<ID3D12PipelineState> m_rawPso;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> m_blurPso;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> m_outputPso;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> m_normalPso;
         HANDLE m_event = nullptr;
         uint8_t* m_mapped = nullptr;
         UINT m_width = 0;
@@ -122,6 +123,10 @@ namespace drv3d_dx12
         if (!desc.allocator || !desc.allocator->getDevice() || desc.width == 0 || desc.height == 0 ||
             desc.width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION || desc.height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
             !validShader(desc.vertexShader) || !validShader(desc.rawShader) || !validShader(desc.blurShader))
+        {
+            return E_INVALIDARG;
+        }
+        if ((desc.normalShader.pShaderBytecode || desc.normalShader.BytecodeLength != 0) && !validShader(desc.normalShader))
         {
             return E_INVALIDARG;
         }
@@ -238,7 +243,7 @@ namespace drv3d_dx12
         }
         if (SUCCEEDED(result))
         {
-            result = m_normals.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R16G16_FLOAT);
+            result = m_normals.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R16G16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         }
         // CrossAdapterChannel transports raw rows, so an R32_FLOAT endpoint receives the engine's typeless DEPTH32 bytes.
         if (SUCCEEDED(result))
@@ -280,10 +285,10 @@ namespace drv3d_dx12
     {
         D3D12_DESCRIPTOR_HEAP_DESC desc = {};
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        desc.NumDescriptors = PASS_COUNT;
+        desc.NumDescriptors = PASS_COUNT + 1;
         HRESULT result = m_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&m_rtvHeap));
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        desc.NumDescriptors = PASS_COUNT * 3;
+        desc.NumDescriptors = (PASS_COUNT + 1) * 3;
         desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (SUCCEEDED(result))
         {
@@ -295,12 +300,14 @@ namespace drv3d_dx12
         }
         m_srvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         m_rtvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        for (UINT pass = 0; pass < PASS_COUNT; ++pass)
+        for (UINT pass = 0; pass <= PASS_COUNT; ++pass)
         {
             D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
             rtv.ptr += pass * m_rtvStride;
-            m_device->CreateRenderTargetView(m_targets[pass].getResource(), nullptr, rtv);
-            ID3D12Resource* inputs[] = {m_normals.getResource(), m_depth.getResource(), pass == 0 ? m_depth.getResource() : m_targets[pass - 1].getResource()};
+            const bool reconstruct = pass == PASS_COUNT;
+            m_device->CreateRenderTargetView(reconstruct ? m_normals.getResource() : m_targets[pass].getResource(), nullptr, rtv);
+            ID3D12Resource* inputs[] = {reconstruct ? nullptr : m_normals.getResource(), m_depth.getResource(),
+                                        reconstruct ? nullptr : (pass == 0 ? m_depth.getResource() : m_targets[pass - 1].getResource())};
             for (UINT input = 0; input < 3; ++input)
             {
                 D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
@@ -377,6 +384,12 @@ namespace drv3d_dx12
         if (SUCCEEDED(result))
         {
             result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_outputPso));
+        }
+        if (SUCCEEDED(result) && validShader(desc.normalShader))
+        {
+            pso.PS = desc.normalShader;
+            pso.RTVFormats[0] = DXGI_FORMAT_R16G16_FLOAT;
+            result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_normalPso));
         }
         return result;
     }
@@ -505,8 +518,37 @@ namespace drv3d_dx12
         m_list->RSSetViewports(1, &viewport);
         m_list->RSSetScissorRects(1, &scissor);
         m_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        barrier(m_normals.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         barrier(m_depth.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        if (m_normalPso)
+        {
+            if (m_profiler)
+            {
+                m_profiler->beginPass(m_list.Get(), "ssao_reconstruct_normals");
+            }
+            // Reconstruction and raw AO share projection/view constants in the first slot; filter steps are unused here.
+            const UINT offset = slot * PASS_COUNT * CONSTANT_BYTES;
+            std::memcpy(m_mapped + offset, &data, sizeof(data));
+            m_list->SetGraphicsRootConstantBufferView(0, m_constants.getResource()->GetGPUVirtualAddress() + offset);
+            D3D12_GPU_DESCRIPTOR_HANDLE srv = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
+            srv.ptr += PASS_COUNT * 3 * m_srvStride;
+            m_list->SetGraphicsRootDescriptorTable(1, srv);
+            m_list->SetPipelineState(m_normalPso.Get());
+            barrier(m_normals.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            m_list->DiscardResource(m_normals.getResource(), nullptr);
+            D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+            rtv.ptr += PASS_COUNT * m_rtvStride;
+            m_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+            m_list->DrawInstanced(3, 1, 0, 0);
+            barrier(m_normals.getResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            if (m_profiler)
+            {
+                m_profiler->endPass();
+            }
+        }
+        else
+        {
+            barrier(m_normals.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
         for (UINT pass = 0; pass < PASS_COUNT; ++pass)
         {
             if (m_profiler)

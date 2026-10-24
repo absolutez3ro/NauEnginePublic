@@ -126,7 +126,7 @@ namespace
             }
         }
 
-        ComPtr<ID3DBlob> compile(bool blur, bool vertex)
+        ComPtr<ID3DBlob> compile(bool blur, bool vertex, const char* pixelEntry = "PSMain")
         {
             const wchar_t* path = blur ? L"ssao_blur.hlsl" : L"ssao.hlsl";
             wchar_t fullPath[1024] = {};
@@ -134,17 +134,17 @@ namespace
             ShaderIncludes includes;
             ComPtr<ID3DBlob> blob;
             ComPtr<ID3DBlob> errors;
-            const HRESULT result = D3DCompileFromFile(fullPath, nullptr, &includes, vertex ? "VSMain" : "PSMain",
+            const HRESULT result = D3DCompileFromFile(fullPath, nullptr, &includes, vertex ? "VSMain" : pixelEntry,
                                                       vertex ? "vs_5_0" : "ps_5_0", D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS,
                                                       0, &blob, &errors);
             EXPECT_HRESULT_SUCCEEDED(result) << (errors ? static_cast<const char*>(errors->GetBufferPointer()) : "No compiler diagnostics");
             return blob;
         }
 
-        TestVector<float> render(bool blur = false)
+        TestVector<float> render(bool blur = false, bool reconstruct = false)
         {
             ComPtr<ID3DBlob> vertex = compile(blur, true);
-            ComPtr<ID3DBlob> pixel = compile(blur, false);
+            ComPtr<ID3DBlob> pixel = compile(blur || reconstruct, false, reconstruct ? "PSReconstructNormals" : "PSMain");
             if (!vertex || !pixel)
             {
                 return TestVector<float>(PIXELS, -1.0f);
@@ -178,7 +178,7 @@ namespace
                 EXPECT_HRESULT_SUCCEEDED(m_device->CreateTexture2D(&textureDesc, &data, &textures[index]));
                 EXPECT_HRESULT_SUCCEEDED(m_device->CreateShaderResourceView(textures[index].Get(), nullptr, &views[index]));
             }
-            textureDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            textureDesc.Format = reconstruct ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R32_FLOAT;
             textureDesc.Usage = D3D11_USAGE_DEFAULT;
             textureDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
             ComPtr<ID3D11Texture2D> output;
@@ -213,14 +213,15 @@ namespace
             m_context->Draw(3, 0);
             m_context->CopyResource(readback.Get(), output.Get());
             D3D11_MAPPED_SUBRESOURCE mapped = {};
-            TestVector<float> result(PIXELS, -1.0f);
+            const UINT components = reconstruct ? 4u : 1u;
+            TestVector<float> result(PIXELS * components, -1.0f);
             const HRESULT mappedResult = m_context->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &mapped);
             EXPECT_HRESULT_SUCCEEDED(mappedResult);
             if (SUCCEEDED(mappedResult))
             {
                 for (UINT row = 0; row < HEIGHT; ++row)
                 {
-                    std::memcpy(result.data() + row * WIDTH, static_cast<const char*>(mapped.pData) + row * mapped.RowPitch, WIDTH * sizeof(float));
+                    std::memcpy(result.data() + row * WIDTH * components, static_cast<const char*>(mapped.pData) + row * mapped.RowPitch, WIDTH * components * sizeof(float));
                 }
                 m_context->Unmap(readback.Get(), 0);
             }
@@ -282,6 +283,107 @@ namespace
                 m_depth[y * WIDTH + x] = projectDepth(viewZ);
                 m_normals[(y * WIDTH + x) * 4] = encodedX;
             }
+        }
+        expectConstant(render(), 1.0f);
+    }
+
+    TEST_F(SsaoShader, DepthNormalsMatchAnAnalyticTiltedPlaneIncludingImageBorders)
+    {
+        const float expectedX = 0.5f - std::sqrt(0.1f) * 0.5f;
+        for (UINT y = 0; y < HEIGHT; ++y)
+        {
+            for (UINT x = 0; x < WIDTH; ++x)
+            {
+                const float ndcX = 2.0f * (static_cast<float>(x) + 0.5f) / WIDTH - 1.0f;
+                m_depth[y * WIDTH + x] = projectDepth(-2.4f / (0.6f * ndcX + 0.8f));
+            }
+        }
+        m_normals = render(false, true);
+        for (UINT pixel = 0; pixel < PIXELS; ++pixel)
+        {
+            ASSERT_NEAR(m_normals[pixel * 4], expectedX, 0.0001f);
+            ASSERT_NEAR(m_normals[pixel * 4 + 1], 0.5f, 0.0001f);
+        }
+        expectConstant(render(), 1.0f);
+    }
+
+    TEST_F(SsaoShader, DepthNormalsRemainAccurateAtLongViewDistances)
+    {
+        constexpr float DISTANT_FAR = 10000.0f;
+        constexpr float DISTANT_A = NEAR_PLANE / (DISTANT_FAR - NEAR_PLANE);
+        constexpr float DISTANT_B = NEAR_PLANE * DISTANT_FAR / (DISTANT_FAR - NEAR_PLANE);
+        m_constants.projection[10] = DISTANT_A;
+        m_constants.projection[14] = DISTANT_B;
+        m_constants.inverseProjection[11] = 1.0f / DISTANT_B;
+        m_constants.inverseProjection[15] = DISTANT_A / DISTANT_B;
+        for (UINT y = 0; y < HEIGHT; ++y)
+        {
+            for (UINT x = 0; x < WIDTH; ++x)
+            {
+                const float ndcX = 2.0f * (static_cast<float>(x) + 0.5f) / WIDTH - 1.0f;
+                const float viewZ = -1600.0f / (0.6f * ndcX + 0.8f);
+                m_depth[y * WIDTH + x] = (DISTANT_A * viewZ + DISTANT_B) / -viewZ;
+            }
+        }
+        const TestVector<float> normals = render(false, true);
+        const float expectedX = 0.5f - std::sqrt(0.1f) * 0.5f;
+        for (UINT pixel = 0; pixel < PIXELS; ++pixel)
+        {
+            ASSERT_NEAR(normals[pixel * 4], expectedX, 0.0001f);
+            ASSERT_NEAR(normals[pixel * 4 + 1], 0.5f, 0.0001f);
+        }
+    }
+
+    TEST_F(SsaoShader, DepthNormalsDoNotBridgeDepthStepsOrBackgroundSilhouettes)
+    {
+        for (bool background : {false, true})
+        {
+            makeDepthStep(-2.75f);
+            if (background)
+            {
+                for (UINT y = 0; y < HEIGHT; ++y)
+                {
+                    for (UINT x = 0; x < WIDTH / 2; ++x)
+                    {
+                        m_depth[y * WIDTH + x] = 0.0f;
+                    }
+                }
+            }
+            m_normals = render(false, true);
+            for (UINT pixel = 0; pixel < PIXELS; ++pixel)
+            {
+                ASSERT_NEAR(m_normals[pixel * 4], 0.5f, 0.0001f);
+                ASSERT_NEAR(m_normals[pixel * 4 + 1], 0.5f, 0.0001f);
+            }
+            if (background)
+            {
+                expectConstant(render(), 1.0f);
+            }
+        }
+    }
+
+    TEST_F(SsaoShader, DepthNormalsRemainFiniteForIsolatedPixelsAndEmptyDepth)
+    {
+        eastl::fill(m_depth.begin(), m_depth.end(), 0.0f);
+        m_depth[WIDTH * (HEIGHT / 2) + WIDTH / 2] = projectDepth(-3.0f);
+        m_normals = render(false, true);
+        for (float component : m_normals)
+        {
+            ASSERT_TRUE(std::isfinite(component));
+            ASSERT_GE(component, 0.0f);
+            ASSERT_LE(component, 1.0f);
+        }
+        expectConstant(render(), 1.0f);
+    }
+
+    TEST_F(SsaoShader, DepthNormalsPreserveWorldSpaceContractUnderCameraRotation)
+    {
+        const float rotation[16] = {0, 0, 1, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 1};
+        std::memcpy(m_constants.view, rotation, sizeof(rotation));
+        m_normals = render(false, true);
+        for (UINT pixel = 0; pixel < PIXELS; ++pixel)
+        {
+            ASSERT_NEAR(m_normals[pixel * 4], 0.5f + std::sqrt(0.5f) * 0.5f, 0.0001f);
         }
         expectConstant(render(), 1.0f);
     }

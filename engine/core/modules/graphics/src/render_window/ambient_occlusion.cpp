@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 #include "ambient_occlusion_profiler.h"
 #include "gpu_profiler/gpu_profiler.h"
@@ -30,6 +31,19 @@ namespace nau::render
         {
             const float value = readSetting(name, fallback);
             return eastl::clamp(std::isfinite(value) ? value : fallback, minimum, maximum);
+        }
+
+        float decodeHalf(uint16_t bits)
+        {
+            const uint32_t exponent = (bits >> 10) & 31u;
+            const uint32_t mantissa = bits & 1023u;
+            const float sign = (bits & 0x8000u) != 0 ? -1.0f : 1.0f;
+            if (exponent == 31)
+            {
+                return mantissa != 0 ? std::numeric_limits<float>::quiet_NaN() : sign * std::numeric_limits<float>::infinity();
+            }
+            return sign * std::ldexp(static_cast<float>(exponent != 0 ? 1024u + mantissa : mantissa),
+                                     exponent != 0 ? static_cast<int>(exponent) - 25 : -24);
         }
     }  // namespace
 
@@ -82,9 +96,11 @@ namespace nau::render
         IAssetDescriptor::Ptr vertex = assets.openAsset(AssetPath{"file:/res/shaders/cache/shader_cache.nsbc+[ssao.vs.vsmain]"});
         IAssetDescriptor::Ptr rawShader = assets.openAsset(AssetPath{"file:/res/shaders/cache/shader_cache.nsbc+[ssao.ps.psmain]"});
         IAssetDescriptor::Ptr blurShader = assets.openAsset(AssetPath{"file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psmain]"});
+        IAssetDescriptor::Ptr normalShader = assets.openAsset(AssetPath{"file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psreconstructnormals]"});
         m_vertexShader = co_await vertex->getAssetView(rtti::getTypeInfo<ShaderAssetView>());
         m_rawShader = co_await rawShader->getAssetView(rtti::getTypeInfo<ShaderAssetView>());
         m_blurShader = co_await blurShader->getAssetView(rtti::getTypeInfo<ShaderAssetView>());
+        m_normalShader = co_await normalShader->getAssetView(rtti::getTypeInfo<ShaderAssetView>());
         const float radius = readFiniteSetting("sample/ssao/radius", 0.5f, 0.0f, 10.0f);
         const float fadeStart = readFiniteSetting("sample/ssao/fadeStart", 0.2f, 0.0f, 10.0f);
         const float fadeEnd = readFiniteSetting("sample/ssao/fadeEnd", 1.0f, fadeStart + 0.001f, 20.0f);
@@ -180,6 +196,8 @@ namespace nau::render
             material->setProperty("default", "aoInverseProjection", inverseProjection);
             material->setProperty("default", "aoView", view);
         }
+        m_blurMaterial->setProperty("reconstructNormals", "aoInverseProjection", inverseProjection);
+        m_blurMaterial->setProperty("reconstructNormals", "aoView", view);
     }
 
     void AmbientOcclusion::prepareSecondary(BaseTexture* target)
@@ -214,6 +232,7 @@ namespace nau::render
             const Shader* vertex = m_vertexShader->getShader();
             const Shader* raw = m_rawShader->getShader();
             const Shader* blur = m_blurShader->getShader();
+            const Shader* normal = m_normalShader->getShader();
             d3d::mgpu::SsaoProducerDesc desc;
             desc.width = info.w;
             desc.height = info.h;
@@ -224,6 +243,8 @@ namespace nau::render
             desc.blurBytecode = blur->bytecode.data();
             desc.blurBytecodeSize = blur->bytecode.size();
             desc.profiler = createSsaoProfiler();
+            desc.normalBytecode = normal->bytecode.data();
+            desc.normalBytecodeSize = normal->bytecode.size();
             m_secondary = d3d::mgpu::createSsaoProducer(desc);
             if (m_secondary)
             {
@@ -250,18 +271,44 @@ namespace nau::render
             status += " | ";
             status += d3d::get_multi_gpu_fallback_reason();
         }
-        if (status != m_deviceStatus)
+        const bool statusChanged = status != m_deviceStatus;
+        if (statusChanged)
         {
             m_deviceStatus = status;
             NAU_LOG_INFO("SSAO: device={}, frame={}", status.c_str(), m_frame);
-            const eastl::string title = "SSAO | " + status + " | F7: view | F8: GPU";
-            SetWindowTextA(static_cast<HWND>(m_windowHandle), title.c_str());
+        }
+        const uint64_t now = GetTickCount64();
+        if (m_titleStartTicks == 0)
+        {
+            m_titleStartTicks = now;
+        }
+        else
+        {
+            ++m_titleFrames;
+        }
+        const uint64_t elapsed = now - m_titleStartTicks;
+        const bool refreshTimings = elapsed >= 500 && m_titleFrames != 0;
+        if (refreshTimings)
+        {
+            m_titleFps = 1000.0 * m_titleFrames / elapsed;
+            m_titleFrameMilliseconds = static_cast<double>(elapsed) / m_titleFrames;
+            m_titleFrames = 0;
+            m_titleStartTicks = now;
+        }
+        if (statusChanged || refreshTimings || m_titleMode != m_mode)
+        {
+            constexpr const char* MODES[] = {"off", "lit", "map"};
+            char title[256] = {};
+            std::snprintf(title, sizeof(title), "SSAO %s | %s | %.1f FPS | %.2f ms/frame | F7: view | F8: GPU",
+                          MODES[m_mode], status.c_str(), m_titleFps, m_titleFrameMilliseconds);
+            SetWindowTextA(static_cast<HWND>(m_windowHandle), title);
+            m_titleMode = m_mode;
         }
     }
 
-    void AmbientOcclusion::renderFrame(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* filtered, BaseTexture* normals, BaseTexture* depth, BaseTexture* packedNormals)
+    void AmbientOcclusion::renderFrame(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* filtered, BaseTexture* depth, BaseTexture* packedNormals)
     {
-        m_sourceNormals = normals;
+        m_sourceNormals = packedNormals;
         m_depth = depth;
         prepareSecondary(filtered);
         bool trySecondary = m_requestedSecondary && m_mode != 0 && m_secondary && d3d::is_multi_gpu_available();
@@ -311,9 +358,10 @@ namespace nau::render
         }
         const bool canSubmit = trySecondary && !forcedBusy && m_pendingFrame == 0 && !d3d::mgpu::isSsaoBusy(m_secondary);
         const bool useHistory = trySecondary && m_historyFrame != 0;
-        if (canSubmit || !useHistory)
+        const bool preparedNormals = !useHistory || (captureRequested && (canSubmit || forcedBusy));
+        if (preparedNormals)
         {
-            packNormals(packedNormals, normals);
+            reconstructNormals(packedNormals);
             m_normals = packedNormals;
         }
         if (canSubmit)
@@ -327,6 +375,7 @@ namespace nau::render
                 if (m_validateSecondary)
                 {
                     drawRaw(raw, packedNormals, depth);
+                    capture(raw, "reference_raw", 1);
                     drawBlur(horizontal, raw, true);
                     TextureInfo info;
                     filtered->getinfo(info);
@@ -344,7 +393,7 @@ namespace nau::render
                 }
                 m_captureActive = false;
             }
-            const d3d::mgpu::SsaoResult result = d3d::mgpu::submitSsao(m_secondary, m_constants, m_blur, packedNormals, depth, captureJob);
+            const d3d::mgpu::SsaoResult result = d3d::mgpu::submitSsao(m_secondary, m_constants, m_blur, nullptr, depth, captureJob);
             if (result == d3d::mgpu::SsaoResult::submitted)
             {
                 m_pendingFrame = m_frame;
@@ -379,9 +428,9 @@ namespace nau::render
         }
         m_historyFrame = 0;
         // Startup and actual failures use a primary result; a slow GPU 1 never stalls this path.
-        if (!canSubmit && useHistory)
+        if (!preparedNormals)
         {
-            packNormals(packedNormals, normals);
+            reconstructNormals(packedNormals);
         }
         m_captureActive = !trySecondary && captureRequested;
         drawRaw(raw, packedNormals, depth);
@@ -448,18 +497,18 @@ namespace nau::render
         d3d::set_render_target();
     }
 
-    void AmbientOcclusion::packNormals(BaseTexture* target, BaseTexture* normals)
+    void AmbientOcclusion::reconstructNormals(BaseTexture* target)
     {
-        NAU_GPU_TIMER("ssao_pack_normals");
+        NAU_GPU_TIMER("ssao_reconstruct_normals");
         d3d::set_render_target(target, 0);
         d3d::set_depth(nullptr, DepthAccess::RW);
         d3d::set_srgb_backbuffer_write(false);
-        d3d::settex(0, normals);
-        m_blurMaterial->bindPipeline("packNormals");
+        d3d::settex(1, m_depth);
+        m_blurMaterial->bindPipeline("reconstructNormals");
         d3d::setvsrc(0, nullptr, 0);
         d3d::setind(nullptr);
         d3d::draw(PRIM_TRILIST, 0, 1);
-        d3d::settex(0, nullptr);
+        d3d::settex(1, nullptr);
         d3d::set_render_target();
     }
 
@@ -535,6 +584,7 @@ namespace nau::render
         FILE* file = nullptr;
         const size_t rowBytes = static_cast<size_t>(info.w) * components * sizeof(float);
         const bool normalizedByte = (info.cflg & TEXFMT_MASK) == TEXFMT_R8;
+        const bool packedNormals = (info.cflg & TEXFMT_MASK) == TEXFMT_G16R16F;
         bool succeeded = fopen_s(&file, path.c_str(), "wb") == 0 && file;
         if (file)
         {
@@ -547,6 +597,15 @@ namespace nau::render
                     {
                         const float value = values[column] / 255.0f;
                         succeeded &= fwrite(&value, sizeof(value), 1, file) == 1;
+                    }
+                }
+                else if (packedNormals)
+                {
+                    const uint16_t* values = reinterpret_cast<const uint16_t*>(static_cast<const uint8_t*>(pixels) + row * stride);
+                    for (int column = 0; column < info.w; ++column)
+                    {
+                        const float expanded[4] = {decodeHalf(values[column * 2]), decodeHalf(values[column * 2 + 1]), 0.0f, 1.0f};
+                        succeeded &= fwrite(expanded, sizeof(float), components, file) == components;
                     }
                 }
                 else

@@ -18,6 +18,7 @@ namespace d3d::mgpu
         TransferChannelHandle rawOutput = nullptr;
         TransferTicket pendingOutput = 0;
         TransferTicket pendingRaw = 0;
+        bool reconstructNormals = false;
 
         ~SsaoProducer()
         {
@@ -53,6 +54,8 @@ namespace d3d::mgpu
             pass.rawShader = {desc.rawBytecode, desc.rawBytecodeSize};
             pass.blurShader = {desc.blurBytecode, desc.blurBytecodeSize};
             pass.profiler = desc.profiler;
+            pass.normalShader = {desc.normalBytecode, desc.normalBytecodeSize};
+            producer->reconstructNormals = desc.normalBytecode != nullptr;
             result = producer->pass.init(pass);
         }
         if (SUCCEEDED(result))
@@ -62,10 +65,13 @@ namespace d3d::mgpu
             channel.height = desc.height;
             channel.slotCount = 3;
             channel.direction = TransferDirection::PrimaryToSecondary;
-            channel.format = TEXFMT_G16R16F;
-            channel.name = "SSAO normals GPU 0 -> GPU 1";
-            channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_normals", true) : nullptr;
-            producer->normals = create_transfer_channel(channel);
+            if (!producer->reconstructNormals)
+            {
+                channel.format = TEXFMT_G16R16F;
+                channel.name = "SSAO normals GPU 0 -> GPU 1";
+                channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_normals", true) : nullptr;
+                producer->normals = create_transfer_channel(channel);
+            }
             channel.format = TEXFMT_DEPTH32;
             channel.name = "SSAO depth GPU 0 -> GPU 1";
             channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_depth", true) : nullptr;
@@ -75,7 +81,7 @@ namespace d3d::mgpu
             channel.name = "SSAO result GPU 1 -> GPU 0";
             channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_result", false) : nullptr;
             producer->output = create_transfer_channel(channel);
-            result = producer->normals && producer->depth && producer->output ? S_OK : E_FAIL;
+            result = (producer->reconstructNormals || producer->normals) && producer->depth && producer->output ? S_OK : E_FAIL;
         }
         if (FAILED(result))
         {
@@ -92,7 +98,7 @@ namespace d3d::mgpu
 
     SsaoResult submitSsao(SsaoProducer* producer, const SsaoConstants& constants, bool blur, BaseTexture* normals, BaseTexture* depth, bool captureRaw)
     {
-        if (!producer || !normals || !depth || !is_multi_gpu_available())
+        if (!producer || (!producer->reconstructNormals && !normals) || !depth || !is_multi_gpu_available())
         {
             return SsaoResult::failed;
         }
@@ -107,7 +113,7 @@ namespace d3d::mgpu
         }
         if (SUCCEEDED(result))
         {
-            const TransferTicket normalTicket = send_from_primary(producer->normals, normals);
+            const TransferTicket normalTicket = producer->reconstructNormals ? 0 : send_from_primary(producer->normals, normals);
             const TransferTicket depthTicket = send_from_primary(producer->depth, depth);
             // Receive whichever sends succeeded, even if its partner was dropped. This releases both channel slots.
             const drv3d_dx12::CrossAdapterSyncPoint free = producer->pass.getReadyPoint();
@@ -118,11 +124,11 @@ namespace d3d::mgpu
             const SecondarySyncPoint depthReady = depthTicket
                                                       ? receive_on_secondary(producer->depth, depthTicket, producer->pass.getDepth(), destinationFree)
                                                       : SecondarySyncPoint{};
-            if (!normalTicket || !depthTicket)
+            if ((!producer->reconstructNormals && !normalTicket) || !depthTicket)
             {
                 return SsaoResult::busy;
             }
-            if (!normalReady.nativeFence || !depthReady.nativeFence)
+            if ((!producer->reconstructNormals && !normalReady.nativeFence) || !depthReady.nativeFence)
             {
                 result = E_FAIL;
             }

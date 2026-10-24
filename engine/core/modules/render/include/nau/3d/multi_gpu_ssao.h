@@ -24,6 +24,8 @@ namespace d3d::mgpu
         const void* blurBytecode = nullptr;
         size_t blurBytecodeSize = 0;
         eastl::shared_ptr<ISsaoProfiler> profiler;
+        const void* normalBytecode = nullptr;
+        size_t normalBytecodeSize = 0;
     };
 
     struct SsaoProducer;
@@ -46,6 +48,7 @@ namespace d3d::mgpu
      * @brief Sends inputs and schedules SSAO on GPU 1, retaining its output ticket across frames.
      * Only one job is outstanding. busy preserves that job and schedules no new work.
      * captureRaw requests an additional R32F validation copy.
+     * When normalBytecode is supplied, GPU 1 reconstructs normals from depth; normals may be nullptr.
      */
     NAU_RENDER_EXPORT SsaoResult submitSsao(SsaoProducer* producer, const SsaoConstants& constants, bool blur, BaseTexture* normals, BaseTexture* depth, bool captureRaw = false);
     /**

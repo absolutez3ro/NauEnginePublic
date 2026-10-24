@@ -129,10 +129,10 @@ try {
             $timings = @(Import-Csv -LiteralPath $timingFile.FullName)
             if (!($timings | Where-Object { $_.gpu -eq '0' -and $_.pass -eq 'Frame' })) { throw 'No GPU 0 frame timings' }
             if ($result.secondary -gt 0) {
-                foreach ($pass in @('ssao_raw', 'ssao_blur_h', 'ssao_blur_v')) {
+                foreach ($pass in @('ssao_reconstruct_normals', 'ssao_raw', 'ssao_blur_h', 'ssao_blur_v')) {
                     if (!($timings | Where-Object { $_.gpu -eq '1' -and $_.pass -eq $pass -and [double]$_.ms -gt 0 })) { throw "No GPU 1 timing for $pass" }
                 }
-                foreach ($transfer in @('ssao_normals', 'ssao_depth', 'ssao_result')) {
+                foreach ($transfer in @('ssao_depth', 'ssao_result')) {
                     $bothSupported = $true
                     foreach ($half in @('src', 'dst')) {
                         if ($log.Contains("transfer '$transfer' $half copy timestamps unavailable")) {

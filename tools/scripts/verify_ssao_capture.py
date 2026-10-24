@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 
 
-def verify(prefix, mode):
+def verify(prefix, mode, independent_normals=False):
     scene = Image.open(str(prefix) + "-scene.ppm")
     width, height = scene.size
     captures = {}
@@ -74,8 +74,16 @@ def verify(prefix, mode):
         # The reference is R32F before output conversion. Discount only the unavoidable half-step of R8 rounding;
         # keep the previous bounds on the remaining error, including its distribution and the worst pixel.
         excess = np.maximum(error - 0.5 / 255.0, 0.0)
-        max_tolerance = 0.02 if mode == "raw" else 0.01
+        strict_tolerance = 0.02 if mode == "raw" else 0.01
+        max_tolerance = (0.05 if mode == "raw" else 0.02) if independent_normals else strict_tolerance
+        outlier_fraction = float(np.count_nonzero(error > strict_tolerance) / error.size)
+        # Independently reconstructed normals can change a discrete SSAO sample at a surface boundary.
+        # Keep the distribution bounds, cap absolute error, and allow strict-bound outliers in <=0.01% of pixels.
         assert error.max() <= max_tolerance and excess.mean() <= 0.00001 and np.quantile(excess, 0.999) <= 0.001, "GPU 1 disagrees with the GPU 0 result of the same frame beyond R8 rounding"
+        assert not independent_normals or outlier_fraction <= 0.0001, "Independent normal reconstruction changed too many pixels beyond the strict bound"
+        result["independent_normals"] = independent_normals
+        result["secondary_reference_strict_outlier_pixels"] = int(np.count_nonzero(error > strict_tolerance))
+        result["secondary_reference_strict_outlier_fraction"] = outlier_fraction
         result["secondary_reference_max_error"] = float(error.max())
         result["secondary_reference_mean_error"] = float(error.mean())
         result["secondary_reference_excess_mean_error"] = float(excess.mean())
@@ -92,5 +100,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("prefix", type=Path)
     parser.add_argument("--mode", choices=["off", "lit", "ao", "raw", "zero-radius", "switch", "busy"], required=True)
+    parser.add_argument("--independent-normals", action="store_true", help="Allow bounded sparse outliers when each GPU reconstructs its own normals from depth")
     args = parser.parse_args()
-    verify(args.prefix, args.mode)
+    verify(args.prefix, args.mode, args.independent_normals)

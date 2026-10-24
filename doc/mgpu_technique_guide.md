@@ -67,7 +67,7 @@ Follow [`submitSsao` / `tryReceiveSsao`](../engine/core/modules/render/src/drv3d
 
 Native endpoints must be in `D3D12_RESOURCE_STATE_COMMON` when copying begins. The technique owns its DIRECT-queue transitions. Engine textures must be tracked and use `TEXCF_RTARGET`, `TEXCF_UNORDERED` or `TEXCF_UPDATE_DESTINATION`. Payload size, layout and endpoint formats must match the channel's supported copy contract.
 
-Ticket zero means no transfer was sent, including slot pressure; it never identifies a ready result. Handle busy separately from failure. AO reuses its latest valid map while busy, computes locally when no map exists, and invalidates history on resize/mode/device changes. Choose a history policy suitable for the new technique.
+Ticket zero means no transfer was sent, including slot pressure; it never identifies a ready result. Handle busy separately from failure. AO reuses its latest valid map while busy, computes locally when no map exists, and invalidates history on resize/mode/device changes. Choose a history policy suitable for the new technique. SceneBaseSample sends only prepass depth; its GPU 1 pass reconstructs local normals using `SsaoProducerDesc::normalBytecode`. The legacy normal-input channel remains available when this shader is omitted. Early submission is ordered between `z-prepass` and `fill_gbuffer`, so GPU 0 can continue G-buffer and shadows while GPU 1 works.
 
 ## Minimal fullscreen producer
 
@@ -106,7 +106,7 @@ The full [`MultiGpuDemo`](../engine/core/modules/graphics/src/render_window/mult
 | Shutdown/resize | Drain channels, then release passes/resources, then the allocator. Native passes can retire unfinished work; channel destruction can block the CPU. |
 | Collection | Graphics calls `collectFullscreenResources()` each frame and before driver teardown; this also collects SSAO retirement. A standalone owner must arrange equivalent collection. |
 | Recovery | Destroy owners before driver recovery and recreate them afterward. Do not retain borrowed pointers across recovery. |
-| ABI | `receive_on_secondary` includes `destination_free`; `TransferChannelDesc` includes an optional profiler. Rebuild consuming modules together when adopting this API. |
+| ABI | `receive_on_secondary` includes `destination_free`; `TransferChannelDesc` includes an optional profiler; `SsaoProducerDesc` can include normal-reconstruction bytecode. Rebuild consuming modules together when adopting these structs/APIs. |
 
 For interactive AO inspection, disable `sample.mgpuDemo.enabled` and run:
 

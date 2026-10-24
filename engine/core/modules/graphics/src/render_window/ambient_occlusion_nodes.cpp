@@ -14,7 +14,9 @@ namespace nau::render
         m_gBufferNodes.addNode(dabfg::register_node(nau::utils::format("ssao_{}", m_swapchain).c_str(), DABFG_PP_NODE_SRC,
                                                     [this](dabfg::Registry registry)
         {
-            registry.orderMeAfter(nau::utils::format("fill_gbuffer_{}", m_swapchain).c_str());
+            registry.orderMeAfter(nau::utils::format("z-prepass_{}", m_swapchain).c_str());
+            registry.orderMeBefore(nau::utils::format("fill_gbuffer_{}", m_swapchain).c_str());
+            registry.executionHas(dabfg::SideEffects::External);
             const auto createTarget = [this, &registry](const char* name, unsigned format = TEXFMT_R32F)
             {
                 return registry.createTexture2d(nau::utils::format("{}_{}", name, m_swapchain).c_str(), dabfg::History::No,
@@ -40,9 +42,9 @@ namespace nau::render
                 m_ambientOcclusion->beginFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), m_windowHandle);
                 d3d::set_render_target();
                 d3d::set_depth(nullptr, DepthAccess::RW);
-                m_gBuffer->resourceBarrier(RB_RO_SRV | RB_STAGE_PIXEL);
+                d3d::resource_barrier({m_gBuffer->getDepth(), RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
                 m_ambientOcclusion->renderFrame(raw.get(), horizontal.get(), filtered.get(),
-                                                m_gBuffer->getRt(DeferredRenderTarget::GBUF_NORMAL_ROUGH_MET), m_gBuffer->getDepth(), packedNormals.get());
+                                                m_gBuffer->getDepth(), packedNormals.get());
             };
         }));
     }

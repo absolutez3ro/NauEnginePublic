@@ -49,7 +49,7 @@ namespace nau::render
         static bool isRequested();
         async::Task<> loadAssets();
         void beginFrame(const math::Matrix4& view, const math::Matrix4& projection, void* windowHandle);
-        void renderFrame(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* filtered, BaseTexture* normals, BaseTexture* depth, BaseTexture* packedNormals);
+        void renderFrame(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* filtered, BaseTexture* depth, BaseTexture* packedNormals);
         void drawRaw(BaseTexture* target, BaseTexture* normals, BaseTexture* depth);
         void drawBlur(BaseTexture* target, BaseTexture* source, bool horizontal);
         void drawDebug(BaseTexture* target, BaseTexture* source);
@@ -59,7 +59,7 @@ namespace nau::render
 
     private:
         void draw(BaseTexture* target, MaterialAssetView& material);
-        void packNormals(BaseTexture* target, BaseTexture* normals);
+        void reconstructNormals(BaseTexture* target);
         void capture(BaseTexture* texture, const char* name, uint32_t components) const;
         void captureDepth() const;
         void prepareSecondary(BaseTexture* target);
@@ -72,6 +72,7 @@ namespace nau::render
         ShaderAssetView::Ptr m_vertexShader;
         ShaderAssetView::Ptr m_rawShader;
         ShaderAssetView::Ptr m_blurShader;
+        ShaderAssetView::Ptr m_normalShader;
         d3d::mgpu::SsaoProducer* m_secondary = nullptr;
         d3d::mgpu::SsaoConstants m_constants;
         void* m_windowHandle = nullptr;
@@ -88,6 +89,11 @@ namespace nau::render
         uint32_t m_maxHistoryAge = 0;
         uint32_t m_captureDisplayFrame = 0;
         uint32_t m_busyAtFrame = 0;
+        uint64_t m_titleStartTicks = 0;
+        uint32_t m_titleFrames = 0;
+        uint32_t m_titleMode = 3;
+        double m_titleFps = 0.0;
+        double m_titleFrameMilliseconds = 0.0;
         BaseTexture* m_history = nullptr;
         BaseTexture* m_receiving = nullptr;
         bool m_pendingCapture = false;

@@ -2,10 +2,21 @@
 // Separable bilateral Gaussian blur following Bogdanov M.K.'s SsaoBlur.hlsl.
 #include "ssao_common.hlsli"
 
-float2 PSPackNormals(float4 position : SV_Position) : SV_Target
+// Preserve the order of depth differences before normalization on either AO device.
+precise float4 PSReconstructNormals(float4 position : SV_Position) : SV_Target
 {
-    // Normals occupy .xy; .zw contains roughness and metalness.
-    return aoNormals.Load(int3(int2(position.xy), 0)).xy;
+    uint width, height;
+    aoDepth.GetDimensions(width, height);
+    float3 viewNormal = reconstructDepthNormal(int2(position.xy), int2(width, height));
+    float3 worldNormal = normalize(mul(transpose((float3x3)aoView), viewNormal));
+    // Preserve the existing sphere-map world-normal contract of the primary and secondary AO passes.
+    if (worldNormal.z <= -0.999999)
+    {
+        return float4(1.0, 0.5, 0.0, 1.0);
+    }
+    float2 encoded = worldNormal.xy / sqrt(2.0 * (worldNormal.z + 1.0)) * 0.5 + 0.5;
+    // Round explicitly before writing the same compact normal format on either device.
+    return float4(f16tof32(f32tof16(encoded)), 0.0, 1.0);
 }
 
 float PSCopyDepth(float4 position : SV_Position) : SV_Target

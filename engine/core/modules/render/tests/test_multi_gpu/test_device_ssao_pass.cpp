@@ -146,7 +146,8 @@ namespace
             m_vertex = compile(L"ssao.hlsl", "VSMain", "vs_5_0");
             m_raw = compile(L"ssao.hlsl", "PSMain", "ps_5_0");
             m_blur = compile(L"ssao_blur.hlsl", "PSMain", "ps_5_0");
-            ASSERT_TRUE(m_vertex && m_raw && m_blur);
+            m_normal = compile(L"ssao_blur.hlsl", "PSReconstructNormals", "ps_5_0");
+            ASSERT_TRUE(m_vertex && m_raw && m_blur && m_normal);
             drv3d_dx12::DeviceSsaoPassDesc desc;
             desc.allocator = m_allocator;
             desc.width = WIDTH;
@@ -215,7 +216,7 @@ namespace
             wait({m_copyFence.Get(), m_copyValue});
         }
 
-        void fillInputs(bool contact, bool background = false, drv3d_dx12::DeviceSsaoPass* target = nullptr)
+        void fillInputs(bool contact, bool background = false, drv3d_dx12::DeviceSsaoPass* target = nullptr, bool poisonNormals = false)
         {
             drv3d_dx12::DeviceSsaoPass& pass = target ? *target : m_pass;
             wait(pass.getReadyPoint());
@@ -238,7 +239,7 @@ namespace
                         if (input == 0)
                         {
                             uint16_t* packed = reinterpret_cast<uint16_t*>(row);
-                            packed[x * 2] = packed[x * 2 + 1] = 0x3800;  // float16(0.5), sphere-map +Z.
+                            packed[x * 2] = packed[x * 2 + 1] = poisonNormals ? 0 : 0x3800;  // float16(0.5), sphere-map +Z.
                         }
                         else
                         {
@@ -323,7 +324,7 @@ namespace
         ComPtr<ID3D12InfoQueue> m_diagnostics;
         eastl::shared_ptr<mgpu_test::TestResourceAllocator> m_allocator;
         drv3d_dx12::DeviceSsaoPass m_pass;
-        ComPtr<ID3DBlob> m_vertex, m_raw, m_blur;
+        ComPtr<ID3DBlob> m_vertex, m_raw, m_blur, m_normal;
         ComPtr<ID3D12CommandQueue> m_copyQueue;
         ComPtr<ID3D12CommandAllocator> m_copyAllocator;
         ComPtr<ID3D12GraphicsCommandList> m_copyList;
@@ -379,6 +380,39 @@ namespace
         {
             EXPECT_LE(std::abs(result[pixel] - raw[pixel]), 0.5f / 255.0f + 0.000001f);
             EXPECT_NEAR(result[pixel] * 255.0f, std::round(result[pixel] * 255.0f), 0.00001f);
+        }
+    }
+
+    TEST_F(DeviceSsao, ReconstructsNormalsOnItsOwnQueueFromDepthWithoutNormalInput)
+    {
+        fillInputs(true);
+        ASSERT_HRESULT_SUCCEEDED(m_pass.execute(m_constants, true));
+        const TestVector<float> expected = read();
+        const TestVector<float> expectedRaw = read(true);
+        ASSERT_HRESULT_SUCCEEDED(m_pass.reset());
+        drv3d_dx12::DeviceSsaoPassDesc desc;
+        desc.allocator = m_allocator;
+        desc.width = WIDTH;
+        desc.height = HEIGHT;
+        desc.vertexShader = {m_vertex->GetBufferPointer(), m_vertex->GetBufferSize()};
+        desc.rawShader = {m_raw->GetBufferPointer(), m_raw->GetBufferSize()};
+        desc.blurShader = {m_blur->GetBufferPointer(), m_blur->GetBufferSize()};
+        desc.normalShader = {m_normal->GetBufferPointer(), m_normal->GetBufferSize()};
+        ASSERT_HRESULT_SUCCEEDED(m_pass.init(desc));
+        fillInputs(true, false, nullptr, true);
+        ASSERT_HRESULT_SUCCEEDED(m_pass.execute(m_constants, true));
+        const TestVector<float> actual = read();
+        const TestVector<float> actualRaw = read(true);
+        for (UINT pixel = 0; pixel < actual.size(); ++pixel)
+        {
+            ASSERT_NEAR(actual[pixel], expected[pixel], 1.0f / 255.0f);
+            ASSERT_NEAR(actualRaw[pixel], expectedRaw[pixel], 0.0001f);
+        }
+        fillInputs(false, true, nullptr, true);
+        ASSERT_HRESULT_SUCCEEDED(m_pass.execute(m_constants, true));
+        for (float value : read())
+        {
+            ASSERT_NEAR(value, 1.0f, 0.000001f);
         }
     }
 

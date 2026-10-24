@@ -24,7 +24,7 @@ The summary validates finite, nonnegative timings, duplicate rows, transfer dire
 | Name or suffix | Meaning |
 | --- | --- |
 | `Frame`, GPU 0 | Primary frame GPU interval; pipelined SSAO includes local copies but does not wait for unfinished GPU 1 AO |
-| `ssao_pack_normals` | Extract sphere-map XY into R16G16_FLOAT |
+| `ssao_reconstruct_normals` | Derive geometric normals from prepass depth into local R16G16_FLOAT on the AO device |
 | `ssao_raw`, `ssao_blur_h`, `ssao_blur_v` | Three AO passes on the device doing the computation |
 | `ssao_reuse` | Primary work used to show cached AO when secondary submission is busy |
 | `/src` | Local resource → shared slot on the sending COPY queue |
@@ -38,7 +38,37 @@ The profiler mode label comes from startup configuration; F6/F8 do not change it
 
 The shutdown counters satisfy `secondary + primary + reused = frames`; `busy` records secondary pressure. Record them alongside `submitted`, `maxAge`, CSVs, adapter names, actual resolution and exit status. `secondary` counts newly published maps, `reused` counts frames displaying an older published map, and `submitted` counts secondary jobs. A slow secondary should produce reused frames while GPU 0 keeps rendering; a large `maxAge` is expected with WARP. Capture logs must satisfy display frame > source frame. A requested secondary run may fall back, so verify actual work rather than relying on configuration or CSV labels. `compare_gpu_timings.py --real-2gpu` is a report label, not proof that two hardware adapters ran the work.
 
-## Pipelined functional check
+## Depth-only prepass validation
+
+The secondary job now starts between `z-prepass` and `fill_gbuffer`, transfers only DEPTH32, reconstructs local geometric normals, executes SSAO/blur and returns R8 AO. Logical transport is 5 bytes/pixel per submitted job; normals are not sent. The consumer polls an older output before submitting current depth, so the displayed secondary map is at least one frame old. Receiving a ready output still requires a local primary copy.
+
+Targeted checks passed 16 shader tests and 7 native SSAO tests. They cover inclined surfaces including long view distances, depth discontinuities, background/isolated pixels, camera rotation and GPU 1 reconstruction with deliberately invalid input normals. Release SceneBaseSample built with static libraries and DLLs. A window check exercised F7 map/off/lit, F8 primary/secondary, positive reciprocal FPS/ms values, resize from 634×611 to 784×561, and normal exit.
+
+Injected failure published one secondary map, then rendered 2,308 frames on GPU 0 and exited normally. Forced busy reused the published map exactly: source frame 226 was displayed in frame 500. The cached AO can disagree with current geometry/background until a newer map arrives; no reprojection is implemented.
+
+The resized source-frame capture was submitted in frame 544 and displayed in frame 547. Maximum filtered error against that source frame's GPU 0 reference was 0.00376731; mean excess beyond half an R8 step was 6.97e-8, with no pixels beyond the original 0.01 bound. Other captures with independent normal reconstruction had sparse outliers beyond that strict bound. Use the explicit `--independent-normals` verification option and retain its JSON statistics, as described in [SSAO functional checks](ambient_occlusion.md#build-and-functional-checks). The default strict comparison is unchanged.
+
+At 634×611, a separate final-source capture used source frame 502, displayed in frame 503. Maximum filtered error was 0.01386410, with two pixels out of 387,374 beyond 0.01; residual mean after half an R8 step was 1.50e-7 and P99.9 was zero. This passes the explicit independent-normal comparison and fails the default strict maximum-pixel check. Keep that distinction when reporting results.
+
+Two sequential 30-second timing runs used Release, `lit`, radius 0.5, blur enabled, `-Profile -NoVsync -CaptureFrame 0`, with no concurrent build. Statistics exclude the first 500 profiler frames; loading remains asynchronous.
+
+| Run | Frames | New secondary maps | Primary | Reused | Submitted jobs | Maximum history age | Exit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| GPU 0 | 7674 | 0 | 7674 | 0 | 0 | 0 | 0 |
+| GPU 0 + WARP, depth-only | 4002 | 32 | 2 | 3968 | 33 | 335 | 0 |
+
+| GPU 0 Frame | Samples | Mean, ms | Median, ms | P95, ms |
+| --- | ---: | ---: | ---: | ---: |
+| Primary AO | 7174 | 0.9453 | 0.7946 | 1.3210 |
+| Pipelined WARP AO | 3501 | 1.3179 | 0.7875 | 2.2968 |
+
+The CSV confirms `z-prepass → ssao → fill_gbuffer → CSM → gbuffer_resolve`, all four secondary passes including `ssao_reconstruct_normals`, and no `ssao_normals/*` transfers. Pair validation found 65 complete COPY pairs: 33 depth and 32 returned AO maps. The final job was not consumed before shutdown. Raw artifacts use the `depth-only` label under `build/ssao-runtime`; `depth-only-summary.md/json` contain the complete statistics.
+
+These are RTX 4060 Ti + software WARP correctness checks, not a hardware-pair speedup or proof of useful queue overlap. FPS in the window title is wall-clock frame cadence; it does not replace GPU timestamps or a queue trace.
+
+## Pipelined check before depth-only transport
+
+This check used commit `e4198077` with the former G-buffer normals channel and submission after G-buffer. It verifies the asynchronous scheduling change. The current depth-only path starts after prepass and additionally reconstructs normals on GPU 1; its measurements must be recorded separately.
 
 On Windows, Release, RTX 4060 Ti + WARP, 634×611, two sequential 30-second runs used `lit`, radius 0.5, blur enabled, `-Profile -NoVsync -CaptureFrame 0`. No build ran concurrently. The first 500 profiler frames were excluded from timing statistics; asset loading remained asynchronous. These are functional/instrumentation results, not a controlled hardware benchmark.
 
