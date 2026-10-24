@@ -115,7 +115,11 @@ namespace nau::render
         {
             m_history->destroy();
         }
-        NAU_LOG_INFO("SSAO: shutdown, frames={}, secondary={}, primary={}, busy={}, reused={}", m_frame, m_secondaryFrames, m_primaryFrames, m_busyFrames, m_reusedFrames);
+        if (m_receiving)
+        {
+            m_receiving->destroy();
+        }
+        NAU_LOG_INFO("SSAO: shutdown, frames={}, secondary={}, primary={}, busy={}, reused={}, submitted={}, maxAge={}", m_frame, m_secondaryFrames, m_primaryFrames, m_busyFrames, m_reusedFrames, m_submittedFrames, m_maxHistoryAge);
     }
 
     void AmbientOcclusion::beginFrame(const math::Matrix4& view, const math::Matrix4& projection, void* windowHandle)
@@ -126,7 +130,7 @@ namespace nau::render
         {
             input.setTarget(windowHandle);
             m_initialized = true;
-            NAU_LOG_INFO("SSAO: 14 samples, bilateral blur={}, F7: off / lit / AO, F8: GPU 0 / GPU 1", m_blur);
+            NAU_LOG_INFO("SSAO: 14 samples, bilateral blur={}, secondary pipeline latency >= 1 frame, F7: off / lit / AO, F8: GPU 0 / GPU 1", m_blur);
         }
         ++m_frame;
         uint32_t deviceSwitches = input.consumeDeviceSwitches();
@@ -138,9 +142,11 @@ namespace nau::render
         {
             m_requestedSecondary = !m_requestedSecondary;
             m_historyFrame = 0;
+            m_discardPending = true;
         }
-        if (m_failAtFrame != 0 && m_frame == m_failAtFrame)
+        if (!m_failureInjected && m_failAtFrame != 0 && m_frame >= m_failAtFrame && m_secondaryFrames != 0)
         {
+            m_failureInjected = true;
             NAU_LOG_WARNING("SSAO: injecting secondary failure at frame {}", m_frame);
             d3d::report_secondary_gpu_failure(static_cast<uint32_t>(E_FAIL));
         }
@@ -153,6 +159,7 @@ namespace nau::render
         if (switches != 0)
         {
             m_historyFrame = 0;
+            m_discardPending = true;
         }
         if (switches != 0 || m_frame == 1)
         {
@@ -187,6 +194,14 @@ namespace nau::render
                 m_history = nullptr;
             }
             m_historyFrame = 0;
+            if (m_receiving)
+            {
+                m_receiving->destroy();
+                m_receiving = nullptr;
+            }
+            m_pendingFrame = 0;
+            m_pendingCapture = false;
+            m_captureSubmitted = false;
             d3d::mgpu::destroySsaoProducer(m_secondary);
             m_secondary = nullptr;
             m_secondaryAttempted = false;
@@ -210,13 +225,22 @@ namespace nau::render
             desc.blurBytecodeSize = blur->bytecode.size();
             desc.profiler = createSsaoProfiler();
             m_secondary = d3d::mgpu::createSsaoProducer(desc);
+            if (m_secondary)
+            {
+                m_history = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_history");
+                m_receiving = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_receiving");
+                if (!m_history || !m_receiving)
+                {
+                    d3d::report_secondary_gpu_failure(static_cast<uint32_t>(E_OUTOFMEMORY));
+                }
+            }
             NAU_LOG_INFO("SSAO: secondary pass ready={}, size={}x{}", m_secondary != nullptr, info.w, info.h);
         }
     }
 
     void AmbientOcclusion::updateDeviceStatus(bool secondary, bool reused)
     {
-        eastl::string status = secondary ? (m_warpForTesting ? "GPU 1 WARP -> GPU 0 (TEST)" : "GPU 1 -> GPU 0") : "GPU 0";
+        eastl::string status = secondary ? (m_warpForTesting ? "GPU 1 WARP -> GPU 0 (TEST, pipelined)" : "GPU 1 -> GPU 0 (pipelined)") : "GPU 0";
         if (reused)
         {
             status += " | cached AO";
@@ -240,96 +264,140 @@ namespace nau::render
         m_sourceNormals = normals;
         m_depth = depth;
         prepareSecondary(filtered);
-        const bool trySecondary = m_requestedSecondary && m_mode != 0 && m_secondary && d3d::is_multi_gpu_available();
-        const bool forcedBusy = m_busyAtFrame != 0 && m_frame == m_busyAtFrame;
-        const bool busy = trySecondary && (forcedBusy || d3d::mgpu::isSsaoBusy(m_secondary));
+        bool trySecondary = m_requestedSecondary && m_mode != 0 && m_secondary && d3d::is_multi_gpu_available();
+        const bool forcedBusy = trySecondary && !m_busyInjected && m_busyAtFrame != 0 && m_frame >= m_busyAtFrame &&
+                                (m_busyAtFrame == 1 || m_historyFrame != 0);
+        const bool captureRequested = m_captureAtFrame != 0 && m_frame >= m_captureAtFrame && !m_captureSubmitted;
+        bool fresh = false;
         if (forcedBusy)
         {
+            m_busyInjected = true;
             NAU_LOG_INFO("SSAO: injecting busy at frame {}", m_frame);
         }
-        if (busy && m_historyFrame != 0 && reuseResult(filtered))
+        // Consume only an older job whose source COPY has completed. No wait for this frame's GPU 1 work.
+        if (trySecondary && !forcedBusy && m_pendingFrame != 0)
         {
-            ++m_busyFrames;
-            return;
-        }
-        packNormals(packedNormals, normals);
-        normals = packedNormals;
-        m_normals = packedNormals;
-        m_depth = depth;
-        const bool capturing = m_captureAtFrame != 0 && m_frame == m_captureAtFrame;
-        if (trySecondary)
-        {
-            if (capturing && m_validateSecondary)
-            {
-                drawRaw(raw, normals, depth);
-                drawBlur(horizontal, raw, true);
-                TextureInfo info;
-                filtered->getinfo(info);
-                BaseTexture* reference = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ssao_reference");
-                if (reference)
-                {
-                    // Compare against R32F before quantizing the output to R8.
-                    drawBlur(reference, horizontal, false);
-                    capture(reference, "reference", 1);
-                    reference->destroy();
-                }
-                else
-                {
-                    NAU_LOG_ERROR("SSAO: could not allocate validation reference");
-                }
-            }
-            const d3d::mgpu::SsaoResult result = busy ? d3d::mgpu::SsaoResult::busy : d3d::mgpu::renderSsao(m_secondary, m_constants, m_blur, normals, depth, filtered, capturing ? raw : nullptr);
+            const d3d::mgpu::SsaoResult result = d3d::mgpu::tryReceiveSsao(m_secondary, m_receiving, m_pendingCapture ? raw : nullptr);
             if (result == d3d::mgpu::SsaoResult::submitted)
             {
-                ++m_secondaryFrames;
-                cacheResult(filtered);
-                updateDeviceStatus(true);
-                if (capturing)
+                if (!m_discardPending)
                 {
-                    capture(raw, "raw", 1);
-                    capture(filtered, "filtered", 1);
-                    capture(m_sourceNormals, "normals", 4);
-                    captureDepth();
-                    NAU_LOG_INFO("SSAO: secondary capture frame={}", m_frame);
+                    eastl::swap(m_history, m_receiving);
+                    m_historyFrame = m_pendingFrame;
+                    fresh = true;
+                    if (m_pendingCapture)
+                    {
+                        m_captureActive = true;
+                        capture(raw, "raw", 1);
+                        capture(m_history, "filtered", 1);
+                        m_captureActive = false;
+                        m_captureDisplayFrame = m_frame;
+                        NAU_LOG_INFO("SSAO: secondary capture frame={}, source={}", m_frame, m_historyFrame);
+                    }
                 }
-                return;
+                else if (m_pendingCapture)
+                {
+                    m_captureSubmitted = false;
+                }
+                m_pendingFrame = 0;
+                m_pendingCapture = false;
+                m_discardPending = false;
             }
-            if (result == d3d::mgpu::SsaoResult::busy)
+            else if (result == d3d::mgpu::SsaoResult::failed)
             {
-                ++m_busyFrames;
-                if (m_historyFrame != 0 && reuseResult(filtered))
+                trySecondary = false;
+                m_historyFrame = 0;
+            }
+        }
+        const bool canSubmit = trySecondary && !forcedBusy && m_pendingFrame == 0 && !d3d::mgpu::isSsaoBusy(m_secondary);
+        const bool useHistory = trySecondary && m_historyFrame != 0;
+        if (canSubmit || !useHistory)
+        {
+            packNormals(packedNormals, normals);
+            m_normals = packedNormals;
+        }
+        if (canSubmit)
+        {
+            const bool captureJob = captureRequested && (m_busyAtFrame == 0 || m_busyAtFrame == 1);
+            if (captureJob)
+            {
+                m_captureActive = true;
+                capture(m_sourceNormals, "normals", 4);
+                captureDepth();
+                if (m_validateSecondary)
                 {
-                    return;
+                    drawRaw(raw, packedNormals, depth);
+                    drawBlur(horizontal, raw, true);
+                    TextureInfo info;
+                    filtered->getinfo(info);
+                    BaseTexture* reference = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ssao_reference");
+                    if (reference)
+                    {
+                        drawBlur(reference, horizontal, false);
+                        capture(reference, "reference", 1);
+                        reference->destroy();
+                    }
+                    else
+                    {
+                        NAU_LOG_ERROR("SSAO: could not allocate validation reference");
+                    }
                 }
+                m_captureActive = false;
+            }
+            const d3d::mgpu::SsaoResult result = d3d::mgpu::submitSsao(m_secondary, m_constants, m_blur, packedNormals, depth, captureJob);
+            if (result == d3d::mgpu::SsaoResult::submitted)
+            {
+                m_pendingFrame = m_frame;
+                m_pendingCapture = captureJob;
+                m_discardPending = false;
+                m_captureSubmitted |= captureJob;
+                ++m_submittedFrames;
+            }
+            else if (result == d3d::mgpu::SsaoResult::failed)
+            {
+                trySecondary = false;
+                m_historyFrame = 0;
+            }
+        }
+        if (trySecondary && (forcedBusy || (!canSubmit && !fresh)))
+        {
+            ++m_busyFrames;
+        }
+        if (trySecondary && m_historyFrame != 0)
+        {
+            m_captureActive = forcedBusy && captureRequested;
+            if (reuseResult(filtered, fresh))
+            {
+                if (m_captureActive)
+                {
+                    m_captureDisplayFrame = m_frame;
+                    m_captureSubmitted = true;
+                }
+                m_captureActive = false;
+                return;
             }
         }
         m_historyFrame = 0;
-        drawRaw(raw, normals, depth);
+        // Startup and actual failures use a primary result; a slow GPU 1 never stalls this path.
+        if (!canSubmit && useHistory)
+        {
+            packNormals(packedNormals, normals);
+        }
+        m_captureActive = !trySecondary && captureRequested;
+        drawRaw(raw, packedNormals, depth);
         drawBlur(horizontal, raw, true);
         drawBlur(filtered, horizontal, false);
+        if (m_captureActive)
+        {
+            m_captureDisplayFrame = m_frame;
+            m_captureSubmitted = true;
+        }
+        m_captureActive = false;
         ++m_primaryFrames;
         updateDeviceStatus(false);
     }
 
-    void AmbientOcclusion::cacheResult(BaseTexture* texture)
-    {
-        if (!m_history)
-        {
-            TextureInfo info;
-            texture->getinfo(info);
-            m_history = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_history");
-        }
-        if (m_history && d3d::stretch_rect(texture, m_history))
-        {
-            m_historyFrame = m_frame;
-        }
-        else
-        {
-            m_historyFrame = 0;
-        }
-    }
-
-    bool AmbientOcclusion::reuseResult(BaseTexture* texture)
+    bool AmbientOcclusion::reuseResult(BaseTexture* texture, bool fresh)
     {
         NAU_GPU_TIMER("ssao_reuse");
         if (!d3d::stretch_rect(m_history, texture))
@@ -337,9 +405,17 @@ namespace nau::render
             m_historyFrame = 0;
             return false;
         }
-        ++m_reusedFrames;
-        updateDeviceStatus(true, true);
-        if (m_captureAtFrame != 0 && m_frame == m_captureAtFrame)
+        if (fresh)
+        {
+            ++m_secondaryFrames;
+        }
+        else
+        {
+            ++m_reusedFrames;
+        }
+        m_maxHistoryAge = eastl::max(m_maxHistoryAge, m_frame - m_historyFrame);
+        updateDeviceStatus(true, !fresh);
+        if (m_captureActive)
         {
             capture(m_history, "history", 1);
             capture(texture, "filtered", 1);
@@ -442,7 +518,7 @@ namespace nau::render
 
     void AmbientOcclusion::capture(BaseTexture* texture, const char* name, uint32_t components) const
     {
-        if (m_frame != m_captureAtFrame || m_captureAtFrame == 0)
+        if (!m_captureActive)
         {
             return;
         }
@@ -493,7 +569,7 @@ namespace nau::render
 
     void AmbientOcclusion::captureDepth() const
     {
-        if (m_frame != m_captureAtFrame || m_captureAtFrame == 0)
+        if (!m_captureActive)
         {
             return;
         }
@@ -519,7 +595,7 @@ namespace nau::render
 
     void AmbientOcclusion::capturePresentation(BaseTexture* backBuffer) const
     {
-        if (m_frame != m_captureAtFrame || m_captureAtFrame == 0)
+        if (m_captureDisplayFrame == 0 || m_frame != m_captureDisplayFrame)
         {
             return;
         }

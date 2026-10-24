@@ -64,8 +64,7 @@ namespace nau::render
         void captureDepth() const;
         void prepareSecondary(BaseTexture* target);
         void updateDeviceStatus(bool secondary, bool reused = false);
-        void cacheResult(BaseTexture* texture);
-        bool reuseResult(BaseTexture* texture);
+        bool reuseResult(BaseTexture* texture, bool fresh);
 
     private:
         MaterialAssetView::Ptr m_rawMaterial;
@@ -84,8 +83,19 @@ namespace nau::render
         uint32_t m_busyFrames = 0;
         uint32_t m_reusedFrames = 0;
         uint32_t m_historyFrame = 0;
+        uint32_t m_pendingFrame = 0;
+        uint32_t m_submittedFrames = 0;
+        uint32_t m_maxHistoryAge = 0;
+        uint32_t m_captureDisplayFrame = 0;
         uint32_t m_busyAtFrame = 0;
         BaseTexture* m_history = nullptr;
+        BaseTexture* m_receiving = nullptr;
+        bool m_pendingCapture = false;
+        bool m_discardPending = false;
+        bool m_captureSubmitted = false;
+        bool m_captureActive = false;
+        bool m_busyInjected = false;
+        bool m_failureInjected = false;
         uint32_t m_autoDeviceSwitchFrames = 0;
         uint32_t m_failAtFrame = 0;
         bool m_secondaryAttempted = false;

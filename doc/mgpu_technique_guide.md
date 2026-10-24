@@ -56,13 +56,14 @@ Create channels once with [`TransferChannelDesc`](../engine/core/modules/render/
 | 0 → 1 | `send_from_primary(channel, engineSource)` returns ticket | `receive_on_secondary(channel, ticket, nativeDestination, destinationFree)` returns ready fence/value |
 | 1 → 0 | `send_from_secondary(channel, nativeSource, sourceReady)` returns ticket and sourceReleased | `receive_on_primary(channel, ticket, engineDestination)` returns bool |
 
-Follow [`renderSsao`](../engine/core/modules/render/src/drv3d_DX12/multi_gpu_ssao.cpp) for ordering:
+Follow [`submitSsao` / `tryReceiveSsao`](../engine/core/modules/render/src/drv3d_DX12/multi_gpu_ssao.cpp) for ordering:
 
 1. Send primary inputs after their producing work.
 2. Pass the previous use of the native destination as `destinationFree`; the receiving COPY queue must not overwrite inputs still read by a DIRECT queue.
 3. Make the technique's DIRECT queue wait for all input-ready points. Execute the pass and signal output readiness.
 4. Send the output with that ready point. Retain `sourceReleased` and wait for it before overwriting the output.
-5. Receive into a tracked engine destination. Commands issued afterward can read it through the driver's GPU synchronization.
+5. Retain the output ticket across frames. Poll `is_transfer_ready` before receiving it into the alternate tracked engine destination. Publish only a completed older result; if it is not ready, reuse the existing map. The receive still synchronizes its local destination copy.
+6. Submit the next input set after the outstanding job is consumed; skip inputs while busy to keep GPU 0 free of secondary backpressure. SSAO uses three shared slots and two persistent primary AO maps.
 
 Native endpoints must be in `D3D12_RESOURCE_STATE_COMMON` when copying begins. The technique owns its DIRECT-queue transitions. Engine textures must be tracked and use `TEXCF_RTARGET`, `TEXCF_UNORDERED` or `TEXCF_UPDATE_DESTINATION`. Payload size, layout and endpoint formats must match the channel's supported copy contract.
 
@@ -101,7 +102,7 @@ The full [`MultiGpuDemo`](../engine/core/modules/graphics/src/render_window/mult
 | Area | Requirement or limitation |
 | --- | --- |
 | Depth | Copy depth to the other device. AO supports one-plane raw reversed-Z DEPTH32 → R32_FLOAT. Combined depth-stencil is not supported by this channel. |
-| Delay | New AO is consumed in the same frame, with a GPU wait before resolve. Busy history can be older; it has no reprojection or age bound. |
+| Delay | SSAO consumes a completed result from an earlier frame, with minimum latency 1 frame. Slower secondary execution increases age; history has no reprojection or age bound. |
 | Shutdown/resize | Drain channels, then release passes/resources, then the allocator. Native passes can retire unfinished work; channel destruction can block the CPU. |
 | Collection | Graphics calls `collectFullscreenResources()` each frame and before driver teardown; this also collects SSAO retirement. A standalone owner must arrange equivalent collection. |
 | Recovery | Destroy owners before driver recovery and recreate them afterward. Do not retain borrowed pointers across recovery. |
@@ -119,4 +120,4 @@ Use `-Profile -CaptureFrame 0` with the AO runner, or `NAU_GPU_PROFILER=1` when 
 
 Each queue uses its own timestamp frequency. `/src` and `/dst` time local copies, `/sum` adds their durations, and calibrated `/span` covers the interval from the source copy start to destination copy end. COPY support is optional; missing timers produce warnings, not zero measurements. See [commands, interpretation and WARP results](ambient_occlusion_measurements.md).
 
-WARP validates the path but does not predict hardware speedup. The driver currently presents with VSYNCED mode, so compare GPU CSV timings rather than FPS. Primary `Frame` includes waiting for the secondary result. Blocking shutdown waits, stale busy history and unresolved asynchronous-loading shutdown failures remain limitations.
+WARP validates the path but does not predict hardware speedup. Presentation defaults to vsync; use `video.vsync=false`, `video.adaptive_vsync=false` or the runner's `-NoVsync` for comparisons. Inspect GPU CSV timings as well as frame cadence. SSAO polls source-copy completion before reception, so primary `Frame` no longer waits for an unfinished secondary job. The immediate fullscreen path still can wait. Blocking shutdown waits, stale history and unresolved asynchronous-loading shutdown failures remain limitations.

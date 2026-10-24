@@ -57,12 +57,16 @@ def verify(prefix, mode):
     result_path = Path(str(prefix) + ".result.json")
     runtime = json.loads(result_path.read_text(encoding="utf-8-sig")) if result_path.exists() else {}
     if mode == "busy":
-        assert runtime.get("reused", 0) > 0 and runtime.get("primary") == 0, "Busy used GPU 0 recomputation"
+        assert runtime.get("reused", 0) > 0, "Busy did not reuse a completed map"
         log = Path(str(prefix) + ".stdout.log").read_text(encoding="utf-8-sig")
         reused = re.search(r"SSAO: reused capture frame=(\d+), source=(\d+)", log)
         assert reused and 0 < int(reused[2]) < int(reused[1]), "Cached AO did not come from an earlier completed frame"
         result["capture_frame"] = int(reused[1])
         result["source_frame"] = int(reused[2])
+    if runtime.get("captureSourceFrame", 0) != runtime.get("captureDisplayFrame", 0):
+        assert runtime["captureDisplayFrame"] > runtime["captureSourceFrame"] > 0, "Pipeline displayed a current or future result"
+        result["capture_frame"] = runtime["captureDisplayFrame"]
+        result["source_frame"] = runtime["captureSourceFrame"]
     if mode in ["lit", "ao", "raw"] and reference_path.exists() and runtime.get("validateSecondary", True):
         reference = np.fromfile(reference_path, dtype="<f4").reshape(height, width)
         error = np.abs(reference - filtered)

@@ -1,6 +1,8 @@
 #include <dxgidebug.h>
 #include <gtest/gtest.h>
 
+#include <EASTL/finally.h>
+
 #include <cstring>
 
 #include "device_resource.h"
@@ -568,6 +570,75 @@ TEST(MultiGpuTransferPair, LateConsumerDropsFramesInsteadOfHangingProducer)
     const auto ready = channel.receive(3, destination.Get(), {});
     ASSERT_TRUE(waitFence(ready.fence, ready.value, 10000));
     EXPECT_EQ(countMismatches(download(gpus[1], destination.Get()), makePattern(256 * 256 * 4, 32)), 0u);
+}
+
+TEST(MultiGpuTransferPair, ReadinessPollingLeavesConsumerFreeWhileSourceIsBlocked)
+{
+    TestGpu gpus[2];
+    if (!makeTwoDevices(gpus))
+    {
+        GTEST_SKIP() << "A hardware pair or hardware + WARP is required";
+    }
+    const D3D12_RESOURCE_DESC desc = bufferDesc(4096);
+    ComPtr<ID3D12Resource> source = createResource(gpus[1], desc);
+    ComPtr<ID3D12Resource> destination = createResource(gpus[0], desc);
+    upload(gpus[1], source.Get(), makePattern(4096, 71));
+    upload(gpus[0], destination.Get(), makePattern(4096, 72));
+    CrossAdapterChannel channel;
+    ASSERT_HRESULT_SUCCEEDED(channel.init(gpus[1].device.Get(), gpus[0].device.Get(), gpus[0].device.Get(), desc, 3, nullptr));
+    const auto release = eastl::make_finally([fence = gpus[1].gate]
+    {
+        fence->Signal(1);
+    });
+    EXPECT_FALSE(channel.isReady(0));
+    EXPECT_FALSE(channel.isReady(1));
+    const CrossAdapterChannel::Send sent = channel.send(source.Get(), {gpus[1].gate.Get(), 1});
+    ASSERT_NE(sent.ticket, 0u);
+    for (uint32_t frame = 0; frame < 1000; ++frame)
+    {
+        EXPECT_FALSE(channel.isReady(sent.ticket));
+    }
+    // The primary queue can finish independent work and retain its old image while the secondary is held.
+    EXPECT_EQ(countMismatches(download(gpus[0], destination.Get()), makePattern(4096, 72)), 0u);
+    ASSERT_HRESULT_SUCCEEDED(gpus[1].gate->Signal(1));
+    ASSERT_TRUE(waitFence(sent.sourceReleased.fence, sent.sourceReleased.value, 10000));
+    EXPECT_TRUE(channel.isReady(sent.ticket));
+    const CrossAdapterSyncPoint ready = channel.receive(sent.ticket, destination.Get(), {});
+    ASSERT_NE(ready.fence, nullptr);
+    ASSERT_TRUE(waitFence(ready.fence, ready.value, 10000));
+    EXPECT_EQ(countMismatches(download(gpus[0], destination.Get()), makePattern(4096, 71)), 0u);
+    expectNoDebugWarnings(gpus[0].device.Get());
+    expectNoDebugWarnings(gpus[1].device.Get());
+}
+
+TEST(MultiGpuTransferPair, ReadinessRejectsAnOverwrittenTicketInThreeSlotRing)
+{
+    TestGpu gpus[2];
+    if (!makeTwoDevices(gpus))
+    {
+        GTEST_SKIP() << "A hardware pair or hardware + WARP is required";
+    }
+    const D3D12_RESOURCE_DESC desc = bufferDesc(4096);
+    ComPtr<ID3D12Resource> source = createResource(gpus[1], desc);
+    ComPtr<ID3D12Resource> destination = createResource(gpus[0], desc);
+    upload(gpus[1], source.Get(), makePattern(4096, 73));
+    CrossAdapterChannel channel;
+    ASSERT_HRESULT_SUCCEEDED(channel.init(gpus[1].device.Get(), gpus[0].device.Get(), gpus[0].device.Get(), desc, 3, nullptr));
+    for (uint64_t frame = 1; frame <= 7; ++frame)
+    {
+        const CrossAdapterChannel::Send sent = channel.send(source.Get(), {});
+        ASSERT_EQ(sent.ticket, frame);
+        ASSERT_TRUE(waitFence(sent.sourceReleased.fence, sent.sourceReleased.value, 10000));
+        EXPECT_TRUE(channel.isReady(frame));
+        if (frame > 3)
+        {
+            EXPECT_FALSE(channel.isReady(frame - 3));
+        }
+        const CrossAdapterSyncPoint ready = channel.receive(frame, destination.Get(), {});
+        ASSERT_NE(ready.fence, nullptr);
+        ASSERT_TRUE(waitFence(ready.fence, ready.value, 10000));
+    }
+    EXPECT_EQ(countMismatches(download(gpus[0], destination.Get()), makePattern(4096, 73)), 0u);
 }
 
 TEST(MultiGpuTransferPair, StreamsManyFramesWithoutBlockingCpu)

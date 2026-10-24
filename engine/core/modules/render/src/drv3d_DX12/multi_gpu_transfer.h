@@ -486,6 +486,14 @@ namespace drv3d_dx12
         }
 
         /**
+         * @brief Polls the source copy without inserting a queue wait. Removed devices never publish valid data.
+         */
+        bool isReady(uint64_t ticket) const
+        {
+            return holds(ticket) && !isLost() && written.isCompleted(slotStates[ticket % slotCount].writtenValue);
+        }
+
+        /**
          * @brief Copies source on the producer into the next slot.
          * @param source Producer resource matching the payload, in COMMON when the copy starts.
          * @param source_ready Producer fence the copy waits for, e.g. the end of the pass that writes source; may be empty.

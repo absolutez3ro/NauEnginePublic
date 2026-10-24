@@ -82,7 +82,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.with_suffix(".json").write_text(json.dumps(reports, indent=2), encoding="utf-8")
     lines = ["# SSAO GPU timestamp measurements", "",
-             "Durations come from GPU timestamps, not FPS. Frame on GPU 0 includes waiting for AO.",
+             "Durations come from GPU timestamps, not FPS. Pipelined SSAO polls ready output before primary reception.",
              "COPY /sum is src + dst GPU work; /span uses each COPY queue's clock calibration.",
              "WARP runs validate the instrumentation and do not demonstrate multi-GPU speedup.", ""]
     for report in reports:

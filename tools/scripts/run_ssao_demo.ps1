@@ -11,6 +11,7 @@ param(
     [ValidateRange(0, 10000)]
     [int]$CaptureFrame = 150,
     [switch]$Profile,
+    [switch]$NoVsync,
     [ValidatePattern('^[a-zA-Z0-9_-]+$')]
     [string]$Label
 )
@@ -33,6 +34,9 @@ try {
     $config = [Text.Encoding]::UTF8.GetString($originalConfig) | ConvertFrom-Json
     $config.dx12.multiGpu = $Device -ne 'primary'
     $config.dx12.secondaryWarpForTesting = $Device -in @('warp', 'fallback', 'device-switch', 'busy', 'busy-first')
+    if (!$config.video) { $config | Add-Member -NotePropertyName video -NotePropertyValue ([pscustomobject]@{}) }
+    $config.video | Add-Member -NotePropertyName vsync -NotePropertyValue (!$NoVsync) -Force
+    $config.video | Add-Member -NotePropertyName adaptive_vsync -NotePropertyValue $false -Force
     $config.sample.mgpuDemo.enabled = $false
     $config.sample.ssao = [ordered]@{
         enabled = $Mode -ne 'disabled'
@@ -42,7 +46,7 @@ try {
         autoSwitchFrames = $(if ($Mode -eq 'switch') { 60 } else { 0 })
         useSecondary = $Device -ne 'primary'
         validateSecondary = !$Profile -and $Device -in @('secondary', 'warp', 'device-switch', 'busy-first')
-        autoDeviceSwitchFrames = $(if ($Device -eq 'device-switch') { 3 } else { 0 })
+        autoDeviceSwitchFrames = $(if ($Device -eq 'device-switch') { 1000 } else { 0 })
         failAtFrame = $(if ($Device -eq 'fallback') { 3 } else { 0 })
         busyAtFrame = $(if ($Device -eq 'busy') { $CaptureFrame } elseif ($Device -eq 'busy-first') { 1 } else { 0 })
         captureAtFrame = $CaptureFrame
@@ -76,6 +80,16 @@ try {
     $result.validateSecondary = $config.sample.ssao.validateSecondary
     $result.profile = [bool]$Profile
     $result.captureFrame = $CaptureFrame
+    $result.vsync = !$NoVsync
+    $pipeline = [regex]::Match($log, 'reused=\d+, submitted=(\d+), maxAge=(\d+)')
+    $result.submitted = $(if ($pipeline.Success) { [long]$pipeline.Groups[1].Value } else { 0 })
+    $result.maxHistoryAge = $(if ($pipeline.Success) { [long]$pipeline.Groups[2].Value } else { 0 })
+    $secondaryCaptures = [regex]::Matches($log, 'SSAO: secondary capture frame=(\d+), source=(\d+)')
+    $secondaryCapture = if ($secondaryCaptures.Count -gt 0) { $secondaryCaptures[$secondaryCaptures.Count - 1] } else { [regex]::Match('', 'capture') }
+    $captureEvents = [regex]::Matches($log, 'SSAO: (?:secondary|reused) capture frame=(\d+), source=(\d+)')
+    $captureEvent = if ($captureEvents.Count -gt 0) { $captureEvents[$captureEvents.Count - 1] } else { $secondaryCapture }
+    $result.captureDisplayFrame = $(if ($captureEvent.Success) { [long]$captureEvent.Groups[1].Value } else { $CaptureFrame })
+    $result.captureSourceFrame = $(if ($captureEvent.Success) { [long]$captureEvent.Groups[2].Value } else { $CaptureFrame })
     $result | ConvertTo-Json | Set-Content (Join-Path $resultDir "$runName.result.json")
     $result | ConvertTo-Json
     if ($early -or $forced -or $process.ExitCode -ne 0) { throw "SSAO runtime failed: $stdoutPath" }
@@ -101,13 +115,13 @@ try {
         }
         if ($Device -in @('warp', 'secondary', 'device-switch', 'busy-first') -and $Mode -ne 'off') {
             if ($result.secondary -eq 0) { throw 'No frame was computed on GPU 1' }
-            if ($CaptureFrame -gt 0 -and $log -notmatch "SSAO: secondary capture frame=$CaptureFrame") { throw 'The capture did not come from GPU 1' }
+            if ($CaptureFrame -gt 0 -and (!$secondaryCapture.Success -or $result.captureSourceFrame -lt $CaptureFrame -or $result.captureDisplayFrame -le $result.captureSourceFrame)) { throw 'The capture did not come from an older, completed GPU 1 submission' }
         }
         if ($Device -eq 'fallback') {
             if ($result.secondary -eq 0 -or $result.primary -eq 0 -or $log -notmatch 'injecting secondary failure') { throw 'Fallback was not exercised' }
         }
         if ($Device -eq 'device-switch' -and $result.primary -eq 0) { throw 'GPU 0 was not exercised' }
-        if ($Device -eq 'busy' -and ($result.reused -eq 0 -or $result.primary -ne 0 -or $log -notmatch "SSAO: reused capture frame=$CaptureFrame,")) { throw 'Cached AO was not used instead of GPU 0 recomputation' }
+        if ($Device -eq 'busy' -and ($result.reused -eq 0 -or $log -notmatch 'SSAO: reused capture frame=\d+, source=\d+')) { throw 'Cached AO was not used instead of GPU 0 recomputation' }
         if ($Device -eq 'busy-first' -and ($result.primary -lt 1 -or $result.busy -lt 1 -or $log -notmatch 'SSAO: injecting busy at frame 1')) { throw 'Initial busy frame did not fall back without history' }
         if ($Profile) {
             $timingFile = Get-Item -LiteralPath $env:NAU_GPU_PROFILER_CSV

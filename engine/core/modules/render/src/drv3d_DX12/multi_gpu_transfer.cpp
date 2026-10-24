@@ -227,6 +227,11 @@ bool d3d::mgpu::is_transfer_format_supported(uint32_t format)
     return is_single_plane(native_device(PRIMARY_GPU), dxgiFormat) && is_single_plane(native_device(SECONDARY_GPU), dxgiFormat);
 }
 
+bool d3d::mgpu::is_transfer_ready(TransferChannelHandle channel, TransferTicket ticket)
+{
+    return channel && channel->channel.isReady(ticket);
+}
+
 d3d::mgpu::TransferTicket d3d::mgpu::send_from_primary(TransferChannelHandle channel, BaseTexture* source)
 {
     Image* image = engine_image(source);

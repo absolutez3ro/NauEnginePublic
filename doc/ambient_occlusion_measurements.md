@@ -7,8 +7,8 @@ Use GPU timestamps to compare primary and secondary execution of the same scene.
 After building SceneBaseSample, run from the repository root, sequentially:
 
 ```powershell
-./tools/scripts/run_ssao_demo.ps1 -Device primary -Mode lit -Profile -CaptureFrame 0 -Seconds 45 -Label comparison
-./tools/scripts/run_ssao_demo.ps1 -Device secondary -Mode lit -Profile -CaptureFrame 0 -Seconds 45 -Label comparison
+./tools/scripts/run_ssao_demo.ps1 -Device primary -Mode lit -Profile -NoVsync -CaptureFrame 0 -Seconds 45 -Label comparison
+./tools/scripts/run_ssao_demo.ps1 -Device secondary -Mode lit -Profile -NoVsync -CaptureFrame 0 -Seconds 45 -Label comparison
 python tools/scripts/summarize_ssao_timings.py `
     build/ssao-runtime/lit-profile-comparison-timings.csv `
     build/ssao-runtime/secondary-lit-profile-comparison-timings.csv `
@@ -23,7 +23,7 @@ The summary validates finite, nonnegative timings, duplicate rows, transfer dire
 
 | Name or suffix | Meaning |
 | --- | --- |
-| `Frame`, GPU 0 | Primary frame GPU interval, including waits for secondary AO |
+| `Frame`, GPU 0 | Primary frame GPU interval; pipelined SSAO includes local copies but does not wait for unfinished GPU 1 AO |
 | `ssao_pack_normals` | Extract sphere-map XY into R16G16_FLOAT |
 | `ssao_raw`, `ssao_blur_h`, `ssao_blur_v` | Three AO passes on the device doing the computation |
 | `ssao_reuse` | Primary work used to show cached AO when secondary submission is busy |
@@ -34,11 +34,35 @@ The summary validates finite, nonnegative timings, duplicate rows, transfer dire
 
 Each COPY queue provides its own frequency. Calibration maps both clocks to QPC for `/span`; raw timestamps from different devices are never directly subtracted. `/span` excludes waiting before the first source timestamp. Unsupported timers/calibration produce missing measurements and warnings, not zero durations. Do not mechanically sum overlapping queues into a frame duration.
 
-The profiler mode label comes from startup configuration; F6/F8 do not change it. Use separate runs to compare devices. The driver currently chooses `VSYNCED` presentation. Frame counts divided by script duration are not a valid speedup measurement because they include startup/loading and presentation effects. GPU pass durations alone also do not establish useful concurrency.
+The profiler mode label comes from startup configuration; F6/F8 do not change it. Use separate runs to compare devices. Presentation defaults to vsync. `-NoVsync` sets `video.vsync=false` and `video.adaptive_vsync=false`; check `DX12: presentation` in the log and the recorded `vsync` result field. Frame counts divided by script duration are not a valid speedup measurement because they include startup/loading and presentation effects. GPU pass durations alone also do not establish useful concurrency.
 
-The shutdown counters satisfy `secondary + primary + reused = frames`; `busy` records secondary pressure. Record them alongside CSVs, adapter names, actual resolution and exit status. A requested secondary run may fall back, so verify actual secondary work rather than relying on configuration or CSV labels. `compare_gpu_timings.py --real-2gpu` is a report label, not proof that two hardware adapters ran the work.
+The shutdown counters satisfy `secondary + primary + reused = frames`; `busy` records secondary pressure. Record them alongside `submitted`, `maxAge`, CSVs, adapter names, actual resolution and exit status. `secondary` counts newly published maps, `reused` counts frames displaying an older published map, and `submitted` counts secondary jobs. A slow secondary should produce reused frames while GPU 0 keeps rendering; a large `maxAge` is expected with WARP. Capture logs must satisfy display frame > source frame. A requested secondary run may fall back, so verify actual work rather than relying on configuration or CSV labels. `compare_gpu_timings.py --real-2gpu` is a report label, not proof that two hardware adapters ran the work.
 
-## Example: functional check with WARP
+## Pipelined functional check
+
+On Windows, Release, RTX 4060 Ti + WARP, 634×611, two sequential 30-second runs used `lit`, radius 0.5, blur enabled, `-Profile -NoVsync -CaptureFrame 0`. No build ran concurrently. The first 500 profiler frames were excluded from timing statistics; asset loading remained asynchronous. These are functional/instrumentation results, not a controlled hardware benchmark.
+
+| Run | Frames | New secondary maps | Primary | Reused | Submitted jobs | Maximum history age | Exit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| GPU 0 | 6789 | 0 | 6789 | 0 | 0 | 0 | 0 |
+| GPU 0 + WARP, pipelined | 3980 | 31 | 20 | 3929 | 32 | 301 | 0 |
+
+| GPU 0 Frame | Samples | Mean, ms | Median, ms | P95, ms |
+| --- | ---: | ---: | ---: | ---: |
+| Primary AO | 6289 | 1.1164 | 0.9810 | 1.4612 |
+| Pipelined WARP AO | 3479 | 1.1882 | 0.8561 | 2.1460 |
+
+GPU 0 continued rendering while WARP computed each map. The COPY check validated 95 complete pairs: 32 normals, 32 depth, 31 returned AO maps. The final submitted map was not consumed before shutdown. COPY timing halves are retained by ticket and published together, so a long secondary job is not discarded by the generic profiler's primary-frame age limit. No missing-half warnings occurred in this run.
+
+A separate capture compared the output from source frame 602 against the primary reference of frame 602, displayed it in frame 734, and exited normally. Maximum error was 0.00196558237; mean excess beyond half an R8 quantization step was 2.35e-11. The age of 132 frames reflects slow software WARP; a hardware secondary is expected to have different latency. The implementation guarantees a minimum age of one frame and reuses history rather than imposing a fixed maximum delay. Motion artifacts and CPU contention from WARP remain relevant.
+
+Targeted native transfer/SSAO checks passed 22/22, including a source held behind an unsignaled fence while the consumer continued independent work, and readiness of overwritten tickets in a three-slot ring. Release SceneBaseSample built with both static libraries and DLLs. Additional runs verified injected failure (1 secondary map, then primary fallback), forced busy (the displayed map exactly matched history), device switching, and resize from 634×611 to 784×561. The resized capture matched its source-frame reference within the documented tolerance. These runs all exited with code 0.
+
+Generated artifacts: `build/ssao-runtime/pipeline-summary.{md,json}`, `*-profile-pipeline-final-timings.csv`, `warp-lit-pipeline-capture-verification.json`. They are local build outputs. Use the commands above with a hardware secondary and record actual adapter names for a hardware report. A PIX/GPUView trace is still needed to inspect hardware queue overlap directly.
+
+## Historical example: synchronous functional check with WARP
+
+These numbers predate the pipelined scheduling change and include the former same-frame wait. They are retained as an instrumentation example, not as measurements of the new path.
 
 Reference build: [source revision 63eb0a0d](https://github.com/absolutez3ro/NauEnginePublic/commit/63eb0a0d43624ddf0e607eda2ca54586792dc66d), Windows, Release, RTX 4060 Ti as GPU 0, render size 634×611, initial camera, `lit`, radius 0.5, blur enabled. GPU 1 in the second run is **WARP**, a software adapter. Both runs lasted 45 seconds without captures/reference rendering; the scene loaded asynchronously. These measurements demonstrate timing collection and cannot establish hardware-pair performance.
 
