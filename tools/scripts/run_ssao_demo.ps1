@@ -12,6 +12,9 @@ param(
     [int]$CaptureFrame = 150,
     [switch]$Profile,
     [switch]$NoVsync,
+    [switch]$SerializeRenderJobs,
+    [ValidateSet(1, 2)]
+    [int]$ResolutionDivisor = 2,
     [ValidatePattern('^[a-zA-Z0-9_-]+$')]
     [string]$Label
 )
@@ -37,12 +40,15 @@ try {
     if (!$config.video) { $config | Add-Member -NotePropertyName video -NotePropertyValue ([pscustomobject]@{}) }
     $config.video | Add-Member -NotePropertyName vsync -NotePropertyValue (!$NoVsync) -Force
     $config.video | Add-Member -NotePropertyName adaptive_vsync -NotePropertyValue $false -Force
+    if (!$config.graphics) { $config | Add-Member -NotePropertyName graphics -NotePropertyValue ([pscustomobject]@{}) }
+    $config.graphics | Add-Member -NotePropertyName serializeRenderJobs -NotePropertyValue ([bool]$SerializeRenderJobs) -Force
     $config.sample.mgpuDemo.enabled = $false
     $config.sample.ssao = [ordered]@{
         enabled = $Mode -ne 'disabled'
         mode = $(if ($Mode -eq 'off') { 0 } elseif ($Mode -in @('ao', 'raw', 'zero-radius')) { 2 } else { 1 })
         radius = $(if ($Mode -eq 'zero-radius') { 0.0 } else { 0.5 })
         blur = $Mode -ne 'raw'
+        resolutionDivisor = $ResolutionDivisor
         autoSwitchFrames = $(if ($Mode -eq 'switch') { 60 } else { 0 })
         useSecondary = $Device -ne 'primary'
         validateSecondary = !$Profile -and $Device -in @('secondary', 'warp', 'device-switch', 'busy-first')
@@ -81,6 +87,14 @@ try {
     $result.profile = [bool]$Profile
     $result.captureFrame = $CaptureFrame
     $result.vsync = !$NoVsync
+    $result.serializeRenderJobs = [bool]$SerializeRenderJobs
+    $result.resolutionDivisor = $ResolutionDivisor
+    $resolutions = [regex]::Matches($log, 'SSAO: resolution full=(\d+)x(\d+), ao=(\d+)x(\d+)')
+    if ($resolutions.Count -gt 0) {
+        $size = $resolutions[$resolutions.Count - 1]
+        $result.aoWidth = [int]$size.Groups[3].Value
+        $result.aoHeight = [int]$size.Groups[4].Value
+    }
     $pipeline = [regex]::Match($log, 'reused=\d+, submitted=(\d+), maxAge=(\d+)')
     $result.submitted = $(if ($pipeline.Success) { [long]$pipeline.Groups[1].Value } else { 0 })
     $result.maxHistoryAge = $(if ($pipeline.Success) { [long]$pipeline.Groups[2].Value } else { 0 })
@@ -104,6 +118,7 @@ try {
         if ($CaptureFrame -gt 0) {
             $suffixes = @('filtered.f32', 'normals.f32', 'depth.f32', 'scene.ppm')
             if ($Device -eq 'busy') { $suffixes += 'history.f32' } else { $suffixes += 'raw.f32' }
+            $suffixes += @('resolved.f32', 'resolve_depth.f32')
             if ($config.sample.ssao.validateSecondary -and $Mode -ne 'off') { $suffixes += 'reference.f32' }
         }
         foreach ($suffix in $suffixes) {
@@ -115,7 +130,7 @@ try {
         }
         if ($Device -in @('warp', 'secondary', 'device-switch', 'busy-first') -and $Mode -ne 'off') {
             if ($result.secondary -eq 0) { throw 'No frame was computed on GPU 1' }
-            if ($CaptureFrame -gt 0 -and (!$secondaryCapture.Success -or $result.captureSourceFrame -lt $CaptureFrame -or $result.captureDisplayFrame -le $result.captureSourceFrame)) { throw 'The capture did not come from an older, completed GPU 1 submission' }
+            if ($CaptureFrame -gt 0 -and (!$secondaryCapture.Success -or $result.captureSourceFrame -lt $CaptureFrame -or $result.captureDisplayFrame -lt $result.captureSourceFrame)) { throw 'The capture did not come from a completed GPU 1 submission' }
         }
         if ($Device -eq 'fallback') {
             if ($result.secondary -eq 0 -or $result.primary -eq 0 -or $log -notmatch 'injecting secondary failure') { throw 'Fallback was not exercised' }

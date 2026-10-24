@@ -141,10 +141,19 @@ namespace
             return blob;
         }
 
-        TestVector<float> render(bool blur = false, bool reconstruct = false)
+        struct ShaderRun
+        {
+            const char* entry = nullptr;
+            UINT width = WIDTH;
+            UINT height = HEIGHT;
+            UINT fullWidth = WIDTH;
+            UINT fullHeight = HEIGHT;
+        };
+
+        TestVector<float> render(bool blur = false, bool reconstruct = false, ShaderRun run = {})
         {
             ComPtr<ID3DBlob> vertex = compile(blur, true);
-            ComPtr<ID3DBlob> pixel = compile(blur || reconstruct, false, reconstruct ? "PSReconstructNormals" : "PSMain");
+            ComPtr<ID3DBlob> pixel = compile(blur || reconstruct || run.entry, false, run.entry ? run.entry : (reconstruct ? "PSReconstructNormals" : "PSMain"));
             if (!vertex || !pixel)
             {
                 return TestVector<float>(PIXELS, -1.0f);
@@ -168,16 +177,20 @@ namespace
             textureDesc.SampleDesc.Count = 1;
             textureDesc.Usage = D3D11_USAGE_IMMUTABLE;
             textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            eastl::array<ComPtr<ID3D11Texture2D>, 3> textures;
-            eastl::array<ComPtr<ID3D11ShaderResourceView>, 3> views;
-            const float* inputs[] = {m_normals.data(), m_depth.data(), m_input.data()};
-            for (UINT index = 0; index < 3; ++index)
+            eastl::array<ComPtr<ID3D11Texture2D>, 4> textures;
+            eastl::array<ComPtr<ID3D11ShaderResourceView>, 4> views;
+            const float* inputs[] = {m_normals.data(), m_depth.data(), m_input.data(), m_fullDepth.empty() ? m_depth.data() : m_fullDepth.data()};
+            for (UINT index = 0; index < 4; ++index)
             {
+                textureDesc.Width = index == 3 ? run.fullWidth : WIDTH;
+                textureDesc.Height = index == 3 ? run.fullHeight : HEIGHT;
                 textureDesc.Format = index == 0 ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R32_FLOAT;
-                D3D11_SUBRESOURCE_DATA data = {inputs[index], WIDTH * sizeof(float) * (index == 0 ? 4u : 1u), 0};
+                D3D11_SUBRESOURCE_DATA data = {inputs[index], textureDesc.Width * sizeof(float) * (index == 0 ? 4u : 1u), 0};
                 EXPECT_HRESULT_SUCCEEDED(m_device->CreateTexture2D(&textureDesc, &data, &textures[index]));
                 EXPECT_HRESULT_SUCCEEDED(m_device->CreateShaderResourceView(textures[index].Get(), nullptr, &views[index]));
             }
+            textureDesc.Width = run.width;
+            textureDesc.Height = run.height;
             textureDesc.Format = reconstruct ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R32_FLOAT;
             textureDesc.Usage = D3D11_USAGE_DEFAULT;
             textureDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
@@ -199,8 +212,8 @@ namespace
             D3D11_DEPTH_STENCIL_DESC depthDesc = {};
             ComPtr<ID3D11DepthStencilState> depthState;
             EXPECT_HRESULT_SUCCEEDED(m_device->CreateDepthStencilState(&depthDesc, &depthState));
-            const D3D11_VIEWPORT viewport = {0, 0, static_cast<float>(WIDTH), static_cast<float>(HEIGHT), 0, 1};
-            ID3D11ShaderResourceView* resources[] = {views[0].Get(), views[1].Get(), views[2].Get()};
+            const D3D11_VIEWPORT viewport = {0, 0, static_cast<float>(run.width), static_cast<float>(run.height), 0, 1};
+            ID3D11ShaderResourceView* resources[] = {views[0].Get(), views[1].Get(), views[2].Get(), views[3].Get()};
             m_context->RSSetViewports(1, &viewport);
             m_context->RSSetState(raster.Get());
             m_context->OMSetDepthStencilState(depthState.Get(), 0);
@@ -209,19 +222,19 @@ namespace
             m_context->VSSetShader(vertexShader.Get(), nullptr, 0);
             m_context->PSSetShader(pixelShader.Get(), nullptr, 0);
             m_context->PSSetConstantBuffers(0, 1, constants.GetAddressOf());
-            m_context->PSSetShaderResources(0, 3, resources);
+            m_context->PSSetShaderResources(0, 4, resources);
             m_context->Draw(3, 0);
             m_context->CopyResource(readback.Get(), output.Get());
             D3D11_MAPPED_SUBRESOURCE mapped = {};
             const UINT components = reconstruct ? 4u : 1u;
-            TestVector<float> result(PIXELS * components, -1.0f);
+            TestVector<float> result(run.width * run.height * components, -1.0f);
             const HRESULT mappedResult = m_context->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &mapped);
             EXPECT_HRESULT_SUCCEEDED(mappedResult);
             if (SUCCEEDED(mappedResult))
             {
-                for (UINT row = 0; row < HEIGHT; ++row)
+                for (UINT row = 0; row < run.height; ++row)
                 {
-                    std::memcpy(result.data() + row * WIDTH * components, static_cast<const char*>(mapped.pData) + row * mapped.RowPitch, WIDTH * components * sizeof(float));
+                    std::memcpy(result.data() + row * run.width * components, static_cast<const char*>(mapped.pData) + row * mapped.RowPitch, run.width * components * sizeof(float));
                 }
                 m_context->Unmap(readback.Get(), 0);
             }
@@ -254,6 +267,7 @@ namespace
         ComPtr<ID3D11InfoQueue> m_debug;
         Constants m_constants;
         TestVector<float> m_normals;
+        TestVector<float> m_fullDepth;
         TestVector<float> m_depth;
         TestVector<float> m_input;
     };
@@ -285,6 +299,86 @@ namespace
             }
         }
         expectConstant(render(), 1.0f);
+    }
+
+    TEST_F(SsaoShader, DepthReductionPreservesForegroundAndOddImageEdges)
+    {
+        eastl::fill(m_depth.begin(), m_depth.end(), 0.0f);
+        for (UINT y = 0; y < HEIGHT; ++y)
+        {
+            m_depth[y * WIDTH + WIDTH - 1] = projectDepth(-2.0f);
+        }
+        m_depth[0] = projectDepth(-3.0f);
+        m_depth[1] = projectDepth(-1.0f);
+        m_constants.filter[3] = 2.0f;
+        const ShaderRun run = {"PSDownsampleDepth", WIDTH / 2, HEIGHT / 2};
+        const TestVector<float> result = render(false, false, run);
+        for (UINT y = 0; y < run.height; ++y)
+        {
+            for (UINT x = 0; x < run.width; ++x)
+            {
+                float expected = 0.0f;
+                for (UINT sy = y * HEIGHT / run.height; sy < (y + 1) * HEIGHT / run.height; ++sy)
+                {
+                    for (UINT sx = x * WIDTH / run.width; sx < (x + 1) * WIDTH / run.width; ++sx)
+                    {
+                        expected = eastl::max(expected, m_depth[sy * WIDTH + sx]);
+                    }
+                }
+                ASSERT_FLOAT_EQ(result[y * run.width + x], expected);
+            }
+        }
+    }
+
+    TEST_F(SsaoShader, FullResolutionUpsamplingIsIdentity)
+    {
+        for (UINT pixel = 0; pixel < PIXELS; ++pixel)
+        {
+            m_input[pixel] = static_cast<float>(pixel % 251) / 250.0f;
+        }
+        const TestVector<float> result = render(false, false, {"PSUpsample"});
+        for (UINT pixel = 0; pixel < PIXELS; ++pixel)
+        {
+            ASSERT_NEAR(result[pixel], m_input[pixel], 0.0001f);
+        }
+    }
+
+    TEST_F(SsaoShader, UpsamplingRejectsOtherSurfacesAndKeepsBackgroundNeutral)
+    {
+        const ShaderRun run = {"PSUpsample", WIDTH * 2 + 1, HEIGHT * 2 + 1, WIDTH * 2 + 1, HEIGHT * 2 + 1};
+        makeDepthStep(-2.7f);
+        m_constants.filter[2] = 0.1f;
+        for (UINT y = 0; y < HEIGHT; ++y)
+        {
+            for (UINT x = 0; x < WIDTH; ++x)
+            {
+                m_input[y * WIDTH + x] = x < WIDTH / 2 ? 0.2f : 0.8f;
+            }
+        }
+        m_fullDepth.resize(run.width * run.height);
+        for (UINT y = 0; y < run.height; ++y)
+        {
+            for (UINT x = 0; x < run.width; ++x)
+            {
+                const UINT lowX = static_cast<UINT>((x + 0.5f) * WIDTH / run.width);
+                const UINT lowY = static_cast<UINT>((y + 0.5f) * HEIGHT / run.height);
+                m_fullDepth[y * run.width + x] = m_depth[lowY * WIDTH + lowX];
+            }
+        }
+        m_fullDepth[run.width * (run.height / 2) + run.width / 2] = 0.0f;
+        const TestVector<float> result = render(false, false, run);
+        for (UINT pixel = 0; pixel < result.size(); ++pixel)
+        {
+            if (m_fullDepth[pixel] == 0.0f)
+            {
+                ASSERT_FLOAT_EQ(result[pixel], 1.0f);
+            }
+            else
+            {
+                const float expected = m_fullDepth[pixel] == projectDepth(-2.7f) ? 0.2f : 0.8f;
+                ASSERT_NEAR(result[pixel], expected, 0.0001f);
+            }
+        }
     }
 
     TEST_F(SsaoShader, DepthNormalsMatchAnAnalyticTiltedPlaneIncludingImageBorders)

@@ -72,7 +72,7 @@ namespace d3d::mgpu
                 channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_normals", true) : nullptr;
                 producer->normals = create_transfer_channel(channel);
             }
-            channel.format = TEXFMT_DEPTH32;
+            channel.format = desc.depthIsFloat ? TEXFMT_R32F : TEXFMT_DEPTH32;
             channel.name = "SSAO depth GPU 0 -> GPU 1";
             channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_depth", true) : nullptr;
             producer->depth = create_transfer_channel(channel);

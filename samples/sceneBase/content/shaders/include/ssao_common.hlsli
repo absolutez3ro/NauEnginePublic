@@ -15,6 +15,7 @@ cbuffer AmbientOcclusionConstants : register(b0)
 Texture2D<float4> aoNormals : register(t0); // Sphere-map world normals in .xy.
 Texture2D<float> aoDepth : register(t1);    // Reversed-Z: background = 0.
 Texture2D<float> aoInput : register(t2);
+Texture2D<float> aoFullDepth : register(t3); // Primary-only depth reduction/upsampling.
 
 float4 VSMain(uint vertexId : SV_VertexID) : SV_Position
 {

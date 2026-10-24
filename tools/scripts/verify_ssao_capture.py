@@ -10,7 +10,11 @@ from PIL import Image
 
 def verify(prefix, mode, independent_normals=False):
     scene = Image.open(str(prefix) + "-scene.ppm")
-    width, height = scene.size
+    display_width, display_height = scene.size
+    result_path = Path(str(prefix) + ".result.json")
+    runtime = json.loads(result_path.read_text(encoding="utf-8-sig")) if result_path.exists() else {}
+    width = runtime.get("aoWidth", display_width)
+    height = runtime.get("aoHeight", display_height)
     captures = {}
     names = [("filtered", 1), ("depth", 1), ("normals", 4), ("history" if mode == "busy" else "raw", 1)]
     for name, components in names:
@@ -23,8 +27,19 @@ def verify(prefix, mode, independent_normals=False):
         assert np.array_equal(captures["history"], captures["filtered"]), "Busy frame did not preserve the last completed AO"
     raw, filtered, depth = (captures[name] for name in ["raw", "filtered", "depth"])
     presentation = np.asarray(scene, dtype=np.float32) / 255.0
+    resolved_path = Path(str(prefix) + "-resolved.f32")
+    resolved = np.fromfile(resolved_path, dtype="<f4").reshape(display_height, display_width) if resolved_path.exists() else filtered
+    assert np.isfinite(resolved).all() and resolved.min() >= 0 and resolved.max() <= 1, "Invalid resolved AO"
+    resolve_depth_path = Path(str(prefix) + "-resolve_depth.f32")
+    if resolve_depth_path.exists():
+        resolve_depth = np.fromfile(resolve_depth_path, dtype="<f4").reshape(display_height, display_width)
+        assert np.allclose(resolved[resolve_depth == 0], 1.0, atol=1e-6), "Upsampling occludes the current background"
+        source_depth_path = Path(str(prefix) + "-source_full_depth.f32")
+        if source_depth_path.exists() and runtime.get("device") == "primary":
+            source_depth = np.fromfile(source_depth_path, dtype="<f4").reshape(display_height, display_width)
+            assert np.array_equal(source_depth, resolve_depth), "Upsampling lost the prepass depth snapshot"
     if mode in ["ao", "raw", "zero-radius"]:
-        assert np.max(np.abs(presentation - filtered[..., None])) <= 2.0 / 255.0, "AO view does not display the filtered map"
+        assert np.max(np.abs(presentation - resolved[..., None])) <= 2.0 / 255.0, "AO view does not display the resolved map"
     else:
         assert np.count_nonzero(presentation > 0.05) > width * height, "Scene presentation is almost black"
     assert depth.min() >= 0 and depth.max() <= 1, "Invalid reversed-Z depth"
@@ -44,6 +59,8 @@ def verify(prefix, mode, independent_normals=False):
         assert np.count_nonzero(np.abs(raw - filtered) > 0.5 / 255.0 + 1e-4) > 10, "Blur did not change AO beyond output rounding"
     result = {
         "mode": mode, "width": width, "height": height,
+        "display_width": display_width, "display_height": display_height,
+        "resolved_occluded_pixels": int(np.count_nonzero(resolved < 0.95)),
         "geometry_pixels": int(np.count_nonzero(depth > 0)),
         "occluded_pixels": int(np.count_nonzero(filtered < 0.95)),
         "raw_min": float(raw.min()), "filtered_min": float(filtered.min()),
@@ -54,8 +71,6 @@ def verify(prefix, mode, independent_normals=False):
         # Reuse intentionally belongs to an older camera/geometry; current depth cannot validate its old background.
         result["cached_ao_over_current_background_pixels"] = int(np.count_nonzero((depth == 0) & (filtered < 1.0)))
     reference_path = Path(str(prefix) + "-reference.f32")
-    result_path = Path(str(prefix) + ".result.json")
-    runtime = json.loads(result_path.read_text(encoding="utf-8-sig")) if result_path.exists() else {}
     if mode == "busy":
         assert runtime.get("reused", 0) > 0, "Busy did not reuse a completed map"
         log = Path(str(prefix) + ".stdout.log").read_text(encoding="utf-8-sig")
@@ -64,7 +79,7 @@ def verify(prefix, mode, independent_normals=False):
         result["capture_frame"] = int(reused[1])
         result["source_frame"] = int(reused[2])
     if runtime.get("captureSourceFrame", 0) != runtime.get("captureDisplayFrame", 0):
-        assert runtime["captureDisplayFrame"] > runtime["captureSourceFrame"] > 0, "Pipeline displayed a current or future result"
+        assert runtime["captureDisplayFrame"] >= runtime["captureSourceFrame"] > 0, "Pipeline displayed a future result"
         result["capture_frame"] = runtime["captureDisplayFrame"]
         result["source_frame"] = runtime["captureSourceFrame"]
     if mode in ["lit", "ao", "raw"] and reference_path.exists() and runtime.get("validateSecondary", True):

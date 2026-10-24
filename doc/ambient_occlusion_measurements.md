@@ -38,7 +38,35 @@ The profiler mode label comes from startup configuration; F6/F8 do not change it
 
 The shutdown counters satisfy `secondary + primary + reused = frames`; `busy` records secondary pressure. Record them alongside `submitted`, `maxAge`, CSVs, adapter names, actual resolution and exit status. `secondary` counts newly published maps, `reused` counts frames displaying an older published map, and `submitted` counts secondary jobs. A slow secondary should produce reused frames while GPU 0 keeps rendering; a large `maxAge` is expected with WARP. Capture logs must satisfy display frame > source frame. A requested secondary run may fall back, so verify actual work rather than relying on configuration or CSV labels. `compare_gpu_timings.py --real-2gpu` is a report label, not proof that two hardware adapters ran the work.
 
-## Depth-only prepass validation
+## Half-resolution AO and late reception
+
+The current graph uses `z-prepass -> ssao_submit -> fill_gbuffer -> CSM -> ssao_receive -> gbuffer_resolve`. GPU 0 snapshots prepass depth locally, reduces it, submits R32F input and continues scene work. Reception polls before lighting; unfinished work reuses history. The full-size depth snapshot is needed because G-buffer may subsequently write depth. A depth-aware upsample publishes full-size R8 AO. At 1080p the default divisor 2 transports 2,592,000 logical bytes per submitted job, excluding alignment/copy overhead. Divisor 1 preserves full-resolution work for comparison.
+
+Graphics no longer performs two unconditional CPU/GPU drains per frame; `graphics.serializeRenderJobs=true` restores the old behavior for diagnosis. See [frame scheduling](render_frame_scheduling.md). Two initial 20-second full-resolution primary runs completed normally in both modes (3,809 frames serialized, 5,002 without serialization). Those totals include loading; they are not steady-state FPS or a measured speedup. GPU timestamp medians were 0.7670 and 0.7383 ms for primary Frame. No CPU/GPU trace was captured.
+
+Shader checks passed 19/19, including foreground-preserving reduction at odd image edges, identity upsampling at full resolution, rejection across depth discontinuities and neutral background. Final-source pixel captures at 317x305 AO / 634x611 display passed the strict 0.01 filtered bound: source frame 544 was displayed in 549, maximum error 0.00608599, residual mean beyond half an R8 step 6.62e-7. A primary capture confirmed its prepass depth snapshot was preserved exactly until upsampling; the full-size debug presentation matched the resolved map. Release SceneBaseSample built with both static libraries and DLLs.
+
+Two final 30-second runs used RTX 4060 Ti, primary or WARP secondary, `lit`, divisor 2, radius 0.5, blur on, vsync off, captures off. No build ran concurrently; statistics exclude the first 500 profiler frames, while scene loading remained asynchronous.
+
+| Run | Frames | New secondary maps | Primary | Reused | Submitted | Max age, frames | Exit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| GPU 0 | 8018 | 0 | 8018 | 0 | 0 | 0 | 0 |
+| GPU 0 + WARP | 4715 | 104 | 2 | 4609 | 105 | 108 | 0 |
+
+| GPU 0 Frame | Samples | Mean, ms | Median, ms | P95, ms |
+| --- | ---: | ---: | ---: | ---: |
+| Primary | 7518 | 0.8990 | 0.7496 | 1.2646 |
+| WARP secondary | 4216 | 2.0902 | 0.7854 | 2.9013 |
+
+The CSV pair check validated 209 complete transfers: 105 depth and 104 AO results. No normal texture is transferred. Primary snapshot/reduction/upsampling and all four secondary passes are recorded. Generated artifacts use `half-snapshot` and `half-snapshot-summary` under `build/ssao-runtime`. These WARP results validate behavior/instrumentation and do not establish a hardware-pair speedup. Do not compare them directly with older reports as a controlled benchmark.
+
+Forced busy preserved the low-resolution published map exactly (source 424, display 500); injected failure published one secondary map and then rendered 1,663 primary frames, with normal exit. A run with SSAO disabled also exited normally. Interactive checks exercised F7 map/off/lit, F8 primary/secondary, title cadence and odd-height resize. The title is applied by the owning window thread at about one-second intervals.
+
+**Temporal quality limitation:** the black trail observed behind moving objects is stale AO history, not evidence of a blur pass running on the wrong device. WARP may take hundreds of milliseconds per job and the current policy has no reprojection, motion rejection or age limit. Source-frame pixel comparison can pass while the displayed moving scene has visible ghosting. Half resolution shortens work but does not solve temporal quality. This remains unresolved and must not be reported as an artifact-free result. Evaluate it separately on the target hardware; use the primary path to distinguish it from spatial AO/blur errors.
+
+## Historical depth-only prepass validation
+
+The following section describes commit `72174c63`, before half-resolution work and late reception. Its one-frame minimum latency is historical and is not a guarantee of the current late poll.
 
 The secondary job now starts between `z-prepass` and `fill_gbuffer`, transfers only DEPTH32, reconstructs local geometric normals, executes SSAO/blur and returns R8 AO. Logical transport is 5 bytes/pixel per submitted job; normals are not sent. The consumer polls an older output before submitting current depth, so the displayed secondary map is at least one frame old. Receiving a ready output still requires a local primary copy.
 

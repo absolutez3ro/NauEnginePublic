@@ -21,6 +21,7 @@ namespace nau::render
 {
     namespace
     {
+        constexpr UINT TITLE_MESSAGE = WM_APP + 0x4A0;
         template <typename TValue>
         TValue readSetting(const char* name, const TValue& fallback)
         {
@@ -49,9 +50,27 @@ namespace nau::render
 
     void AmbientOcclusionInput::setTarget(void* windowHandle)
     {
+        const std::lock_guard<std::mutex> lock(m_titleMutex);
         m_windowHandle.store(windowHandle);
         m_switchRequests.store(0);
         m_deviceSwitchRequests.store(0);
+        m_pendingTitle.clear();
+        m_titlePosted = false;
+    }
+
+    void AmbientOcclusionInput::postTitle(eastl::string title)
+    {
+        const std::lock_guard<std::mutex> lock(m_titleMutex);
+        HWND window = static_cast<HWND>(m_windowHandle.load());
+        if (!window)
+        {
+            return;
+        }
+        m_pendingTitle = eastl::move(title);
+        if (!m_titlePosted)
+        {
+            m_titlePosted = PostMessageW(window, TITLE_MESSAGE, 0, 0) != FALSE;
+        }
     }
 
     uint32_t AmbientOcclusionInput::consumeSwitches()
@@ -66,6 +85,20 @@ namespace nau::render
 
     bool AmbientOcclusionInput::handleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM)
     {
+        if (hwnd == m_windowHandle.load() && message == TITLE_MESSAGE)
+        {
+            eastl::string title;
+            {
+                const std::lock_guard<std::mutex> lock(m_titleMutex);
+                title.swap(m_pendingTitle);
+                m_titlePosted = false;
+            }
+            if (!title.empty())
+            {
+                SetWindowTextA(hwnd, title.c_str());
+            }
+            return true;
+        }
         if (hwnd == m_windowHandle.load() && message == WM_KEYUP && wParam == VK_F7)
         {
             m_switchRequests.fetch_add(1);
@@ -109,6 +142,7 @@ namespace nau::render
         m_blurDepthThreshold = readFiniteSetting("sample/ssao/blurDepthThreshold", 0.2f, 0.0f, 10.0f);
         m_mode = eastl::min(readSetting<uint32_t>("sample/ssao/mode", 1), 2u);
         m_blur = readSetting<bool>("sample/ssao/blur", true);
+        m_resolutionDivisor = readSetting<uint32_t>("sample/ssao/resolutionDivisor", 2) == 1 ? 1u : 2u;
         m_captureAtFrame = readSetting<uint32_t>("sample/ssao/captureAtFrame", 0);
         m_autoSwitchFrames = readSetting<uint32_t>("sample/ssao/autoSwitchFrames", 0);
         m_capturePrefix = readSetting<eastl::string>("sample/ssao/capturePrefix", "ssao");
@@ -146,7 +180,7 @@ namespace nau::render
         {
             input.setTarget(windowHandle);
             m_initialized = true;
-            NAU_LOG_INFO("SSAO: 14 samples, bilateral blur={}, secondary pipeline latency >= 1 frame, F7: off / lit / AO, F8: GPU 0 / GPU 1", m_blur);
+            NAU_LOG_INFO("SSAO: 14 samples, bilateral blur={}, resolutionDivisor={}, nonblocking late receive, F7: off / lit / AO, F8: GPU 0 / GPU 1", m_blur, m_resolutionDivisor);
         }
         ++m_frame;
         uint32_t deviceSwitches = input.consumeDeviceSwitches();
@@ -198,6 +232,7 @@ namespace nau::render
         }
         m_blurMaterial->setProperty("reconstructNormals", "aoInverseProjection", inverseProjection);
         m_blurMaterial->setProperty("reconstructNormals", "aoView", view);
+        m_blurMaterial->setProperty("upsample", "aoInverseProjection", inverseProjection);
     }
 
     void AmbientOcclusion::prepareSecondary(BaseTexture* target)
@@ -245,6 +280,7 @@ namespace nau::render
             desc.profiler = createSsaoProfiler();
             desc.normalBytecode = normal->bytecode.data();
             desc.normalBytecodeSize = normal->bytecode.size();
+            desc.depthIsFloat = true;
             m_secondary = d3d::mgpu::createSsaoProducer(desc);
             if (m_secondary)
             {
@@ -287,7 +323,7 @@ namespace nau::render
             ++m_titleFrames;
         }
         const uint64_t elapsed = now - m_titleStartTicks;
-        const bool refreshTimings = elapsed >= 500 && m_titleFrames != 0;
+        const bool refreshTimings = elapsed >= 1000 && m_titleFrames != 0;
         if (refreshTimings)
         {
             m_titleFps = 1000.0 * m_titleFrames / elapsed;
@@ -295,34 +331,128 @@ namespace nau::render
             m_titleFrames = 0;
             m_titleStartTicks = now;
         }
-        if (statusChanged || refreshTimings || m_titleMode != m_mode)
+        if (m_titleMode == 3 || refreshTimings)
         {
             constexpr const char* MODES[] = {"off", "lit", "map"};
             char title[256] = {};
             std::snprintf(title, sizeof(title), "SSAO %s | %s | %.1f FPS | %.2f ms/frame | F7: view | F8: GPU",
                           MODES[m_mode], status.c_str(), m_titleFps, m_titleFrameMilliseconds);
-            SetWindowTextA(static_cast<HWND>(m_windowHandle), title);
+            getServiceProvider().get<AmbientOcclusionInput>().postTitle(title);
             m_titleMode = m_mode;
         }
     }
 
-    void AmbientOcclusion::renderFrame(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* filtered, BaseTexture* depth, BaseTexture* packedNormals)
+    uint32_t AmbientOcclusion::getResolutionDivisor() const
+    {
+        return m_resolutionDivisor;
+    }
+
+    void AmbientOcclusion::submitFrame(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* filtered, BaseTexture* depth, BaseTexture* packedNormals, BaseTexture* reducedDepth, BaseTexture* depthSnapshot)
     {
         m_sourceNormals = packedNormals;
-        m_depth = depth;
+        m_fullDepth = depthSnapshot;
+        m_depth = reducedDepth;
+        TextureInfo size;
+        depth->getinfo(size);
+        if (m_fullWidth != size.w || m_fullHeight != size.h)
+        {
+            m_fullWidth = size.w;
+            m_fullHeight = size.h;
+            m_historyFrame = 0;
+            m_discardPending = true;
+            m_captureSubmitted = false;
+            TextureInfo aoSize;
+            filtered->getinfo(aoSize);
+            NAU_LOG_INFO("SSAO: resolution full={}x{}, ao={}x{}", size.w, size.h, aoSize.w, aoSize.h);
+        }
         prepareSecondary(filtered);
-        bool trySecondary = m_requestedSecondary && m_mode != 0 && m_secondary && d3d::is_multi_gpu_available();
-        const bool forcedBusy = trySecondary && !m_busyInjected && m_busyAtFrame != 0 && m_frame >= m_busyAtFrame &&
-                                (m_busyAtFrame == 1 || m_historyFrame != 0);
-        const bool captureRequested = m_captureAtFrame != 0 && m_frame >= m_captureAtFrame && !m_captureSubmitted;
-        bool fresh = false;
-        if (forcedBusy)
+        {
+            NAU_GPU_TIMER("ssao_snapshot_depth");
+            d3d::settex(1, depth);
+            drawPipeline(depthSnapshot, "copyDepth");
+        }
+        {
+            NAU_GPU_TIMER("ssao_reduce_depth");
+            m_blurMaterial->setProperty("downsampleDepth", "aoFilter", math::Vector4(0.0f, 0.0f, m_blurDepthThreshold, static_cast<float>(m_resolutionDivisor)));
+            d3d::settex(3, depthSnapshot);
+            drawPipeline(reducedDepth, "downsampleDepth");
+        }
+        m_trySecondary = m_requestedSecondary && m_mode != 0 && m_secondary && d3d::is_multi_gpu_available();
+        m_forcedBusy = m_trySecondary && !m_busyInjected && m_busyAtFrame != 0 && m_frame >= m_busyAtFrame &&
+                       (m_busyAtFrame == 1 || m_historyFrame != 0);
+        m_captureRequested = m_captureAtFrame != 0 && m_frame >= m_captureAtFrame && !m_captureSubmitted;
+        if (m_forcedBusy)
         {
             m_busyInjected = true;
             NAU_LOG_INFO("SSAO: injecting busy at frame {}", m_frame);
         }
-        // Consume only an older job whose source COPY has completed. No wait for this frame's GPU 1 work.
-        if (trySecondary && !forcedBusy && m_pendingFrame != 0)
+        const bool canSubmit = m_trySecondary && !m_forcedBusy && m_pendingFrame == 0 && !d3d::mgpu::isSsaoBusy(m_secondary);
+        const bool useHistory = m_trySecondary && m_historyFrame != 0;
+        m_preparedNormals = !useHistory || (m_captureRequested && (canSubmit || m_forcedBusy));
+        if (m_preparedNormals)
+        {
+            reconstructNormals(packedNormals);
+            m_normals = packedNormals;
+        }
+        if (m_captureRequested && (canSubmit || !m_trySecondary))
+        {
+            m_captureActive = true;
+            captureDepth(m_fullDepth, "source_full_depth");
+            m_captureActive = false;
+        }
+        if (canSubmit)
+        {
+            const bool captureJob = m_captureRequested && (m_busyAtFrame == 0 || m_busyAtFrame == 1);
+            if (captureJob)
+            {
+                m_captureActive = true;
+                capture(m_sourceNormals, "normals", 4);
+                captureDepth();
+                if (m_validateSecondary)
+                {
+                    drawRaw(raw, packedNormals, m_depth);
+                    capture(raw, "reference_raw", 1);
+                    drawBlur(horizontal, raw, true);
+                    TextureInfo info;
+                    filtered->getinfo(info);
+                    BaseTexture* reference = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ssao_reference");
+                    if (reference)
+                    {
+                        drawBlur(reference, horizontal, false);
+                        capture(reference, "reference", 1);
+                        reference->destroy();
+                    }
+                    else
+                    {
+                        NAU_LOG_ERROR("SSAO: could not allocate validation reference");
+                    }
+                }
+                m_captureActive = false;
+            }
+            const d3d::mgpu::SsaoResult result = d3d::mgpu::submitSsao(m_secondary, m_constants, m_blur, nullptr, m_depth, captureJob);
+            if (result == d3d::mgpu::SsaoResult::submitted)
+            {
+                m_pendingFrame = m_frame;
+                m_pendingCapture = captureJob;
+                m_discardPending = false;
+                m_captureSubmitted |= captureJob;
+                ++m_submittedFrames;
+            }
+            else if (result == d3d::mgpu::SsaoResult::failed)
+            {
+                m_trySecondary = false;
+                m_historyFrame = 0;
+            }
+        }
+        // Reduction/reference passes use a smaller viewport; G-buffer still renders at the full scene size.
+        d3d::setview(0, 0, m_fullWidth, m_fullHeight, 0.0f, 1.0f);
+    }
+
+    void AmbientOcclusion::resolveFrame(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* filtered, BaseTexture* output)
+    {
+        bool fresh = false;
+        // Poll once before lighting; unfinished secondary work never stalls the primary queue.
+        if (m_trySecondary && !m_forcedBusy && m_pendingFrame != 0)
         {
             const d3d::mgpu::SsaoResult result = d3d::mgpu::tryReceiveSsao(m_secondary, m_receiving, m_pendingCapture ? raw : nullptr);
             if (result == d3d::mgpu::SsaoResult::submitted)
@@ -352,69 +482,17 @@ namespace nau::render
             }
             else if (result == d3d::mgpu::SsaoResult::failed)
             {
-                trySecondary = false;
+                m_trySecondary = false;
                 m_historyFrame = 0;
             }
         }
-        const bool canSubmit = trySecondary && !forcedBusy && m_pendingFrame == 0 && !d3d::mgpu::isSsaoBusy(m_secondary);
-        const bool useHistory = trySecondary && m_historyFrame != 0;
-        const bool preparedNormals = !useHistory || (captureRequested && (canSubmit || forcedBusy));
-        if (preparedNormals)
-        {
-            reconstructNormals(packedNormals);
-            m_normals = packedNormals;
-        }
-        if (canSubmit)
-        {
-            const bool captureJob = captureRequested && (m_busyAtFrame == 0 || m_busyAtFrame == 1);
-            if (captureJob)
-            {
-                m_captureActive = true;
-                capture(m_sourceNormals, "normals", 4);
-                captureDepth();
-                if (m_validateSecondary)
-                {
-                    drawRaw(raw, packedNormals, depth);
-                    capture(raw, "reference_raw", 1);
-                    drawBlur(horizontal, raw, true);
-                    TextureInfo info;
-                    filtered->getinfo(info);
-                    BaseTexture* reference = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ssao_reference");
-                    if (reference)
-                    {
-                        drawBlur(reference, horizontal, false);
-                        capture(reference, "reference", 1);
-                        reference->destroy();
-                    }
-                    else
-                    {
-                        NAU_LOG_ERROR("SSAO: could not allocate validation reference");
-                    }
-                }
-                m_captureActive = false;
-            }
-            const d3d::mgpu::SsaoResult result = d3d::mgpu::submitSsao(m_secondary, m_constants, m_blur, nullptr, depth, captureJob);
-            if (result == d3d::mgpu::SsaoResult::submitted)
-            {
-                m_pendingFrame = m_frame;
-                m_pendingCapture = captureJob;
-                m_discardPending = false;
-                m_captureSubmitted |= captureJob;
-                ++m_submittedFrames;
-            }
-            else if (result == d3d::mgpu::SsaoResult::failed)
-            {
-                trySecondary = false;
-                m_historyFrame = 0;
-            }
-        }
-        if (trySecondary && (forcedBusy || (!canSubmit && !fresh)))
+        if (m_trySecondary && (m_forcedBusy || (!fresh && m_pendingFrame != 0)))
         {
             ++m_busyFrames;
         }
-        if (trySecondary && m_historyFrame != 0)
+        if (m_trySecondary && m_historyFrame != 0)
         {
-            m_captureActive = forcedBusy && captureRequested;
+            m_captureActive = m_forcedBusy && m_captureRequested;
             if (reuseResult(filtered, fresh))
             {
                 if (m_captureActive)
@@ -423,17 +501,18 @@ namespace nau::render
                     m_captureSubmitted = true;
                 }
                 m_captureActive = false;
+                upsample(filtered, output);
                 return;
             }
         }
         m_historyFrame = 0;
         // Startup and actual failures use a primary result; a slow GPU 1 never stalls this path.
-        if (!preparedNormals)
+        if (!m_preparedNormals)
         {
-            reconstructNormals(packedNormals);
+            reconstructNormals(m_sourceNormals);
         }
-        m_captureActive = !trySecondary && captureRequested;
-        drawRaw(raw, packedNormals, depth);
+        m_captureActive = !m_trySecondary && m_captureRequested;
+        drawRaw(raw, m_sourceNormals, m_depth);
         drawBlur(horizontal, raw, true);
         drawBlur(filtered, horizontal, false);
         if (m_captureActive)
@@ -444,6 +523,7 @@ namespace nau::render
         m_captureActive = false;
         ++m_primaryFrames;
         updateDeviceStatus(false);
+        upsample(filtered, output);
     }
 
     bool AmbientOcclusion::reuseResult(BaseTexture* texture, bool fresh)
@@ -500,16 +580,45 @@ namespace nau::render
     void AmbientOcclusion::reconstructNormals(BaseTexture* target)
     {
         NAU_GPU_TIMER("ssao_reconstruct_normals");
-        d3d::set_render_target(target, 0);
-        d3d::set_depth(nullptr, DepthAccess::RW);
-        d3d::set_srgb_backbuffer_write(false);
         d3d::settex(1, m_depth);
-        m_blurMaterial->bindPipeline("reconstructNormals");
+        drawPipeline(target, "reconstructNormals");
+    }
+
+    void AmbientOcclusion::drawPipeline(BaseTexture* target, const char* pipeline)
+    {
+        d3d::set_render_target();
+        d3d::set_depth(nullptr, DepthAccess::RW);
+        d3d::set_render_target(target, 0);
+        TextureInfo size;
+        target->getinfo(size);
+        d3d::setview(0, 0, size.w, size.h, 0.0f, 1.0f);
+        d3d::set_srgb_backbuffer_write(false);
+        m_blurMaterial->bindPipeline(pipeline);
         d3d::setvsrc(0, nullptr, 0);
         d3d::setind(nullptr);
         d3d::draw(PRIM_TRILIST, 0, 1);
-        d3d::settex(1, nullptr);
+        for (int slot = 0; slot < 4; ++slot)
+        {
+            d3d::settex(slot, nullptr);
+        }
         d3d::set_render_target();
+    }
+
+    void AmbientOcclusion::upsample(BaseTexture* source, BaseTexture* target)
+    {
+        NAU_GPU_TIMER("ssao_upsample");
+        m_blurMaterial->setProperty("upsample", "aoFilter", math::Vector4(0.0f, 0.0f, m_blurDepthThreshold, 1.0f));
+        d3d::settex(1, m_depth);
+        d3d::settex(2, source);
+        d3d::settex(3, m_fullDepth);
+        drawPipeline(target, "upsample");
+        if (m_captureDisplayFrame == m_frame)
+        {
+            m_captureActive = true;
+            capture(target, "resolved", 1);
+            captureDepth(m_fullDepth, "resolve_depth");
+            m_captureActive = false;
+        }
     }
 
     void AmbientOcclusion::drawRaw(BaseTexture* target, BaseTexture* normals, BaseTexture* depth)
@@ -626,14 +735,15 @@ namespace nau::render
         }
     }
 
-    void AmbientOcclusion::captureDepth() const
+    void AmbientOcclusion::captureDepth(BaseTexture* source, const char* name) const
     {
         if (!m_captureActive)
         {
             return;
         }
         TextureInfo info;
-        m_depth->getinfo(info);
+        source = source ? source : m_depth;
+        source->getinfo(info);
         BaseTexture* copy = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ssao_depth_capture");
         if (!copy)
         {
@@ -641,14 +751,15 @@ namespace nau::render
         }
         d3d::set_render_target(copy, 0);
         d3d::set_depth(nullptr, DepthAccess::RW);
-        d3d::settex(1, m_depth);
+        d3d::setview(0, 0, info.w, info.h, 0.0f, 1.0f);
+        d3d::settex(1, source);
         m_blurMaterial->bindPipeline("copyDepth");
         d3d::setvsrc(0, nullptr, 0);
         d3d::setind(nullptr);
         d3d::draw(PRIM_TRILIST, 0, 1);
         d3d::settex(1, nullptr);
         d3d::set_render_target();
-        capture(copy, "depth", 1);
+        capture(copy, name, 1);
         copy->destroy();
     }
 

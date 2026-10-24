@@ -26,6 +26,7 @@ namespace d3d::mgpu
         eastl::shared_ptr<ISsaoProfiler> profiler;
         const void* normalBytecode = nullptr;
         size_t normalBytecodeSize = 0;
+        bool depthIsFloat = false;  // R32F reduction input; false preserves the DEPTH32 input contract.
     };
 
     struct SsaoProducer;

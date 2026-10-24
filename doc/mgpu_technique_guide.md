@@ -67,7 +67,7 @@ Follow [`submitSsao` / `tryReceiveSsao`](../engine/core/modules/render/src/drv3d
 
 Native endpoints must be in `D3D12_RESOURCE_STATE_COMMON` when copying begins. The technique owns its DIRECT-queue transitions. Engine textures must be tracked and use `TEXCF_RTARGET`, `TEXCF_UNORDERED` or `TEXCF_UPDATE_DESTINATION`. Payload size, layout and endpoint formats must match the channel's supported copy contract.
 
-Ticket zero means no transfer was sent, including slot pressure; it never identifies a ready result. Handle busy separately from failure. AO reuses its latest valid map while busy, computes locally when no map exists, and invalidates history on resize/mode/device changes. Choose a history policy suitable for the new technique. SceneBaseSample sends only prepass depth; its GPU 1 pass reconstructs local normals using `SsaoProducerDesc::normalBytecode`. The legacy normal-input channel remains available when this shader is omitted. Early submission is ordered between `z-prepass` and `fill_gbuffer`, so GPU 0 can continue G-buffer and shadows while GPU 1 works.
+Ticket zero means no transfer was sent, including slot pressure; it never identifies a ready result. Handle busy separately from failure. AO reuses its latest valid map while busy, computes locally when no map exists, and invalidates history on resize/mode/device changes. Choose a history policy suitable for the new technique. SceneBaseSample sends only prepass depth; its GPU 1 pass reconstructs local normals using `SsaoProducerDesc::normalBytecode`. The legacy normal-input channel remains available when this shader is omitted. The sample defaults to half-resolution R32F input (`depthIsFloat=true`) and R8 AO, with depth-aware upsampling on GPU 0. Submission occurs between `z-prepass` and `fill_gbuffer`; reception polls after CSM, before lighting.
 
 ## Minimal fullscreen producer
 
@@ -101,12 +101,12 @@ The full [`MultiGpuDemo`](../engine/core/modules/graphics/src/render_window/mult
 
 | Area | Requirement or limitation |
 | --- | --- |
-| Depth | Copy depth to the other device. AO supports one-plane raw reversed-Z DEPTH32 → R32_FLOAT. Combined depth-stencil is not supported by this channel. |
-| Delay | SSAO consumes a completed result from an earlier frame, with minimum latency 1 frame. Slower secondary execution increases age; history has no reprojection or age bound. |
+| Depth | Copy depth to the other device. AO supports one-plane reversed-Z DEPTH32 to R32_FLOAT and reduced R32F input. Combined depth-stencil is not supported by this channel. |
+| Delay | SSAO polls before lighting: same-frame completion is permitted if already ready, otherwise it reuses older history. Slower secondary execution increases age; history has no reprojection or age bound. |
 | Shutdown/resize | Drain channels, then release passes/resources, then the allocator. Native passes can retire unfinished work; channel destruction can block the CPU. |
 | Collection | Graphics calls `collectFullscreenResources()` each frame and before driver teardown; this also collects SSAO retirement. A standalone owner must arrange equivalent collection. |
 | Recovery | Destroy owners before driver recovery and recreate them afterward. Do not retain borrowed pointers across recovery. |
-| ABI | `receive_on_secondary` includes `destination_free`; `TransferChannelDesc` includes an optional profiler; `SsaoProducerDesc` can include normal-reconstruction bytecode. Rebuild consuming modules together when adopting these structs/APIs. |
+| ABI | `receive_on_secondary` includes `destination_free`; `TransferChannelDesc` includes an optional profiler; `SsaoProducerDesc` can include normal-reconstruction bytecode and `depthIsFloat`. Rebuild consuming modules together when adopting these structs/APIs. |
 
 For interactive AO inspection, disable `sample.mgpuDemo.enabled` and run:
 
