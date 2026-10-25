@@ -15,9 +15,9 @@ python tools/scripts/summarize_ssao_timings.py `
     --warmup-frames 10 --output build/ssao-runtime/comparison
 ```
 
-Use `-Device warp` instead of `secondary` for a functional test; its output prefix is `warp-lit`. The runner defaults to `build/engine`, Release, and restores the original configuration after exit. Do not run instances concurrently. For direct executable launches, set `$env:NAU_GPU_PROFILER='1'` in the launching PowerShell session. The `GPU profiler enabled` log line contains the exact CSV path. If opening it fails, check the logged error and parent directory.
+Use `-Device warp` instead of `secondary` for a functional test; its output prefix is `warp-lit`. The runner defaults to `build/engine`, Release, and restores the original configuration after exit. New result JSON files include `sourceRevision`, `sourceTreeDirty`, `binarySha256` and whether window closure was requested; an unreadable process exit code is a failed check. The revision describes the checkout at launch, while the hash identifies the executable; build logs are still needed to associate the binary with a source tree. Do not run instances concurrently. For direct executable launches, set `$env:NAU_GPU_PROFILER='1'` in the launching PowerShell session. The `GPU profiler enabled` log line contains the exact CSV path. If opening it fails, check the logged error and parent directory.
 
-The summary validates finite, nonnegative timings, duplicate rows, transfer direction and `/sum = /src + /dst` within CSV rounding tolerance. It writes Markdown and JSON containing sample counts, mean, median and P95. Warmup exclusion affects statistics; pair integrity is checked across the complete CSV. Async scene loading and a short warmup do not make this a controlled benchmark: repeat runs after loading and report the conditions.
+The summary validates finite, nonnegative timings, duplicate rows, transfer direction and `/sum = /src + /dst` within CSV rounding tolerance. It also groups primary Frame intervals by actual SSAO scopes: primary computation, received/reused secondary AO, mixed reference work or unclassified frames. This separates a device switch even though the CSV mode label remains fixed. It writes Markdown and JSON containing sample counts, mean, median and P95. Warmup exclusion affects statistics; pair integrity is checked across the complete CSV. Async scene loading and a short warmup do not make this a controlled benchmark: repeat runs after loading and report the conditions.
 
 ## Interpret the measurements
 
@@ -37,6 +37,16 @@ Each COPY queue provides its own frequency. Calibration maps both clocks to QPC 
 The profiler mode label comes from startup configuration; F6/F8 do not change it. Use separate runs to compare devices. Presentation defaults to vsync. `-NoVsync` sets `video.vsync=false` and `video.adaptive_vsync=false`; check `DX12: presentation` in the log and the recorded `vsync` result field. Frame counts divided by script duration are not a valid speedup measurement because they include startup/loading and presentation effects. GPU pass durations alone also do not establish useful concurrency.
 
 The shutdown counters satisfy `secondary + primary + reused = frames`; `busy` records secondary pressure. Record them alongside `submitted`, `maxAge`, CSVs, adapter names, actual resolution and exit status. `secondary` counts newly published maps, `reused` counts frames displaying an older published map, and `submitted` counts secondary jobs. A slow secondary should produce reused frames while GPU 0 keeps rendering; a large `maxAge` is expected with WARP. Capture logs must satisfy display frame >= source frame. A requested secondary run may fall back, so verify actual work rather than relying on configuration or CSV labels. `compare_gpu_timings.py --real-2gpu` is a report label, not proof that two hardware adapters ran the work.
+
+## Upstream integration checks
+
+The latest engine C++ tree passed Release SceneBaseSample builds with static libraries and DLLs. A 15-second primary run rendered 3,438 frames and exited with code zero; a separate 15-second DLL/WARP profiling run rendered 1,752 frames (40 new secondary maps, 3 primary, 1,709 reused), submitted 41 jobs, validated 81 complete COPY pairs and exited with code zero. The updated runner recorded executable hashes, readable exit codes and successful close requests. These are functional checks, not new performance comparisons.
+
+An earlier eight-second primary preflight, concurrent with the DLL build, exceeded its close/exit deadline and required termination. It did not log the final SSAO counters. Its cause remains unresolved; the successful longer runs do not establish that this shutdown/startup failure is fixed. Local artifacts use `upstream-preflight`, `upstream-preflight-retry` and `upstream-final` under `build/ssao-runtime`.
+
+## Hardware pair results
+
+[RTX 3050 Laptop + Intel Graphics measurements](measurements/ssao_rtx3050_intel_2026_10_25.md) summarize four supplied runs, including primary serialization on/off and full/half AO. Secondary runs contain a later primary segment, so the report groups GPU 0 Frame by recorded AO scopes rather than the unchanged CSV mode label. It includes sample counts, means/medians/P95, transport checks, original input hashes and provenance/completion limits.
 
 ## Source depth retained with AO history
 

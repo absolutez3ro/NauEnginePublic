@@ -25,6 +25,17 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $configPath = Join-Path $repo 'samples/sceneBase/config/app.json'
 $originalConfig = [IO.File]::ReadAllBytes($configPath)
 $binaryDir = Join-Path (Join-Path $repo $BuildDirectory) "bin/$Configuration"
+$binaryPath = Join-Path $binaryDir 'SceneBaseSample.exe'
+$binarySha256 = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$sourceRevision = $null
+$sourceTreeDirty = $null
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $revision = & git -C $repo rev-parse --verify HEAD
+    if ($LASTEXITCODE -eq 0) {
+        $sourceRevision = ([string]$revision).Trim()
+        $sourceTreeDirty = @(& git -C $repo status --porcelain --untracked-files=no).Count -gt 0
+    }
+}
 $resultDir = Join-Path $repo 'build/ssao-runtime'
 $runName = if ($Device -eq 'primary') { $Mode } else { "$Device-$Mode" }
 if ($Profile) { $runName += '-profile' }
@@ -68,13 +79,16 @@ try {
     $started = Get-Date
     $stdoutPath = Join-Path $resultDir "$runName.stdout.log"
     $windowStyle = if ($Interactive) { 'Normal' } else { 'Hidden' }
-    $process = Start-Process -FilePath (Join-Path $binaryDir 'SceneBaseSample.exe') -WorkingDirectory $binaryDir -WindowStyle $windowStyle -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError (Join-Path $resultDir "$runName.stderr.log")
+    $process = Start-Process -FilePath $binaryPath -WorkingDirectory $binaryDir -WindowStyle $windowStyle -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError (Join-Path $resultDir "$runName.stderr.log")
+    # Retain the OS process handle before exit so ExitCode remains available with Start-Process -PassThru.
+    $null = $process.Handle
     $early = $false
     if ($Interactive) { $process.WaitForExit() } else { $early = $process.WaitForExit($Seconds * 1000) }
     $forced = $false
+    $closeRequested = $null
     if (!$Interactive -and !$early) {
         $process.Refresh()
-        $process.CloseMainWindow() | Out-Null
+        $closeRequested = $process.CloseMainWindow()
         if (!$process.WaitForExit(15000)) { $forced = $true; $process.Kill(); $process.WaitForExit(5000) | Out-Null }
     }
     $process.Refresh()
@@ -87,6 +101,10 @@ try {
     $result.reused = $(if ($reused.Success) { [long]$reused.Groups[1].Value } else { 0 })
     $result.validateSecondary = $config.sample.ssao.validateSecondary
     $result.profile = [bool]$Profile
+    $result.sourceRevision = $sourceRevision
+    $result.sourceTreeDirty = $sourceTreeDirty
+    $result.binarySha256 = $binarySha256
+    $result.closeRequested = $closeRequested
     $result.captureFrame = $CaptureFrame
     $result.vsync = !$NoVsync
     $result.serializeRenderJobs = [bool]$SerializeRenderJobs
@@ -111,6 +129,7 @@ try {
     $result.captureSourceFrame = $(if ($captureEvent.Success) { [long]$captureEvent.Groups[2].Value } else { $CaptureFrame })
     $result | ConvertTo-Json | Set-Content (Join-Path $resultDir "$runName.result.json")
     $result | ConvertTo-Json
+    if ($null -eq $process.ExitCode) { throw "SSAO exit status could not be read: $stdoutPath" }
     if ($early -or $forced -or $process.ExitCode -ne 0) { throw "SSAO runtime failed: $stdoutPath" }
     if ($Interactive) {
         if (!$shutdown.Success -and $Mode -ne 'disabled') { throw 'SSAO did not start before the window closed' }

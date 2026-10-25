@@ -1,0 +1,132 @@
+{
+  "adapters": {"0": "NVIDIA GeForce RTX 3050 6GB Laptop GPU", "1": "Intel(R) Graphics (0x8086:0xA7AB)"},
+  "source_revision": null,
+  "binary_sha256": null,
+  "warmup_frames": 500,
+  "runs": [
+    {
+      "name": "lit-profile-serialized",
+      "result": {"device": "primary", "mode": "lit", "vsync": false, "serializeRenderJobs": true, "resolutionDivisor": 2, "aoWidth": 960, "aoHeight": 504, "frames": 5354, "secondary": 0, "primary": 5354, "busy": 0, "reused": 0, "submitted": 0, "resubmitted": 0, "maxHistoryAge": 0, "exitCode": null, "forcedTermination": false, "captureFrame": 0, "validateSecondary": false},
+      "validated_transfer_pairs": 0,
+      "graphics_shutdown_logged": true,
+      "sources": [
+        {"file": "lit-profile-serialized-timings.csv", "sha256": "1b4c3a12ccb0901c911ce4256c067e89a2e5c2838e30b68844fddbfc944f6343"},
+        {"file": "lit-profile-serialized.stdout.log", "sha256": "21e0586bf97bf7eadc816a9fa535ce8295c49df6277353c4e4cc9040e7a3a351"},
+        {"file": "lit-profile-serialized.result.json", "sha256": "c67c2b2014d73195f4b8ccd9193d38ea704b52f5cdd0f6d851ee8597fbeb52a7"}
+      ],
+      "frame_execution_paths": [
+        {"path": "primary", "samples": 4854, "mean_ms": 1.8779787597857438, "p50_ms": 1.8729, "p95_ms": 1.9579}
+      ],
+      "timings": [
+        {"pass": "Frame", "gpu": "0", "samples": 4854, "mean_ms": 1.8779787597857438, "p50_ms": 1.8729, "p95_ms": 1.9579},
+        {"pass": "ssao_blur_h", "gpu": "0", "samples": 4854, "mean_ms": 0.08835183353934899, "p50_ms": 0.0891, "p95_ms": 0.0911},
+        {"pass": "ssao_blur_v", "gpu": "0", "samples": 4854, "mean_ms": 0.09154633292130201, "p50_ms": 0.0922, "p95_ms": 0.0952},
+        {"pass": "ssao_raw", "gpu": "0", "samples": 4854, "mean_ms": 0.1609355789039967, "p50_ms": 0.1618, "p95_ms": 0.1679},
+        {"pass": "ssao_reconstruct_normals", "gpu": "0", "samples": 4854, "mean_ms": 0.034580675731355585, "p50_ms": 0.0348, "p95_ms": 0.0379},
+        {"pass": "ssao_reduce_depth", "gpu": "0", "samples": 4854, "mean_ms": 0.04963018129377833, "p50_ms": 0.0502, "p95_ms": 0.0532},
+        {"pass": "ssao_snapshot_depth", "gpu": "0", "samples": 4854, "mean_ms": 0.058083498145859086, "p50_ms": 0.0584, "p95_ms": 0.0635},
+        {"pass": "ssao_upsample", "gpu": "0", "samples": 4854, "mean_ms": 0.12703459002884218, "p50_ms": 0.127, "p95_ms": 0.1311}
+      ]
+    },
+    {
+      "name": "lit-profile-overlap",
+      "result": {"device": "primary", "mode": "lit", "vsync": false, "serializeRenderJobs": false, "resolutionDivisor": 2, "aoWidth": 960, "aoHeight": 504, "frames": 4987, "secondary": 0, "primary": 4987, "busy": 0, "reused": 0, "submitted": 0, "resubmitted": 0, "maxHistoryAge": 0, "exitCode": null, "forcedTermination": false, "captureFrame": 0, "validateSecondary": false},
+      "validated_transfer_pairs": 0,
+      "graphics_shutdown_logged": true,
+      "sources": [
+        {"file": "lit-profile-overlap-timings.csv", "sha256": "f6a86b1dba35f7fff952932f95e42a10c49f36968cf88253a26afb355771ab41"},
+        {"file": "lit-profile-overlap.stdout.log", "sha256": "c7dad3d9921c0e164f8a2a087dad2e2b40591a3150fb4dcd565e7dd028cd7185"},
+        {"file": "lit-profile-overlap.result.json", "sha256": "53b4115f4b44147b800855c5a631a2ed3cb9f05c0a09b250757074ce452d4e85"}
+      ],
+      "frame_execution_paths": [
+        {"path": "primary", "samples": 4488, "mean_ms": 1.8800561720142603, "p50_ms": 1.8811, "p95_ms": 1.9507}
+      ],
+      "timings": [
+        {"pass": "Frame", "gpu": "0", "samples": 4488, "mean_ms": 1.8800561720142603, "p50_ms": 1.8811, "p95_ms": 1.9507},
+        {"pass": "ssao_blur_h", "gpu": "0", "samples": 4488, "mean_ms": 0.08797326203208557, "p50_ms": 0.0881, "p95_ms": 0.0911},
+        {"pass": "ssao_blur_v", "gpu": "0", "samples": 4488, "mean_ms": 0.09118335561497326, "p50_ms": 0.0911, "p95_ms": 0.0942},
+        {"pass": "ssao_raw", "gpu": "0", "samples": 4488, "mean_ms": 0.16012961229946523, "p50_ms": 0.1618, "p95_ms": 0.1669},
+        {"pass": "ssao_reconstruct_normals", "gpu": "0", "samples": 4488, "mean_ms": 0.03415773172905526, "p50_ms": 0.0338, "p95_ms": 0.0379},
+        {"pass": "ssao_reduce_depth", "gpu": "0", "samples": 4488, "mean_ms": 0.04933841354723708, "p50_ms": 0.0492, "p95_ms": 0.0532},
+        {"pass": "ssao_snapshot_depth", "gpu": "0", "samples": 4488, "mean_ms": 0.05922979055258467, "p50_ms": 0.0594, "p95_ms": 0.0655},
+        {"pass": "ssao_upsample", "gpu": "0", "samples": 4488, "mean_ms": 0.12934280303030304, "p50_ms": 0.127, "p95_ms": 0.13}
+      ]
+    },
+    {
+      "name": "secondary-lit-profile-overlap-full",
+      "result": {"device": "secondary", "mode": "lit", "vsync": false, "serializeRenderJobs": false, "resolutionDivisor": 1, "aoWidth": 1920, "aoHeight": 1009, "frames": 16150, "secondary": 868, "primary": 10914, "busy": 4375, "reused": 4368, "submitted": 870, "resubmitted": 868, "maxHistoryAge": 25, "exitCode": null, "forcedTermination": false, "captureFrame": 0, "validateSecondary": false},
+      "validated_transfer_pairs": 1738,
+      "graphics_shutdown_logged": true,
+      "sources": [
+        {"file": "secondary-lit-profile-overlap-full-timings.csv", "sha256": "17d5bf464ab30106dfb4cc5c888cd6ab73b0cd13c71bc51d9cdb350c75c3947f"},
+        {"file": "secondary-lit-profile-overlap-full.stdout.log", "sha256": "9e6e82c0f20bd4e7c34ee43fc940a37cb0cbfbc8dd22660912fa84b777941159"},
+        {"file": "secondary-lit-profile-overlap-full.result.json", "sha256": "f7013e35f1ffb02b41e53a9391da1d1c6b2c1ea4ee9edaff73e4da44559c0ca2"}
+      ],
+      "frame_execution_paths": [
+        {"path": "primary", "samples": 10906, "mean_ms": 3.241916678892353, "p50_ms": 3.241, "p95_ms": 3.4099},
+        {"path": "secondary", "samples": 4745, "mean_ms": 1.7358758061116966, "p50_ms": 1.5872, "p95_ms": 2.6573}
+      ],
+      "timings": [
+        {"pass": "Frame", "gpu": "0", "samples": 15651, "mean_ms": 2.7853219602581305, "p50_ms": 3.1693, "p95_ms": 3.3833},
+        {"pass": "ssao_blur_h", "gpu": "0", "samples": 10906, "mean_ms": 0.34245678525582246, "p50_ms": 0.341, "p95_ms": 0.3676},
+        {"pass": "ssao_blur_h", "gpu": "1", "samples": 737, "mean_ms": 4.241152374491181, "p50_ms": 4.104, "p95_ms": 5.36222},
+        {"pass": "ssao_blur_v", "gpu": "0", "samples": 10906, "mean_ms": 0.37592917660003666, "p50_ms": 0.3738, "p95_ms": 0.4035},
+        {"pass": "ssao_blur_v", "gpu": "1", "samples": 737, "mean_ms": 4.088, "p50_ms": 4.0434, "p95_ms": 4.33244},
+        {"pass": "ssao_depth/dst", "gpu": "1", "samples": 737, "mean_ms": 0.7871506105834464, "p50_ms": 0.7673, "p95_ms": 0.9162199999999999},
+        {"pass": "ssao_depth/span", "gpu": "0>1", "samples": 737, "mean_ms": 1.5833997286295793, "p50_ms": 1.5425, "p95_ms": 1.77894},
+        {"pass": "ssao_depth/src", "gpu": "0", "samples": 737, "mean_ms": 0.5871028493894166, "p50_ms": 0.5841, "p95_ms": 0.58772},
+        {"pass": "ssao_depth/sum", "gpu": "0>1", "samples": 737, "mean_ms": 1.374250474898236, "p50_ms": 1.3518, "p95_ms": 1.5070999999999999},
+        {"pass": "ssao_raw", "gpu": "0", "samples": 10906, "mean_ms": 0.7447616633046029, "p50_ms": 0.6523, "p95_ms": 0.938},
+        {"pass": "ssao_raw", "gpu": "1", "samples": 737, "mean_ms": 4.971680868385346, "p50_ms": 4.9029, "p95_ms": 5.22302},
+        {"pass": "ssao_reconstruct_normals", "gpu": "0", "samples": 10906, "mean_ms": 0.21836733907940584, "p50_ms": 0.1178, "p95_ms": 0.3512},
+        {"pass": "ssao_reconstruct_normals", "gpu": "1", "samples": 737, "mean_ms": 1.565466485753053, "p50_ms": 1.544, "p95_ms": 1.64866},
+        {"pass": "ssao_reduce_depth", "gpu": "0", "samples": 15651, "mean_ms": 0.08298605200945626, "p50_ms": 0.0819, "p95_ms": 0.0911},
+        {"pass": "ssao_result/dst", "gpu": "0", "samples": 736, "mean_ms": 0.1616922554347826, "p50_ms": 0.1599, "p95_ms": 0.163725},
+        {"pass": "ssao_result/span", "gpu": "1>0", "samples": 736, "mean_ms": 4.056197418478261, "p50_ms": 4.0853, "p95_ms": 5.5722000000000005},
+        {"pass": "ssao_result/src", "gpu": "1", "samples": 736, "mean_ms": 1.108140625, "p50_ms": 1.0789499999999999, "p95_ms": 1.174825},
+        {"pass": "ssao_result/sum", "gpu": "1>0", "samples": 736, "mean_ms": 1.2698369565217391, "p50_ms": 1.23975, "p95_ms": 1.337775},
+        {"pass": "ssao_reuse", "gpu": "0", "samples": 4745, "mean_ms": 0.03846484720758694, "p50_ms": 0.0379, "p95_ms": 0.0399},
+        {"pass": "ssao_snapshot_depth", "gpu": "0", "samples": 15651, "mean_ms": 0.06890660660660661, "p50_ms": 0.0686, "p95_ms": 0.0799},
+        {"pass": "ssao_upsample", "gpu": "0", "samples": 15651, "mean_ms": 0.1444011373075203, "p50_ms": 0.1444, "p95_ms": 0.1505}
+      ]
+    },
+    {
+      "name": "secondary-lit-profile-overlap-half",
+      "result": {"device": "secondary", "mode": "lit", "vsync": false, "serializeRenderJobs": false, "resolutionDivisor": 2, "aoWidth": 960, "aoHeight": 504, "frames": 10306, "secondary": 2293, "primary": 5282, "busy": 2738, "reused": 2731, "submitted": 2295, "resubmitted": 2293, "maxHistoryAge": 7, "exitCode": null, "forcedTermination": false, "captureFrame": 0, "validateSecondary": false},
+      "validated_transfer_pairs": 4588,
+      "graphics_shutdown_logged": true,
+      "sources": [
+        {"file": "secondary-lit-profile-overlap-half-timings.csv", "sha256": "c9c53e97c033173aa72247a14efe175a5bdf4b1cbc0952bdc5570e87f9b0bbee"},
+        {"file": "secondary-lit-profile-overlap-half.stdout.log", "sha256": "33765f1201125076043824ddc390f7f0432f25479bb9cc6d0dc817099c1b445f"},
+        {"file": "secondary-lit-profile-overlap-half.result.json", "sha256": "fd7c4edd1abe2ab54b964e3b056536b707a6b81be8ce218c832d066d3ef51c60"}
+      ],
+      "frame_execution_paths": [
+        {"path": "primary", "samples": 5274, "mean_ms": 1.8541370117557832, "p50_ms": 1.8555, "p95_ms": 1.9292},
+        {"path": "secondary", "samples": 4533, "mean_ms": 1.698196690933157, "p50_ms": 1.5534, "p95_ms": 2.004}
+      ],
+      "timings": [
+        {"pass": "Frame", "gpu": "0", "samples": 9807, "mean_ms": 1.782058142143367, "p50_ms": 1.836, "p95_ms": 1.9671},
+        {"pass": "ssao_blur_h", "gpu": "0", "samples": 5274, "mean_ms": 0.0882984262419416, "p50_ms": 0.0891, "p95_ms": 0.0911},
+        {"pass": "ssao_blur_h", "gpu": "1", "samples": 2114, "mean_ms": 0.9835640018921475, "p50_ms": 0.96165, "p95_ms": 1.12354},
+        {"pass": "ssao_blur_v", "gpu": "0", "samples": 5274, "mean_ms": 0.09144869169510808, "p50_ms": 0.0922, "p95_ms": 0.0942},
+        {"pass": "ssao_blur_v", "gpu": "1", "samples": 2114, "mean_ms": 0.9237491485335856, "p50_ms": 0.9076, "p95_ms": 1.05477},
+        {"pass": "ssao_depth/dst", "gpu": "1", "samples": 2114, "mean_ms": 0.2931232261116367, "p50_ms": 0.2842, "p95_ms": 0.34350499999999995},
+        {"pass": "ssao_depth/span", "gpu": "0>1", "samples": 2114, "mean_ms": 0.6114010879848628, "p50_ms": 0.5882499999999999, "p95_ms": 0.708335},
+        {"pass": "ssao_depth/src", "gpu": "0", "samples": 2114, "mean_ms": 0.14252417218543045, "p50_ms": 0.14165, "p95_ms": 0.144},
+        {"pass": "ssao_depth/sum", "gpu": "0>1", "samples": 2114, "mean_ms": 0.435652885525071, "p50_ms": 0.4261, "p95_ms": 0.490305},
+        {"pass": "ssao_raw", "gpu": "0", "samples": 5274, "mean_ms": 0.16056717861205916, "p50_ms": 0.1618, "p95_ms": 0.1669},
+        {"pass": "ssao_raw", "gpu": "1", "samples": 2114, "mean_ms": 1.2356419110690633, "p50_ms": 1.2397, "p95_ms": 1.298435},
+        {"pass": "ssao_reconstruct_normals", "gpu": "0", "samples": 5274, "mean_ms": 0.032870762229806595, "p50_ms": 0.0317, "p95_ms": 0.0369},
+        {"pass": "ssao_reconstruct_normals", "gpu": "1", "samples": 2114, "mean_ms": 0.36621929990539265, "p50_ms": 0.3682, "p95_ms": 0.38266999999999995},
+        {"pass": "ssao_reduce_depth", "gpu": "0", "samples": 9807, "mean_ms": 0.04899900071377587, "p50_ms": 0.0492, "p95_ms": 0.0532},
+        {"pass": "ssao_result/dst", "gpu": "0", "samples": 2113, "mean_ms": 0.04249810695693327, "p50_ms": 0.0419, "p95_ms": 0.04543999999999999},
+        {"pass": "ssao_result/span", "gpu": "1>0", "samples": 2113, "mean_ms": 2.4878789398958827, "p50_ms": 1.9909, "p95_ms": 4.55728},
+        {"pass": "ssao_result/src", "gpu": "1", "samples": 2113, "mean_ms": 0.3774710837671557, "p50_ms": 0.3638, "p95_ms": 0.44641999999999993},
+        {"pass": "ssao_result/sum", "gpu": "1>0", "samples": 2113, "mean_ms": 0.41996762896355894, "p50_ms": 0.4063, "p95_ms": 0.48854},
+        {"pass": "ssao_reuse", "gpu": "0", "samples": 4533, "mean_ms": 0.010933200970659607, "p50_ms": 0.0113, "p95_ms": 0.0123},
+        {"pass": "ssao_snapshot_depth", "gpu": "0", "samples": 9807, "mean_ms": 0.0653195676557561, "p50_ms": 0.0645, "p95_ms": 0.0748},
+        {"pass": "ssao_upsample", "gpu": "0", "samples": 9807, "mean_ms": 0.12756644233710615, "p50_ms": 0.128, "p95_ms": 0.1311}
+      ]
+    }
+  ]
+}

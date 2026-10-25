@@ -22,3 +22,5 @@ To compare the same SceneBaseSample workload, run sequentially with the same res
 Exclude loading/warmup, repeat runs and report wall-clock frame cadence alongside GPU timestamps. Removing CPU waits need not reduce GPU pass duration, and total frames divided by script duration includes startup/loading. Projected FPS improvements are estimates until measured on the target hardware. A PIX/GPUView trace can show CPU/GPU overlap directly; no such trace is included here.
 
 See [SSAO measurements](ambient_occlusion_measurements.md) for recorded checks and [SSAO](ambient_occlusion.md) for the technique's independent input/output synchronization.
+
+The supplied [RTX 3050 Laptop + Intel Graphics report](measurements/ssao_rtx3050_intel_2026_10_25.md) includes primary serialization on/off. The corresponding GPU 0 Frame means are 1.8780 and 1.8801 ms after excluding 500 frames. These GPU intervals alone do not measure CPU preparation overlap or establish an FPS improvement.
