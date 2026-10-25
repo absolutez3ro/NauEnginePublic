@@ -21,10 +21,12 @@ namespace drv3d_dx12
         D3D12_SHADER_BYTECODE rawShader = {};
         D3D12_SHADER_BYTECODE blurShader = {};
         eastl::shared_ptr<d3d::mgpu::ISsaoProfiler> profiler;
+        D3D12_SHADER_BYTECODE normalShader = {};
     };
 
     /**
-     * @brief Three AO draws on one explicit device/queue. Inputs and outputs are COMMON between submissions.
+     * @brief AO and blur draws on one device/queue, optionally preceded by depth-normal reconstruction.
+     * Inputs and outputs are COMMON between submissions.
      * Channel endpoints and their fences stay fixed until reset. Input copies wait for getReadyPoint(); execute
      * waits for both copies. releaseOutput orders the next overwrite after the output channel has read it.
      * Command/constant slots are polled: busy never blocks the render thread. Destruction retires pending work.

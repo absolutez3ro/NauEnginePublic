@@ -116,6 +116,12 @@ namespace d3d::mgpu
     NAU_RENDER_EXPORT bool is_transfer_format_supported(uint32_t format);
 
     /**
+     * @brief Polls whether a ticket's source copy has finished. Does not record commands or wait on either GPU.
+     * False for unknown/overwritten tickets and removed devices. A subsequent receive still performs its local copy.
+     */
+    NAU_RENDER_EXPORT bool is_transfer_ready(TransferChannelHandle channel, TransferTicket ticket);
+
+    /**
      * @brief PrimaryToSecondary: copies an engine texture on GPU 0 into the next free slot.
      * @param channel Channel created with TransferDirection::PrimaryToSecondary.
      * @param source Engine texture on GPU 0 with the channel's size and format; the driver handles its states.

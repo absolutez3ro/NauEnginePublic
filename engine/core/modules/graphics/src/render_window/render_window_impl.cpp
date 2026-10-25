@@ -46,6 +46,12 @@ namespace nau::render
 
         dabfg::set_resolution(m_resolutionName.c_str(), {m_width, m_height});
         dabfg::set_resolution(m_displayName.c_str(), {m_width, m_height});
+        if (m_ambientOcclusion)
+        {
+            const int divisor = static_cast<int>(m_ambientOcclusion->getResolutionDivisor());
+            dabfg::set_resolution(nau::utils::format("{}_ssao", m_resolutionName).c_str(),
+                                 {eastl::max(m_width / divisor, 1), eastl::max(m_height / divisor, 1)});
+        }
         m_gBuffer->changeResolution(m_width, m_height);
 
         if (m_swapchain == DEFAULT_SWAPID)

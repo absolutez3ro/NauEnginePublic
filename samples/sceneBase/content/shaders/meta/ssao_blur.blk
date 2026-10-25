@@ -1,7 +1,15 @@
 compile_configs {
     config {
         stage:t="ps"
-        entry:t="PSPackNormals"
+        entry:t="PSDownsampleDepth"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSUpsample"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSReconstructNormals"
     }
     config {
         stage:t="ps"

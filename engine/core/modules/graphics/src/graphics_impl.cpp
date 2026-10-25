@@ -12,6 +12,7 @@
 #include "graphics_assets/shader_asset.h"
 #include "graphics_assets/texture_asset.h"
 #include "nau/app/core_window_manager.h"
+#include "nau/app/global_properties.h"
 #include "nau/app/platform_window.h"
 #include "nau/app/window_manager.h"
 #include "nau/assets/asset_manager.h"
@@ -176,6 +177,8 @@ namespace nau
 
         co_await rendWindow->createRenderGraph();
 
+        m_serializeRenderJobs = getServiceProvider().get<GlobalProperties>().getValue<bool>("graphics/serializeRenderJobs").value_or(false);
+        NAU_LOG_INFO("Graphics: serializeRenderJobs={}", m_serializeRenderJobs);
         m_isInitialized = true;
 
         co_return;
@@ -303,11 +306,18 @@ namespace nau
             task.detach();
         }
 
-        d3d::finish_render_commands();
+        // Resource updates use driver ordering/renaming; drain only for explicit diagnostic serialization.
+        if (m_serializeRenderJobs)
+        {
+            d3d::finish_render_commands();
+        }
 
         co_await executeRenderJobs();
 
-        d3d::finish_render_commands();
+        if (m_serializeRenderJobs)
+        {
+            d3d::finish_render_commands();
+        }
 
         renderMainScene();
 

@@ -17,6 +17,11 @@ def percentile(values, fraction):
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
+def summarize_values(values):
+    return {"samples": len(values), "mean_ms": statistics.mean(values),
+            "p50_ms": statistics.median(values), "p95_ms": percentile(values, 0.95)}
+
+
 def summarize(path, warmup_frames):
     with path.open(encoding="utf-8", newline="") as stream:
         rows = list(csv.DictReader(stream))
@@ -24,6 +29,8 @@ def summarize(path, warmup_frames):
         raise ValueError(f"No GPU measurements in {path}")
     pairs = defaultdict(dict)
     groups = defaultdict(list)
+    primary_frames = set()
+    secondary_frames = set()
     seen = set()
     for row in rows:
         frame, milliseconds = int(row["frame"]), float(row["ms"])
@@ -33,6 +40,11 @@ def summarize(path, warmup_frames):
         if key in seen:
             raise ValueError(f"Duplicate measurement in {path}: {key}")
         seen.add(key)
+        if row["gpu"] == "0":
+            if row["pass"] == "ssao_raw":
+                primary_frames.add(frame)
+            elif row["pass"] == "ssao_reuse":
+                secondary_frames.add(frame)
         base, _, suffix = row["pass"].rpartition("/")
         if base.startswith("ssao_") and suffix in ("src", "dst", "sum", "span"):
             pairs[(frame, base)][suffix] = (milliseconds, row["gpu"])
@@ -53,6 +65,15 @@ def summarize(path, warmup_frames):
         paired_count += 1
     if not groups:
         raise ValueError(f"No measurements after frame {warmup_frames}: {path}")
+    execution_paths = defaultdict(list)
+    for row in rows:
+        frame = int(row["frame"])
+        if frame <= warmup_frames or row["gpu"] != "0" or row["pass"] != "Frame":
+            continue
+        primary = frame in primary_frames
+        secondary = frame in secondary_frames
+        execution = "mixed" if primary and secondary else "primary" if primary else "secondary" if secondary else "unclassified"
+        execution_paths[execution].append(float(row["ms"]))
     prefix = path.with_name(path.name.removesuffix("-timings.csv"))
     metadata_path = prefix.with_suffix(".result.json")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig")) if metadata_path.exists() else {}
@@ -62,9 +83,12 @@ def summarize(path, warmup_frames):
         "result": metadata,
         "discarded_first_frames": warmup_frames,
         "validated_transfer_pairs": paired_count,
+        "frame_execution_paths": [
+            {"path": name, **summarize_values(values)}
+            for name, values in sorted(execution_paths.items())
+        ],
         "timings": [
-            {"pass": name, "gpu": gpu, "samples": len(values), "mean_ms": statistics.mean(values),
-             "p50_ms": statistics.median(values), "p95_ms": percentile(values, 0.95)}
+            {"pass": name, "gpu": gpu, **summarize_values(values)}
             for (name, gpu), values in sorted(groups.items())
         ],
     }
@@ -82,7 +106,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.with_suffix(".json").write_text(json.dumps(reports, indent=2), encoding="utf-8")
     lines = ["# SSAO GPU timestamp measurements", "",
-             "Durations come from GPU timestamps, not FPS. Frame on GPU 0 includes waiting for AO.",
+             "Durations come from GPU timestamps, not FPS. Pipelined SSAO polls ready output before primary reception.",
              "COPY /sum is src + dst GPU work; /span uses each COPY queue's clock calibration.",
              "WARP runs validate the instrumentation and do not demonstrate multi-GPU speedup.", ""]
     for report in reports:
@@ -95,6 +119,15 @@ def main():
             lines.append(f"| {timing['pass']} | {timing['gpu']} | {timing['samples']} | "
                          f"{timing['mean_ms']:.4f} | {timing['p50_ms']:.4f} | {timing['p95_ms']:.4f} |")
         lines.append("")
+        if report["frame_execution_paths"]:
+            lines += ["GPU 0 Frame grouped by recorded AO work, independent of the startup CSV mode label.",
+                      "Primary has ssao_raw; secondary has ssao_reuse. Mixed includes both (for example, validation captures).", "",
+                      "| Execution path | Samples | Mean, ms | P50, ms | P95, ms |",
+                      "| --- | ---: | ---: | ---: | ---: |"]
+            for timing in report["frame_execution_paths"]:
+                lines.append(f"| {timing['path']} | {timing['samples']} | {timing['mean_ms']:.4f} | "
+                             f"{timing['p50_ms']:.4f} | {timing['p95_ms']:.4f} |")
+            lines.append("")
     args.output.with_suffix(".md").write_text("\n".join(lines), encoding="utf-8")
     print(json.dumps({"reports": len(reports), "output": str(args.output),
                       "validated_transfer_pairs": sum(item["validated_transfer_pairs"] for item in reports)}, indent=2))

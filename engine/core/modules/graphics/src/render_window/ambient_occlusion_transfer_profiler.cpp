@@ -15,6 +15,8 @@ namespace nau::render
     {
         class SsaoTransferProfiler final : public d3d::mgpu::ITransferProfiler
         {
+            static constexpr uint32_t MAX_PENDING = 128;
+
         public:
             SsaoTransferProfiler(const char* name, bool fromPrimary) :
                 m_name(name),
@@ -47,7 +49,8 @@ namespace nau::render
             void beginCopy(bool source, void* list, uint64_t ticket) override
             {
                 Side& side = m_sides[source ? 0 : 1];
-                collect(side, source);
+                collect(m_sides[0], true);
+                collect(m_sides[1], false);
                 TicketFrame& origin = m_ticketFrames[ticket % m_ticketFrames.size()];
                 if (source)
                 {
@@ -58,6 +61,7 @@ namespace nau::render
                     return;
                 }
                 side.current = {};
+                side.current.ticket = ticket;
                 side.current.timing.frame = origin.frame;
                 side.current.timing.frequency = side.timestamps.getFrequency();
                 gpu_profiler::TimestampCalibration& calibration = side.current.timing.calibration;
@@ -99,7 +103,7 @@ namespace nau::render
 
             void detach() override
             {
-                // The channel has drained both queues, including the timestamp resolves and their fences.
+                // The channel calls detach after both COPY queues drain.
                 for (uint32_t i = 0; i < m_sides.size(); ++i)
                 {
                     Side& side = m_sides[i];
@@ -112,10 +116,9 @@ namespace nau::render
             }
 
         private:
-            static constexpr uint32_t MAX_PENDING = 128;
-
             struct Measurement
             {
+                uint64_t ticket = 0;
                 void* begin = nullptr;
                 void* end = nullptr;
                 gpu_profiler::TransferTiming timing;
@@ -133,6 +136,8 @@ namespace nau::render
             {
                 uint64_t ticket = 0;
                 uint64_t frame = 0;
+                gpu_profiler::TransferTiming timings[2];
+                bool ready[2] = {};
             };
 
             void collect(Side& side, bool source)
@@ -145,9 +150,25 @@ namespace nau::render
                     {
                         break;
                     }
-                    gpu_profiler::GpuProfiler::instance().recordTransferHalf(m_name.c_str(), m_src, m_dst,
-                                                                             source ? gpu_profiler::TransferHalf::Source : gpu_profiler::TransferHalf::Destination,
-                                                                             measurement.timing);
+                    TicketFrame& pair = m_ticketFrames[measurement.ticket % m_ticketFrames.size()];
+                    if (pair.ticket == measurement.ticket)
+                    {
+                        const uint32_t index = source ? 0 : 1;
+                        pair.timings[index] = measurement.timing;
+                        pair.ready[index] = true;
+                        // Publish both halves together so a slow destination cannot expire the source measurement.
+                        if (pair.ready[0] && pair.ready[1])
+                        {
+                            recordHalf(true, pair.timings[0]);
+                            recordHalf(false, pair.timings[1]);
+                            pair.ready[0] = pair.ready[1] = false;
+                        }
+                        else if (!m_sides[1 - index].available)
+                        {
+                            recordHalf(source, measurement.timing);
+                            pair.ready[index] = false;
+                        }
+                    }
                     side.timestamps.release(measurement.begin);
                     side.timestamps.release(measurement.end);
                     ++done;
@@ -155,11 +176,17 @@ namespace nau::render
                 side.pending.erase(side.pending.begin(), side.pending.begin() + done);
             }
 
+            void recordHalf(bool source, const gpu_profiler::TransferTiming& timing)
+            {
+                gpu_profiler::GpuProfiler::instance().recordTransferHalf(m_name.c_str(), m_src, m_dst,
+                                                                         source ? gpu_profiler::TransferHalf::Source : gpu_profiler::TransferHalf::Destination,
+                                                                         timing);
+            }
+
             eastl::string m_name;
             gpu_profiler::GpuIndex m_src;
             gpu_profiler::GpuIndex m_dst;
             eastl::array<Side, 2> m_sides;
-            // More entries than the channel's slots/recordings; old, overwritten tickets cannot form a false pair.
             eastl::array<TicketFrame, 64> m_ticketFrames = {};
         };
     }  // namespace

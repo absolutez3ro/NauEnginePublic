@@ -11,11 +11,20 @@ namespace d3d::mgpu
 {
     struct SsaoProducer
     {
+        SsaoProducer() = default;
+        SsaoProducer(const SsaoProducer&) = delete;
+        SsaoProducer(SsaoProducer&&) = delete;
+        SsaoProducer& operator=(const SsaoProducer&) = delete;
+        SsaoProducer& operator=(SsaoProducer&&) = delete;
+
         drv3d_dx12::DeviceSsaoPass pass;
         TransferChannelHandle normals = nullptr;
         TransferChannelHandle depth = nullptr;
         TransferChannelHandle output = nullptr;
         TransferChannelHandle rawOutput = nullptr;
+        TransferTicket pendingOutput = 0;
+        TransferTicket pendingRaw = 0;
+        bool reconstructNormals = false;
 
         ~SsaoProducer()
         {
@@ -51,6 +60,8 @@ namespace d3d::mgpu
             pass.rawShader = {desc.rawBytecode, desc.rawBytecodeSize};
             pass.blurShader = {desc.blurBytecode, desc.blurBytecodeSize};
             pass.profiler = desc.profiler;
+            pass.normalShader = {desc.normalBytecode, desc.normalBytecodeSize};
+            producer->reconstructNormals = desc.normalBytecode != nullptr;
             result = producer->pass.init(pass);
         }
         if (SUCCEEDED(result))
@@ -58,12 +69,16 @@ namespace d3d::mgpu
             TransferChannelDesc channel;
             channel.width = desc.width;
             channel.height = desc.height;
+            channel.slotCount = 3;
             channel.direction = TransferDirection::PrimaryToSecondary;
-            channel.format = TEXFMT_G16R16F;
-            channel.name = "SSAO normals GPU 0 -> GPU 1";
-            channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_normals", true) : nullptr;
-            producer->normals = create_transfer_channel(channel);
-            channel.format = TEXFMT_DEPTH32;
+            if (!producer->reconstructNormals)
+            {
+                channel.format = TEXFMT_G16R16F;
+                channel.name = "SSAO normals GPU 0 -> GPU 1";
+                channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_normals", true) : nullptr;
+                producer->normals = create_transfer_channel(channel);
+            }
+            channel.format = desc.depthIsFloat ? TEXFMT_R32F : TEXFMT_DEPTH32;
             channel.name = "SSAO depth GPU 0 -> GPU 1";
             channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_depth", true) : nullptr;
             producer->depth = create_transfer_channel(channel);
@@ -72,7 +87,7 @@ namespace d3d::mgpu
             channel.name = "SSAO result GPU 1 -> GPU 0";
             channel.profiler = desc.profiler ? desc.profiler->createTransferProfiler("ssao_result", false) : nullptr;
             producer->output = create_transfer_channel(channel);
-            result = producer->normals && producer->depth && producer->output ? S_OK : E_FAIL;
+            result = (producer->reconstructNormals || producer->normals) && producer->depth && producer->output ? S_OK : E_FAIL;
         }
         if (FAILED(result))
         {
@@ -84,14 +99,18 @@ namespace d3d::mgpu
 
     bool isSsaoBusy(const SsaoProducer* producer)
     {
-        return producer && producer->pass.canSubmit() == DXGI_ERROR_WAS_STILL_DRAWING;
+        return producer && (producer->pendingOutput != 0 || producer->pass.canSubmit() == DXGI_ERROR_WAS_STILL_DRAWING);
     }
 
-    SsaoResult renderSsao(SsaoProducer* producer, const SsaoConstants& constants, bool blur, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, BaseTexture* rawDestination)
+    SsaoResult submitSsao(SsaoProducer* producer, const SsaoConstants& constants, bool blur, BaseTexture* normals, BaseTexture* depth, bool captureRaw)
     {
-        if (!producer || !normals || !depth || !destination || !is_multi_gpu_available())
+        if (!producer || (!producer->reconstructNormals && !normals) || !depth || !is_multi_gpu_available())
         {
             return SsaoResult::failed;
+        }
+        if (producer->pendingOutput != 0)
+        {
+            return SsaoResult::busy;
         }
         HRESULT result = producer->pass.canSubmit();
         if (result == DXGI_ERROR_WAS_STILL_DRAWING)
@@ -100,7 +119,7 @@ namespace d3d::mgpu
         }
         if (SUCCEEDED(result))
         {
-            const TransferTicket normalTicket = send_from_primary(producer->normals, normals);
+            const TransferTicket normalTicket = producer->reconstructNormals ? 0 : send_from_primary(producer->normals, normals);
             const TransferTicket depthTicket = send_from_primary(producer->depth, depth);
             // Receive whichever sends succeeded, even if its partner was dropped. This releases both channel slots.
             const drv3d_dx12::CrossAdapterSyncPoint free = producer->pass.getReadyPoint();
@@ -111,11 +130,11 @@ namespace d3d::mgpu
             const SecondarySyncPoint depthReady = depthTicket
                                                       ? receive_on_secondary(producer->depth, depthTicket, producer->pass.getDepth(), destinationFree)
                                                       : SecondarySyncPoint{};
-            if (!normalTicket || !depthTicket)
+            if ((!producer->reconstructNormals && !normalTicket) || !depthTicket)
             {
                 return SsaoResult::busy;
             }
-            if (!normalReady.nativeFence || !depthReady.nativeFence)
+            if ((!producer->reconstructNormals && !normalReady.nativeFence) || !depthReady.nativeFence)
             {
                 result = E_FAIL;
             }
@@ -128,14 +147,14 @@ namespace d3d::mgpu
         }
         if (SUCCEEDED(result))
         {
-            if (rawDestination && !producer->rawOutput)
+            if (captureRaw && !producer->rawOutput)
             {
-                // Validation keeps the unfiltered R32F result; normal rendering allocates no extra channel.
                 const D3D12_RESOURCE_DESC size = producer->pass.getNormals()->GetDesc();
                 TransferChannelDesc channel;
                 channel.width = static_cast<uint32_t>(size.Width);
                 channel.height = size.Height;
                 channel.format = TEXFMT_R32F;
+                channel.slotCount = 3;
                 channel.direction = TransferDirection::SecondaryToPrimary;
                 channel.name = "SSAO raw validation GPU 1 -> GPU 0";
                 producer->rawOutput = create_transfer_channel(channel);
@@ -149,8 +168,7 @@ namespace d3d::mgpu
             const SecondarySyncPoint ready = {rendered.fence, rendered.value};
             for (bool raw : {true, false})
             {
-                BaseTexture* target = raw ? rawDestination : destination;
-                if (!target)
+                if (raw && !captureRaw)
                 {
                     continue;
                 }
@@ -158,17 +176,22 @@ namespace d3d::mgpu
                 const SecondarySend sent = send_from_secondary(channel, producer->pass.getResult(raw), ready);
                 if (sent.ticket == 0)
                 {
-                    return SsaoResult::busy;
+                    // Inputs and the pass are already committed. A missing output is a failed job.
+                    result = E_FAIL;
+                    break;
                 }
                 result = producer->pass.releaseOutput({static_cast<ID3D12Fence*>(sent.sourceReleased.nativeFence), sent.sourceReleased.value}, raw);
                 if (FAILED(result))
                 {
                     break;
                 }
-                if (!receive_on_primary(channel, sent.ticket, target))
+                if (raw)
                 {
-                    result = E_FAIL;
-                    break;
+                    producer->pendingRaw = sent.ticket;
+                }
+                else
+                {
+                    producer->pendingOutput = sent.ticket;
                 }
             }
             if (SUCCEEDED(result))
@@ -182,6 +205,50 @@ namespace d3d::mgpu
         }
         report_secondary_gpu_failure(static_cast<uint32_t>(result));
         return SsaoResult::failed;
+    }
+
+    namespace
+    {
+        SsaoResult receiveSsao(SsaoProducer* producer, BaseTexture* destination, BaseTexture* rawDestination, bool poll)
+        {
+            if (!producer || !destination || !is_multi_gpu_available())
+            {
+                return SsaoResult::failed;
+            }
+            if (producer->pendingOutput == 0)
+            {
+                return SsaoResult::busy;
+            }
+            if (poll && (!is_transfer_ready(producer->output, producer->pendingOutput) ||
+                         (producer->pendingRaw != 0 && !is_transfer_ready(producer->rawOutput, producer->pendingRaw))))
+            {
+                return SsaoResult::busy;
+            }
+            if ((producer->pendingRaw != 0 && (!rawDestination || !receive_on_primary(producer->rawOutput, producer->pendingRaw, rawDestination))) ||
+                !receive_on_primary(producer->output, producer->pendingOutput, destination))
+            {
+                report_secondary_gpu_failure(static_cast<uint32_t>(E_FAIL));
+                return SsaoResult::failed;
+            }
+            producer->pendingOutput = 0;
+            producer->pendingRaw = 0;
+            return SsaoResult::submitted;
+        }
+    }  // namespace
+
+    SsaoResult tryReceiveSsao(SsaoProducer* producer, BaseTexture* destination, BaseTexture* rawDestination)
+    {
+        return receiveSsao(producer, destination, rawDestination, true);
+    }
+
+    SsaoResult renderSsao(SsaoProducer* producer, const SsaoConstants& constants, bool blur, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, BaseTexture* rawDestination)
+    {
+        if (!destination)
+        {
+            return SsaoResult::failed;
+        }
+        const SsaoResult result = submitSsao(producer, constants, blur, normals, depth, rawDestination != nullptr);
+        return result == SsaoResult::submitted ? receiveSsao(producer, destination, rawDestination, false) : result;
     }
 
     void destroySsaoProducer(SsaoProducer* producer)

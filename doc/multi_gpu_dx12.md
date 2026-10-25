@@ -51,7 +51,7 @@ Successful HRESULTs are ignored. A failure is latched until driver recovery or r
 
 ## Resources and transport
 
-The public transfer API is `nau/3d/dag_drv3d_multi_gpu.h`. It supports tracked primary textures/buffers and native secondary endpoints. A channel owns fixed shared slots, COPY queues and cross-adapter fences. Frame submission uses GPU waits; channel destruction drains work on the CPU.
+The public transfer API is `nau/3d/dag_drv3d_multi_gpu.h`. It supports tracked primary textures/buffers and native secondary endpoints. A channel owns fixed shared slots, COPY queues and cross-adapter fences. Frame submission uses GPU waits for resource safety; channel destruction drains work on the CPU. `is_transfer_ready(channel, ticket)` polls source-copy completion without recording commands. A pipelined technique receives ready tickets from earlier frames and keeps its previous result while a ticket is pending.
 
 Secondary technique resources use `NauDeviceResourceAllocator` and the existing Nau heap pools. Each technique owns its secondary command submission, states and descriptor objects. GPU 0 and GPU 1 are separate devices, not linked-adapter nodes; their local resource node masks are 1.
 

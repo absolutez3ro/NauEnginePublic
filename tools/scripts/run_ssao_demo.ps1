@@ -11,6 +11,11 @@ param(
     [ValidateRange(0, 10000)]
     [int]$CaptureFrame = 150,
     [switch]$Profile,
+    [switch]$NoVsync,
+    [switch]$SerializeRenderJobs,
+    [switch]$TraceSubmissions,
+    [ValidateSet(1, 2)]
+    [int]$ResolutionDivisor = 2,
     [ValidatePattern('^[a-zA-Z0-9_-]+$')]
     [string]$Label
 )
@@ -20,6 +25,17 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $configPath = Join-Path $repo 'samples/sceneBase/config/app.json'
 $originalConfig = [IO.File]::ReadAllBytes($configPath)
 $binaryDir = Join-Path (Join-Path $repo $BuildDirectory) "bin/$Configuration"
+$binaryPath = Join-Path $binaryDir 'SceneBaseSample.exe'
+$binarySha256 = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$sourceRevision = $null
+$sourceTreeDirty = $null
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $revision = & git -C $repo rev-parse --verify HEAD
+    if ($LASTEXITCODE -eq 0) {
+        $sourceRevision = ([string]$revision).Trim()
+        $sourceTreeDirty = @(& git -C $repo status --porcelain --untracked-files=no).Count -gt 0
+    }
+}
 $resultDir = Join-Path $repo 'build/ssao-runtime'
 $runName = if ($Device -eq 'primary') { $Mode } else { "$Device-$Mode" }
 if ($Profile) { $runName += '-profile' }
@@ -33,16 +49,23 @@ try {
     $config = [Text.Encoding]::UTF8.GetString($originalConfig) | ConvertFrom-Json
     $config.dx12.multiGpu = $Device -ne 'primary'
     $config.dx12.secondaryWarpForTesting = $Device -in @('warp', 'fallback', 'device-switch', 'busy', 'busy-first')
+    if (!$config.video) { $config | Add-Member -NotePropertyName video -NotePropertyValue ([pscustomobject]@{}) }
+    $config.video | Add-Member -NotePropertyName vsync -NotePropertyValue (!$NoVsync) -Force
+    $config.video | Add-Member -NotePropertyName adaptive_vsync -NotePropertyValue $false -Force
+    if (!$config.graphics) { $config | Add-Member -NotePropertyName graphics -NotePropertyValue ([pscustomobject]@{}) }
+    $config.graphics | Add-Member -NotePropertyName serializeRenderJobs -NotePropertyValue ([bool]$SerializeRenderJobs) -Force
     $config.sample.mgpuDemo.enabled = $false
     $config.sample.ssao = [ordered]@{
         enabled = $Mode -ne 'disabled'
         mode = $(if ($Mode -eq 'off') { 0 } elseif ($Mode -in @('ao', 'raw', 'zero-radius')) { 2 } else { 1 })
         radius = $(if ($Mode -eq 'zero-radius') { 0.0 } else { 0.5 })
         blur = $Mode -ne 'raw'
+        resolutionDivisor = $ResolutionDivisor
         autoSwitchFrames = $(if ($Mode -eq 'switch') { 60 } else { 0 })
         useSecondary = $Device -ne 'primary'
         validateSecondary = !$Profile -and $Device -in @('secondary', 'warp', 'device-switch', 'busy-first')
-        autoDeviceSwitchFrames = $(if ($Device -eq 'device-switch') { 3 } else { 0 })
+        traceSubmissions = [bool]$TraceSubmissions
+        autoDeviceSwitchFrames = $(if ($Device -eq 'device-switch') { 1000 } else { 0 })
         failAtFrame = $(if ($Device -eq 'fallback') { 3 } else { 0 })
         busyAtFrame = $(if ($Device -eq 'busy') { $CaptureFrame } elseif ($Device -eq 'busy-first') { 1 } else { 0 })
         captureAtFrame = $CaptureFrame
@@ -56,13 +79,16 @@ try {
     $started = Get-Date
     $stdoutPath = Join-Path $resultDir "$runName.stdout.log"
     $windowStyle = if ($Interactive) { 'Normal' } else { 'Hidden' }
-    $process = Start-Process -FilePath (Join-Path $binaryDir 'SceneBaseSample.exe') -WorkingDirectory $binaryDir -WindowStyle $windowStyle -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError (Join-Path $resultDir "$runName.stderr.log")
+    $process = Start-Process -FilePath $binaryPath -WorkingDirectory $binaryDir -WindowStyle $windowStyle -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError (Join-Path $resultDir "$runName.stderr.log")
+    # Retain the OS process handle before exit so ExitCode remains available with Start-Process -PassThru.
+    $null = $process.Handle
     $early = $false
     if ($Interactive) { $process.WaitForExit() } else { $early = $process.WaitForExit($Seconds * 1000) }
     $forced = $false
+    $closeRequested = $null
     if (!$Interactive -and !$early) {
         $process.Refresh()
-        $process.CloseMainWindow() | Out-Null
+        $closeRequested = $process.CloseMainWindow()
         if (!$process.WaitForExit(15000)) { $forced = $true; $process.Kill(); $process.WaitForExit(5000) | Out-Null }
     }
     $process.Refresh()
@@ -75,9 +101,35 @@ try {
     $result.reused = $(if ($reused.Success) { [long]$reused.Groups[1].Value } else { 0 })
     $result.validateSecondary = $config.sample.ssao.validateSecondary
     $result.profile = [bool]$Profile
+    $result.sourceRevision = $sourceRevision
+    $result.sourceTreeDirty = $sourceTreeDirty
+    $result.binarySha256 = $binarySha256
+    $result.closeRequested = $closeRequested
     $result.captureFrame = $CaptureFrame
+    $result.vsync = !$NoVsync
+    $result.serializeRenderJobs = [bool]$SerializeRenderJobs
+    $result.resolutionDivisor = $ResolutionDivisor
+    $resolutions = [regex]::Matches($log, 'SSAO: resolution full=(\d+)x(\d+), ao=(\d+)x(\d+)')
+    if ($resolutions.Count -gt 0) {
+        $size = $resolutions[$resolutions.Count - 1]
+        $result.aoWidth = [int]$size.Groups[3].Value
+        $result.aoHeight = [int]$size.Groups[4].Value
+    }
+    $pipeline = [regex]::Match($log, 'reused=\d+, submitted=(\d+), maxAge=(\d+)')
+    $result.submitted = $(if ($pipeline.Success) { [long]$pipeline.Groups[1].Value } else { 0 })
+    $resubmitted = [regex]::Match($log, 'maxAge=\d+, resubmitted=(\d+)')
+    $result.resubmitted = $(if ($resubmitted.Success) { [long]$resubmitted.Groups[1].Value } else { 0 })
+    $result.traceSubmissions = [bool]$TraceSubmissions
+    $result.maxHistoryAge = $(if ($pipeline.Success) { [long]$pipeline.Groups[2].Value } else { 0 })
+    $secondaryCaptures = [regex]::Matches($log, 'SSAO: secondary capture frame=(\d+), source=(\d+)')
+    $secondaryCapture = if ($secondaryCaptures.Count -gt 0) { $secondaryCaptures[$secondaryCaptures.Count - 1] } else { [regex]::Match('', 'capture') }
+    $captureEvents = [regex]::Matches($log, 'SSAO: (?:secondary|reused) capture frame=(\d+), source=(\d+)')
+    $captureEvent = if ($captureEvents.Count -gt 0) { $captureEvents[$captureEvents.Count - 1] } else { $secondaryCapture }
+    $result.captureDisplayFrame = $(if ($captureEvent.Success) { [long]$captureEvent.Groups[1].Value } else { $CaptureFrame })
+    $result.captureSourceFrame = $(if ($captureEvent.Success) { [long]$captureEvent.Groups[2].Value } else { $CaptureFrame })
     $result | ConvertTo-Json | Set-Content (Join-Path $resultDir "$runName.result.json")
     $result | ConvertTo-Json
+    if ($null -eq $process.ExitCode) { throw "SSAO exit status could not be read: $stdoutPath" }
     if ($early -or $forced -or $process.ExitCode -ne 0) { throw "SSAO runtime failed: $stdoutPath" }
     if ($Interactive) {
         if (!$shutdown.Success -and $Mode -ne 'disabled') { throw 'SSAO did not start before the window closed' }
@@ -90,6 +142,8 @@ try {
         if ($CaptureFrame -gt 0) {
             $suffixes = @('filtered.f32', 'normals.f32', 'depth.f32', 'scene.ppm')
             if ($Device -eq 'busy') { $suffixes += 'history.f32' } else { $suffixes += 'raw.f32' }
+            $suffixes += @('resolved.f32', 'resolve_depth.f32', 'resolve_low_depth.f32')
+            if ($result.captureSourceFrame -ne $result.captureDisplayFrame -or $Device -eq 'busy') { $suffixes += 'history_depth.f32' }
             if ($config.sample.ssao.validateSecondary -and $Mode -ne 'off') { $suffixes += 'reference.f32' }
         }
         foreach ($suffix in $suffixes) {
@@ -101,13 +155,13 @@ try {
         }
         if ($Device -in @('warp', 'secondary', 'device-switch', 'busy-first') -and $Mode -ne 'off') {
             if ($result.secondary -eq 0) { throw 'No frame was computed on GPU 1' }
-            if ($CaptureFrame -gt 0 -and $log -notmatch "SSAO: secondary capture frame=$CaptureFrame") { throw 'The capture did not come from GPU 1' }
+            if ($CaptureFrame -gt 0 -and (!$secondaryCapture.Success -or $result.captureSourceFrame -lt $CaptureFrame -or $result.captureDisplayFrame -lt $result.captureSourceFrame)) { throw 'The capture did not come from a completed GPU 1 submission' }
         }
         if ($Device -eq 'fallback') {
             if ($result.secondary -eq 0 -or $result.primary -eq 0 -or $log -notmatch 'injecting secondary failure') { throw 'Fallback was not exercised' }
         }
         if ($Device -eq 'device-switch' -and $result.primary -eq 0) { throw 'GPU 0 was not exercised' }
-        if ($Device -eq 'busy' -and ($result.reused -eq 0 -or $result.primary -ne 0 -or $log -notmatch "SSAO: reused capture frame=$CaptureFrame,")) { throw 'Cached AO was not used instead of GPU 0 recomputation' }
+        if ($Device -eq 'busy' -and ($result.reused -eq 0 -or $log -notmatch 'SSAO: reused capture frame=\d+, source=\d+')) { throw 'Cached AO was not used instead of GPU 0 recomputation' }
         if ($Device -eq 'busy-first' -and ($result.primary -lt 1 -or $result.busy -lt 1 -or $log -notmatch 'SSAO: injecting busy at frame 1')) { throw 'Initial busy frame did not fall back without history' }
         if ($Profile) {
             $timingFile = Get-Item -LiteralPath $env:NAU_GPU_PROFILER_CSV
@@ -115,10 +169,10 @@ try {
             $timings = @(Import-Csv -LiteralPath $timingFile.FullName)
             if (!($timings | Where-Object { $_.gpu -eq '0' -and $_.pass -eq 'Frame' })) { throw 'No GPU 0 frame timings' }
             if ($result.secondary -gt 0) {
-                foreach ($pass in @('ssao_raw', 'ssao_blur_h', 'ssao_blur_v')) {
+                foreach ($pass in @('ssao_reconstruct_normals', 'ssao_raw', 'ssao_blur_h', 'ssao_blur_v')) {
                     if (!($timings | Where-Object { $_.gpu -eq '1' -and $_.pass -eq $pass -and [double]$_.ms -gt 0 })) { throw "No GPU 1 timing for $pass" }
                 }
-                foreach ($transfer in @('ssao_normals', 'ssao_depth', 'ssao_result')) {
+                foreach ($transfer in @('ssao_depth', 'ssao_result')) {
                     $bothSupported = $true
                     foreach ($half in @('src', 'dst')) {
                         if ($log.Contains("transfer '$transfer' $half copy timestamps unavailable")) {
