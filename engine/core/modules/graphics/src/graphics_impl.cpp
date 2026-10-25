@@ -12,9 +12,9 @@
 #include "graphics_assets/shader_asset.h"
 #include "graphics_assets/texture_asset.h"
 #include "nau/app/core_window_manager.h"
+#include "nau/app/global_properties.h"
 #include "nau/app/platform_window.h"
 #include "nau/app/window_manager.h"
-#include "nau/app/global_properties.h"
 #include "nau/assets/asset_manager.h"
 #include "nau/assets/asset_ref.h"
 #include "nau/assets/shader_asset_accessor.h"
@@ -177,8 +177,7 @@ namespace nau
 
         co_await rendWindow->createRenderGraph();
 
-        m_serializeRenderJobs = getServiceProvider().get<GlobalProperties>()
-                                    .getValue<bool>("graphics/serializeRenderJobs").value_or(false);
+        m_serializeRenderJobs = getServiceProvider().get<GlobalProperties>().getValue<bool>("graphics/serializeRenderJobs").value_or(false);
         NAU_LOG_INFO("Graphics: serializeRenderJobs={}", m_serializeRenderJobs);
         m_isInitialized = true;
 

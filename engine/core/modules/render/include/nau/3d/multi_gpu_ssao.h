@@ -26,7 +26,7 @@ namespace d3d::mgpu
         eastl::shared_ptr<ISsaoProfiler> profiler;
         const void* normalBytecode = nullptr;
         size_t normalBytecodeSize = 0;
-        bool depthIsFloat = false;  // R32F reduction input; false preserves the DEPTH32 input contract.
+        bool depthIsFloat = false;  // R32F input when true; DEPTH32 otherwise.
     };
 
     struct SsaoProducer;
@@ -47,7 +47,7 @@ namespace d3d::mgpu
     NAU_RENDER_EXPORT bool isSsaoBusy(const SsaoProducer* producer);
     /**
      * @brief Sends inputs and schedules SSAO on GPU 1, retaining its output ticket across frames.
-     * Only one job is outstanding. busy preserves that job and schedules no new work.
+     * One job at a time. busy preserves pending output, but may follow partial input copies.
      * captureRaw requests an additional R32F validation copy.
      * When normalBytecode is supplied, GPU 1 reconstructs normals from depth; normals may be nullptr.
      */
@@ -59,7 +59,8 @@ namespace d3d::mgpu
     NAU_RENDER_EXPORT SsaoResult tryReceiveSsao(SsaoProducer* producer, BaseTexture* destination, BaseTexture* rawDestination = nullptr);
     /**
      * @brief Compatibility path: computes SSAO and immediately schedules the primary GPU to wait for its result.
-     * Inputs: TEXFMT_G16R16F sphere-map normals, TEXFMT_DEPTH32 depth. Output: TEXFMT_R8, all of desc's size.
+     * Normals: TEXFMT_G16R16F, optional with normalBytecode. Depth: TEXFMT_R32F when depthIsFloat, otherwise TEXFMT_DEPTH32.
+     * Output: TEXFMT_R8. All textures match the descriptor's size.
      * busy submits no complete result; the caller may display its last valid AO map or compute on GPU 0.
      * rawDestination is an optional TEXFMT_R32F validation-only copy of the unfiltered GPU 1 result.
      */

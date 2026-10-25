@@ -236,8 +236,7 @@ static PresentationMode get_presentation_mode_from_settings()
     }
     const lowlatency::LatencyMode latencyMode = lowlatency::get_from_blk();
     const bool forceUnsynced = latencyMode == lowlatency::LATENCY_MODE_NV_ON || latencyMode == lowlatency::LATENCY_MODE_NV_BOOST;
-    const PresentationMode mode = vsync && !forceUnsynced ? PresentationMode::VSYNCED :
-                                  (adaptive ? PresentationMode::CONDITIONAL_VSYNCED : PresentationMode::UNSYNCED);
+    const PresentationMode mode = vsync && !forceUnsynced ? PresentationMode::VSYNCED : (adaptive ? PresentationMode::CONDITIONAL_VSYNCED : PresentationMode::UNSYNCED);
     NAU_LOG_INFO("DX12: presentation vsync={}, adaptive={}, mode={}", vsync, adaptive, static_cast<uint32_t>(mode));
     return mode;
 }

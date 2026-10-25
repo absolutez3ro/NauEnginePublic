@@ -15,6 +15,8 @@ namespace nau::render
     {
         class SsaoTransferProfiler final : public d3d::mgpu::ITransferProfiler
         {
+            static constexpr uint32_t MAX_PENDING = 128;
+
         public:
             SsaoTransferProfiler(const char* name, bool fromPrimary) :
                 m_name(name),
@@ -101,7 +103,7 @@ namespace nau::render
 
             void detach() override
             {
-                // The channel has drained both queues, including the timestamp resolves and their fences.
+                // The channel calls detach after both COPY queues drain.
                 for (uint32_t i = 0; i < m_sides.size(); ++i)
                 {
                     Side& side = m_sides[i];
@@ -114,8 +116,6 @@ namespace nau::render
             }
 
         private:
-            static constexpr uint32_t MAX_PENDING = 128;
-
             struct Measurement
             {
                 uint64_t ticket = 0;
@@ -156,8 +156,7 @@ namespace nau::render
                         const uint32_t index = source ? 0 : 1;
                         pair.timings[index] = measurement.timing;
                         pair.ready[index] = true;
-                        // The other GPU may finish hundreds of primary frames later. Publish a pair together so
-                        // the generic profiler's frame-age limit cannot discard its first half prematurely.
+                        // Publish both halves together so a slow destination cannot expire the source measurement.
                         if (pair.ready[0] && pair.ready[1])
                         {
                             recordHalf(true, pair.timings[0]);
@@ -188,7 +187,6 @@ namespace nau::render
             gpu_profiler::GpuIndex m_src;
             gpu_profiler::GpuIndex m_dst;
             eastl::array<Side, 2> m_sides;
-            // More entries than the channel's slots/recordings; old, overwritten tickets cannot form a false pair.
             eastl::array<TicketFrame, 64> m_ticketFrames = {};
         };
     }  // namespace

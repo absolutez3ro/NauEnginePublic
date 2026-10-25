@@ -11,6 +11,12 @@ namespace d3d::mgpu
 {
     struct SsaoProducer
     {
+        SsaoProducer() = default;
+        SsaoProducer(const SsaoProducer&) = delete;
+        SsaoProducer(SsaoProducer&&) = delete;
+        SsaoProducer& operator=(const SsaoProducer&) = delete;
+        SsaoProducer& operator=(SsaoProducer&&) = delete;
+
         drv3d_dx12::DeviceSsaoPass pass;
         TransferChannelHandle normals = nullptr;
         TransferChannelHandle depth = nullptr;
@@ -143,7 +149,6 @@ namespace d3d::mgpu
         {
             if (captureRaw && !producer->rawOutput)
             {
-                // Validation keeps the unfiltered R32F result; normal rendering allocates no extra channel.
                 const D3D12_RESOURCE_DESC size = producer->pass.getNormals()->GetDesc();
                 TransferChannelDesc channel;
                 channel.width = static_cast<uint32_t>(size.Width);

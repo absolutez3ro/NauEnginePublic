@@ -100,8 +100,7 @@ def verify(prefix, mode, independent_normals=False):
         reference = np.fromfile(reference_path, dtype="<f4").reshape(height, width)
         error = np.abs(reference - filtered)
         assert np.isfinite(reference).all(), "Reference contains NaN/Inf"
-        # The reference is R32F before output conversion. Discount only the unavoidable half-step of R8 rounding;
-        # keep the previous bounds on the remaining error, including its distribution and the worst pixel.
+        # Discount only R8 quantization; enforce the remaining absolute and distribution bounds.
         excess = np.maximum(error - 0.5 / 255.0, 0.0)
         strict_tolerance = 0.02 if mode == "raw" else 0.01
         max_tolerance = (0.05 if mode == "raw" else 0.02) if independent_normals else strict_tolerance

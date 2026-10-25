@@ -423,7 +423,7 @@ namespace nau::render
         {
             trySubmitSecondary(raw, horizontal, filtered, false);
         }
-        // Reduction/reference passes use a smaller viewport; G-buffer still renders at the full scene size.
+        // Restore the full viewport before G-buffer rendering.
         d3d::setview(0, 0, m_fullWidth, m_fullHeight, 0.0f, 1.0f);
     }
 
@@ -506,7 +506,6 @@ namespace nau::render
     void AmbientOcclusion::resolveFrame(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* filtered, BaseTexture* output)
     {
         bool fresh = false;
-        // Poll once before lighting; unfinished secondary work never stalls the primary queue.
         if (m_trySecondary && !m_forcedBusy && m_pendingFrame != 0)
         {
             const d3d::mgpu::SsaoResult result = d3d::mgpu::tryReceiveSsao(m_secondary, m_receiving, m_pendingCapture ? raw : nullptr);
@@ -540,7 +539,6 @@ namespace nau::render
                 m_pendingFrame = 0;
                 m_pendingCapture = false;
                 m_discardPending = false;
-                // Refill immediately from this frame's retained depth, without waiting for the next submit node.
                 trySubmitSecondary(raw, horizontal, filtered, true);
             }
             else if (result == d3d::mgpu::SsaoResult::failed)
@@ -569,7 +567,6 @@ namespace nau::render
             }
         }
         m_historyFrame = 0;
-        // Startup and actual failures use a primary result; a slow GPU 1 never stalls this path.
         if (!m_preparedNormals)
         {
             reconstructNormals(m_sourceNormals);

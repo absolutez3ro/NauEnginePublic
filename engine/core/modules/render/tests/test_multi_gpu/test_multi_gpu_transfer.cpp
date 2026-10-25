@@ -1,7 +1,6 @@
+#include <EASTL/finally.h>
 #include <dxgidebug.h>
 #include <gtest/gtest.h>
-
-#include <EASTL/finally.h>
 
 #include <cstring>
 
