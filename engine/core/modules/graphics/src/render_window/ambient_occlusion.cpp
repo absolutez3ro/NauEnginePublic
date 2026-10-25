@@ -170,6 +170,14 @@ namespace nau::render
         {
             m_receiving->destroy();
         }
+        if (m_historyDepth)
+        {
+            m_historyDepth->destroy();
+        }
+        if (m_pendingDepth)
+        {
+            m_pendingDepth->destroy();
+        }
         NAU_LOG_INFO("SSAO: shutdown, frames={}, secondary={}, primary={}, busy={}, reused={}, submitted={}, maxAge={}, resubmitted={}", m_frame, m_secondaryFrames, m_primaryFrames, m_busyFrames, m_reusedFrames, m_submittedFrames, m_maxHistoryAge, m_resubmittedFrames);
     }
 
@@ -257,6 +265,16 @@ namespace nau::render
                 m_receiving->destroy();
                 m_receiving = nullptr;
             }
+            if (m_historyDepth)
+            {
+                m_historyDepth->destroy();
+                m_historyDepth = nullptr;
+            }
+            if (m_pendingDepth)
+            {
+                m_pendingDepth->destroy();
+                m_pendingDepth = nullptr;
+            }
             m_pendingFrame = 0;
             m_pendingCapture = false;
             m_captureSubmitted = false;
@@ -291,7 +309,9 @@ namespace nau::render
             {
                 m_history = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_history");
                 m_receiving = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_receiving");
-                if (!m_history || !m_receiving)
+                m_historyDepth = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ssao_history_depth");
+                m_pendingDepth = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ssao_pending_depth");
+                if (!m_history || !m_receiving || !m_historyDepth || !m_pendingDepth)
                 {
                     d3d::report_secondary_gpu_failure(static_cast<uint32_t>(E_OUTOFMEMORY));
                 }
@@ -448,7 +468,15 @@ namespace nau::render
             }
             m_captureActive = false;
         }
-        const d3d::mgpu::SsaoResult result = d3d::mgpu::submitSsao(m_secondary, m_constants, m_blur, nullptr, m_depth, captureJob);
+        // Retain the exact input until its AO arrives; the graph depth is overwritten next frame.
+        if (!m_pendingDepth->update(m_depth))
+        {
+            d3d::report_secondary_gpu_failure(static_cast<uint32_t>(E_FAIL));
+            m_trySecondary = false;
+            m_historyFrame = 0;
+            return false;
+        }
+        const d3d::mgpu::SsaoResult result = d3d::mgpu::submitSsao(m_secondary, m_constants, m_blur, nullptr, m_pendingDepth, captureJob);
         if (result == d3d::mgpu::SsaoResult::submitted)
         {
             m_pendingFrame = m_frame;
@@ -491,6 +519,7 @@ namespace nau::render
                 if (!m_discardPending)
                 {
                     eastl::swap(m_history, m_receiving);
+                    eastl::swap(m_historyDepth, m_pendingDepth);
                     m_historyFrame = m_pendingFrame;
                     fresh = true;
                     if (m_pendingCapture)
@@ -498,6 +527,7 @@ namespace nau::render
                         m_captureActive = true;
                         capture(raw, "raw", 1);
                         capture(m_history, "filtered", 1);
+                        captureDepth(m_historyDepth, "history_depth");
                         m_captureActive = false;
                         m_captureDisplayFrame = m_frame;
                         NAU_LOG_INFO("SSAO: secondary capture frame={}, source={}", m_frame, m_historyFrame);
@@ -534,7 +564,7 @@ namespace nau::render
                     m_captureSubmitted = true;
                 }
                 m_captureActive = false;
-                upsample(filtered, output);
+                upsample(filtered, m_historyDepth, output);
                 return;
             }
         }
@@ -560,7 +590,7 @@ namespace nau::render
         m_captureActive = false;
         ++m_primaryFrames;
         updateDeviceStatus(false);
-        upsample(filtered, output);
+        upsample(filtered, m_depth, output);
     }
 
     bool AmbientOcclusion::reuseResult(BaseTexture* texture, bool fresh)
@@ -587,6 +617,7 @@ namespace nau::render
             capture(texture, "filtered", 1);
             capture(m_sourceNormals, "normals", 4);
             captureDepth();
+            captureDepth(m_historyDepth, "history_depth");
             NAU_LOG_INFO("SSAO: reused capture frame={}, source={}", m_frame, m_historyFrame);
         }
         return true;
@@ -641,11 +672,11 @@ namespace nau::render
         d3d::set_render_target();
     }
 
-    void AmbientOcclusion::upsample(BaseTexture* source, BaseTexture* target)
+    void AmbientOcclusion::upsample(BaseTexture* source, BaseTexture* sourceDepth, BaseTexture* target)
     {
         NAU_GPU_TIMER("ssao_upsample");
         m_blurMaterial->setProperty("upsample", "aoFilter", math::Vector4(0.0f, 0.0f, m_blurDepthThreshold, 1.0f));
-        d3d::settex(1, m_depth);
+        d3d::settex(1, sourceDepth);
         d3d::settex(2, source);
         d3d::settex(3, m_fullDepth);
         drawPipeline(target, "upsample");
@@ -654,6 +685,7 @@ namespace nau::render
             m_captureActive = true;
             capture(target, "resolved", 1);
             captureDepth(m_fullDepth, "resolve_depth");
+            captureDepth(sourceDepth, "resolve_low_depth");
             m_captureActive = false;
         }
     }

@@ -30,6 +30,17 @@ def verify(prefix, mode, independent_normals=False):
     resolved_path = Path(str(prefix) + "-resolved.f32")
     resolved = np.fromfile(resolved_path, dtype="<f4").reshape(display_height, display_width) if resolved_path.exists() else filtered
     assert np.isfinite(resolved).all() and resolved.min() >= 0 and resolved.max() <= 1, "Invalid resolved AO"
+    resolve_low_depth_path = Path(str(prefix) + "-resolve_low_depth.f32")
+    history_depth_path = Path(str(prefix) + "-history_depth.f32")
+    paired_depth = None
+    if resolve_low_depth_path.exists():
+        paired_depth = np.fromfile(resolve_low_depth_path, dtype="<f4").reshape(height, width)
+        assert np.isfinite(paired_depth).all() and paired_depth.min() >= 0 and paired_depth.max() <= 1, "Invalid retained AO depth"
+        source_depth = np.fromfile(history_depth_path, dtype="<f4").reshape(height, width) if history_depth_path.exists() else depth
+        assert np.array_equal(paired_depth, source_depth), "Upsampling did not retain the depth paired with its AO map"
+        if mode != "busy":
+            assert np.array_equal(paired_depth, depth), "Retained depth differs from the submitted source frame"
+        assert np.allclose(filtered[paired_depth == 0], 1.0, atol=1e-6), "History AO occludes its own source background"
     resolve_depth_path = Path(str(prefix) + "-resolve_depth.f32")
     if resolve_depth_path.exists():
         resolve_depth = np.fromfile(resolve_depth_path, dtype="<f4").reshape(display_height, display_width)
@@ -67,6 +78,9 @@ def verify(prefix, mode, independent_normals=False):
         "raw_mean": float(raw.mean()), "filtered_mean": float(filtered.mean()),
         "blur_changed_pixels": int(np.count_nonzero(np.abs(raw - filtered) > 0.5 / 255.0 + 1e-4)),
     }
+    if paired_depth is not None:
+        result["paired_depth_verified"] = True
+        result["paired_depth_differs_from_captured_depth_pixels"] = int(np.count_nonzero(paired_depth != depth))
     if mode == "busy":
         # Reuse intentionally belongs to an older camera/geometry; current depth cannot validate its old background.
         result["cached_ao_over_current_background_pixels"] = int(np.count_nonzero((depth == 0) & (filtered < 1.0)))

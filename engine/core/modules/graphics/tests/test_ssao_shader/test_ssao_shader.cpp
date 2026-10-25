@@ -381,6 +381,28 @@ namespace
         }
     }
 
+    TEST_F(SsaoShader, UpsamplingRejectsOcclusionFromDisplacedHistoryGeometry)
+    {
+        makeDepthStep(-2.7f);
+        m_constants.filter[2] = 0.1f;
+        m_fullDepth.resize(PIXELS, projectDepth(-3.0f));
+        for (UINT y = 0; y < HEIGHT; ++y)
+        {
+            for (UINT x = 0; x < WIDTH; ++x)
+            {
+                m_input[y * WIDTH + x] = x < WIDTH / 2 ? 0.2f : 0.8f;
+            }
+        }
+        const TestVector<float> result = render(false, false, {"PSUpsample"});
+        for (UINT y = 0; y < HEIGHT; ++y)
+        {
+            for (UINT x = 0; x < WIDTH; ++x)
+            {
+                ASSERT_NEAR(result[y * WIDTH + x], x < WIDTH / 2 ? 1.0f : 0.8f, 0.0001f);
+            }
+        }
+    }
+
     TEST_F(SsaoShader, DepthNormalsMatchAnAnalyticTiltedPlaneIncludingImageBorders)
     {
         const float expectedX = 0.5f - std::sqrt(0.1f) * 0.5f;

@@ -123,7 +123,8 @@ try {
         if ($CaptureFrame -gt 0) {
             $suffixes = @('filtered.f32', 'normals.f32', 'depth.f32', 'scene.ppm')
             if ($Device -eq 'busy') { $suffixes += 'history.f32' } else { $suffixes += 'raw.f32' }
-            $suffixes += @('resolved.f32', 'resolve_depth.f32')
+            $suffixes += @('resolved.f32', 'resolve_depth.f32', 'resolve_low_depth.f32')
+            if ($result.captureSourceFrame -ne $result.captureDisplayFrame -or $Device -eq 'busy') { $suffixes += 'history_depth.f32' }
             if ($config.sample.ssao.validateSecondary -and $Mode -ne 'off') { $suffixes += 'reference.f32' }
         }
         foreach ($suffix in $suffixes) {

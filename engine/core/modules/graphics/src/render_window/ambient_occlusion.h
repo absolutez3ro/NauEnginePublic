@@ -68,7 +68,7 @@ namespace nau::render
         void draw(BaseTexture* target, MaterialAssetView& material);
         void reconstructNormals(BaseTexture* target);
         void drawPipeline(BaseTexture* target, const char* pipeline);
-        void upsample(BaseTexture* source, BaseTexture* target);
+        void upsample(BaseTexture* source, BaseTexture* sourceDepth, BaseTexture* target);
         void capture(BaseTexture* texture, const char* name, uint32_t components) const;
         void captureDepth(BaseTexture* source = nullptr, const char* name = "depth") const;
         void prepareSecondary(BaseTexture* target);
@@ -108,6 +108,8 @@ namespace nau::render
         double m_titleFrameMilliseconds = 0.0;
         BaseTexture* m_history = nullptr;
         BaseTexture* m_receiving = nullptr;
+        BaseTexture* m_historyDepth = nullptr;
+        BaseTexture* m_pendingDepth = nullptr;
         bool m_pendingCapture = false;
         bool m_discardPending = false;
         bool m_captureSubmitted = false;
