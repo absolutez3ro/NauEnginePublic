@@ -13,6 +13,7 @@ param(
     [switch]$Profile,
     [switch]$NoVsync,
     [switch]$SerializeRenderJobs,
+    [switch]$TraceSubmissions,
     [ValidateSet(1, 2)]
     [int]$ResolutionDivisor = 2,
     [ValidatePattern('^[a-zA-Z0-9_-]+$')]
@@ -52,6 +53,7 @@ try {
         autoSwitchFrames = $(if ($Mode -eq 'switch') { 60 } else { 0 })
         useSecondary = $Device -ne 'primary'
         validateSecondary = !$Profile -and $Device -in @('secondary', 'warp', 'device-switch', 'busy-first')
+        traceSubmissions = [bool]$TraceSubmissions
         autoDeviceSwitchFrames = $(if ($Device -eq 'device-switch') { 1000 } else { 0 })
         failAtFrame = $(if ($Device -eq 'fallback') { 3 } else { 0 })
         busyAtFrame = $(if ($Device -eq 'busy') { $CaptureFrame } elseif ($Device -eq 'busy-first') { 1 } else { 0 })
@@ -97,6 +99,9 @@ try {
     }
     $pipeline = [regex]::Match($log, 'reused=\d+, submitted=(\d+), maxAge=(\d+)')
     $result.submitted = $(if ($pipeline.Success) { [long]$pipeline.Groups[1].Value } else { 0 })
+    $resubmitted = [regex]::Match($log, 'maxAge=\d+, resubmitted=(\d+)')
+    $result.resubmitted = $(if ($resubmitted.Success) { [long]$resubmitted.Groups[1].Value } else { 0 })
+    $result.traceSubmissions = [bool]$TraceSubmissions
     $result.maxHistoryAge = $(if ($pipeline.Success) { [long]$pipeline.Groups[2].Value } else { 0 })
     $secondaryCaptures = [regex]::Matches($log, 'SSAO: secondary capture frame=(\d+), source=(\d+)')
     $secondaryCapture = if ($secondaryCaptures.Count -gt 0) { $secondaryCaptures[$secondaryCaptures.Count - 1] } else { [regex]::Match('', 'capture') }

@@ -63,7 +63,7 @@ Follow [`submitSsao` / `tryReceiveSsao`](../engine/core/modules/render/src/drv3d
 3. Make the technique's DIRECT queue wait for all input-ready points. Execute the pass and signal output readiness.
 4. Send the output with that ready point. Retain `sourceReleased` and wait for it before overwriting the output.
 5. Retain the output ticket across frames. Poll `is_transfer_ready` before receiving it into the alternate tracked engine destination. Publish only a completed older result; if it is not ready, reuse the existing map. The receive still synchronizes its local destination copy.
-6. Submit the next input set after the outstanding job is consumed; skip inputs while busy to keep GPU 0 free of secondary backpressure. SSAO uses three shared slots and two persistent primary AO maps.
+6. After consuming a ready result, immediately try to submit current inputs in the same late node; waiting for the next frame's early submit node wastes a submission opportunity. Skip while busy and submit each source frame at most once, including when an early job finishes in the same frame. SSAO keeps one outstanding job, three shared slots and two persistent primary AO maps.
 
 Native endpoints must be in `D3D12_RESOURCE_STATE_COMMON` when copying begins. The technique owns its DIRECT-queue transitions. Engine textures must be tracked and use `TEXCF_RTARGET`, `TEXCF_UNORDERED` or `TEXCF_UPDATE_DESTINATION`. Payload size, layout and endpoint formats must match the channel's supported copy contract.
 

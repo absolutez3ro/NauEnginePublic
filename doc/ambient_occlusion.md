@@ -62,7 +62,7 @@ After prepass, submit current reduced depth only if no job is outstanding and th
 
 Immediately before lighting, poll `is_transfer_ready`. If the source COPY is pending, keep history and issue no receive/wait for that ticket. Otherwise copy into the alternate persistent GPU 0 AO texture, swap maps and upsample the published map. Reception still orders a local GPU 0 copy against earlier destination uses.
 
-Latency is not fixed: same-frame completion is permitted if already ready at the late poll, otherwise an older map is reused. A job consumed late frees submission for the next frame. Only one secondary job is outstanding; slower GPU 1 skips inputs. Startup without history and actual failure compute locally at the selected AO resolution. This adapts available-result reuse in [HybridSSAOApp by Bogdanov M.K.](https://github.com/Mikhanil/Multi-GPU-Render-DX12/blob/9146f83f4251a2b8acd4e9cc361f9367be597a4c/MGPU-SSAO/HybridSSAOApp.cpp#L215) to Nau's channels/fences. The compatibility `renderSsao` API still schedules an immediate GPU wait; the sample uses the split API.
+Latency is not fixed: same-frame completion is permitted if already ready at the late poll, otherwise an older map is reused. After consuming a job, `ssao_receive` immediately tries to submit current retained depth through the same path as `ssao_submit`; it does not leave the secondary idle until the next frame. The old ticket is cleared first. At most one job is submitted for each source frame, even if an early submission already completed in that frame. If the native slot/channel is still busy, the new attempt is skipped without waiting. Only one secondary job is outstanding; slower GPU 1 skips inputs. Startup without history and actual failure compute locally at the selected AO resolution. This adapts available-result reuse in [HybridSSAOApp by Bogdanov M.K.](https://github.com/Mikhanil/Multi-GPU-Render-DX12/blob/9146f83f4251a2b8acd4e9cc361f9367be597a4c/MGPU-SSAO/HybridSSAOApp.cpp#L215) to Nau's channels/fences. The compatibility `renderSsao` API still schedules an immediate GPU wait; the sample uses the split API.
 
 Constants occupy a 224-byte cbuffer with aligned slots. Slots are reused only after their work completes. Frame submission does not wait for completion on the CPU:
 
@@ -127,11 +127,23 @@ ctest --test-dir build/multi_gpu_tests -C Debug --output-on-failure
 
 Use `-Profile -CaptureFrame 0` for timing runs, or set `NAU_GPU_PROFILER=1` in the process launching the executable. The log's `GPU profiler enabled` line gives the CSV path. See [measurement methodology and WARP example](ambient_occlusion_measurements.md).
 
-The profiler records primary `Frame`, primary AO passes when used, primary `ssao_snapshot_depth`, `ssao_reduce_depth`, `ssao_upsample`, secondary `ssao_reconstruct_normals`, `ssao_raw`, `ssao_blur_h`, `ssao_blur_v`, and COPY halves for `ssao_depth`, `ssao_result`. Each queue has its own timestamp frequency; cross-queue intervals use clock calibration. Unsupported COPY timestamps are omitted with a warning rather than written as zero. The optional transfer observer remains alive until both channel queues drain. Shutdown also reports `submitted` jobs and maximum displayed history age (`maxAge`). `secondary + primary + reused = frames` counts displayed frames; `submitted` counts jobs sent to GPU 1.
+The profiler records primary `Frame`, primary AO passes when used, primary `ssao_snapshot_depth`, `ssao_reduce_depth`, `ssao_upsample`, secondary `ssao_reconstruct_normals`, `ssao_raw`, `ssao_blur_h`, `ssao_blur_v`, and COPY halves for `ssao_depth`, `ssao_result`. Each queue has its own timestamp frequency; cross-queue intervals use clock calibration. Unsupported COPY timestamps are omitted with a warning rather than written as zero. The optional transfer observer remains alive until both channel queues drain. Shutdown also reports `submitted` jobs, `resubmitted` jobs queued from the receive node, and maximum displayed history age (`maxAge`). `secondary + primary + reused = frames` counts displayed frames; `submitted` counts jobs sent to GPU 1.
 
 The CSV mode label comes from startup configuration; F7/F8 do not update it. Compare separate runs. Primary `Frame` includes local input/output copies, but pipelined SSAO does not insert a wait for an unfinished secondary AO job. Presentation defaults to vsync; set `video.vsync=false` and `video.adaptive_vsync=false`, or use the runner's `-NoVsync` flag. The engine no longer drains GPU work twice around pre-render jobs by default; [frame scheduling](render_frame_scheduling.md) documents the diagnostic serialization option. GPU timings alone do not prove useful overlap or a speedup. Hardware-pair performance has not been established by the WARP measurements.
 
 Device recovery requires destroying and recreating technique owners around driver recovery. Channel shutdown retains blocking waits. Rare shutdown failures during asynchronous texture loading and `cache/dx12.cache` errors remain unresolved; this implementation does not claim to fix them.
+
+## Check late-node refill
+
+The optional `sample.ssao.traceSubmissions=true` setting logs source-frame submission, reception and resize retirement. It is off by default and should stay off for performance measurements. The runner enables it with `-TraceSubmissions`:
+
+```powershell
+./tools/scripts/run_ssao_demo.ps1 -Device warp -Mode lit -NoVsync -CaptureFrame 500 -TraceSubmissions -Seconds 30 -Label refill
+python tools/scripts/verify_ssao_capture.py build/ssao-runtime/warp-lit-refill --mode lit --independent-normals
+python tools/scripts/verify_ssao_submission_trace.py build/ssao-runtime/warp-lit-refill.stdout.log --require-refill
+```
+
+The trace check pairs every result with its submitted source, rejects a second outstanding job or duplicate submission of a source frame, and verifies that each late refill immediately follows reception in the same frame. It reconciles the trace with `submitted`/`resubmitted` counters. Same-frame receptions are permitted but do not cause another submission of that source frame. Resize retires the pending job; mode/device switches discard obsolete results before refilling from current inputs.
 
 ## Source map
 

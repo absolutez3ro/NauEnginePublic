@@ -72,6 +72,7 @@ namespace nau::render
         void capture(BaseTexture* texture, const char* name, uint32_t components) const;
         void captureDepth(BaseTexture* source = nullptr, const char* name = "depth") const;
         void prepareSecondary(BaseTexture* target);
+        bool trySubmitSecondary(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* filtered, bool afterReceive);
         void updateDeviceStatus(bool secondary, bool reused = false);
         bool reuseResult(BaseTexture* texture, bool fresh);
 
@@ -95,6 +96,8 @@ namespace nau::render
         uint32_t m_historyFrame = 0;
         uint32_t m_pendingFrame = 0;
         uint32_t m_submittedFrames = 0;
+        uint32_t m_resubmittedFrames = 0;
+        uint32_t m_lastSubmittedFrame = 0;
         uint32_t m_maxHistoryAge = 0;
         uint32_t m_captureDisplayFrame = 0;
         uint32_t m_busyAtFrame = 0;
@@ -116,6 +119,7 @@ namespace nau::render
         bool m_secondaryAttempted = false;
         bool m_requestedSecondary = true;
         bool m_validateSecondary = false;
+        bool m_traceSubmissions = false;
         bool m_warpForTesting = false;
         BaseTexture* m_normals = nullptr;
         BaseTexture* m_sourceNormals = nullptr;
