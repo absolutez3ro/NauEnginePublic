@@ -269,15 +269,18 @@ namespace nau::render
 
         if (m_swapchain == DEFAULT_SWAPID)
         {
+            // Initialize the UI before game updates can cache their first frame.
+            // A graph declaration can run later, concurrently with those updates.
+            imgui_switch_state();
+            imgui_update();
+            imgui_endframe();
+
             m_debugNodes.addNode(
                 dabfg::register_node(nau::utils::format("{}_{}", "debug_gui", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
             {
                 registry.orderMeAfter(nau::utils::format("{}_{}", "nau_gui", m_swapchain).c_str());
                 registry.executionHas(dabfg::SideEffects::External);
 
-                imgui_switch_state();
-                imgui_update();  // invoke init on demand
-                imgui_endframe();
                 return [this]()
                 {
                     setRenderTarget();
