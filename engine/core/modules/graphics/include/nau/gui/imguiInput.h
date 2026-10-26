@@ -5,6 +5,8 @@
 #pragma once
 
 #include <EASTL/functional.h>
+
+#include "nau/graphics/graphics_config.h"
 #include "nau/math/math.h"
 
 using GlobalInputHandler = eastl::function<bool(/*key_down*/ bool, /*key_idx*/ int, /*key_modif*/ unsigned int)>;

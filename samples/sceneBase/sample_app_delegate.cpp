@@ -3,8 +3,6 @@
 
 #include "nau/samples/sample_app_delegate.h"
 
-#include <EASTL/algorithm.h>
-
 #include "./sample_components/asset_reloader.h"
 #include "./sample_components/scene_reloader.h"
 #include "./sample_components/window_maker.h"
@@ -24,37 +22,39 @@
 
 namespace nau::sample
 {
-    class AmbientOcclusionSampleInput final : public IWindowMessageHandler,
-                                              public IRttiObject
+    namespace
     {
-        NAU_RTTI_CLASS(nau::sample::AmbientOcclusionSampleInput, IWindowMessageHandler, IRttiObject)
-
-    public:
-        AmbientOcclusionSampleInput() :
-            m_mode(eastl::min(getServiceProvider().get<GlobalProperties>().getValue<uint32_t>("render/ssao/mode").value_or(1), 2u))
+        class AmbientOcclusionSampleInput final : public IWindowMessageHandler,
+                                                  public IRttiObject
         {
-        }
+            NAU_RTTI_CLASS(nau::sample::AmbientOcclusionSampleInput, IWindowMessageHandler, IRttiObject)
 
-        bool handleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM) override
-        {
-            if (message != WM_KEYUP || wParam != VK_F7)
-            {
-                return false;
-            }
-            auto* graphics = getServiceProvider().find<ICoreGraphics>();
-            auto window = graphics ? graphics->getDefaultRenderWindow().lock() : nullptr;
-            if (!window || window->getHwnd() != hwnd)
-            {
-                return false;
-            }
-            m_mode = (m_mode + 1u) % 3u;
-            window->setAmbientOcclusionMode(static_cast<render::AmbientOcclusionMode>(m_mode));
-            return true;
-        }
+        public:
+            AmbientOcclusionSampleInput() = default;
+            AmbientOcclusionSampleInput(const AmbientOcclusionSampleInput&) = delete;
+            AmbientOcclusionSampleInput(AmbientOcclusionSampleInput&&) = delete;
+            AmbientOcclusionSampleInput& operator=(const AmbientOcclusionSampleInput&) = delete;
+            AmbientOcclusionSampleInput& operator=(AmbientOcclusionSampleInput&&) = delete;
+            ~AmbientOcclusionSampleInput() = default;
 
-    private:
-        uint32_t m_mode;
-    };
+            bool handleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM) override
+            {
+                if (message != WM_KEYUP || wParam != VK_F7)
+                {
+                    return false;
+                }
+                ICoreGraphics* const graphics = getServiceProvider().find<ICoreGraphics>();
+                const render::IRenderWindow::Ptr window = graphics ? graphics->getDefaultRenderWindow().lock() : nullptr;
+                if (!window || window->getHwnd() != hwnd)
+                {
+                    return false;
+                }
+                const uint32_t mode = static_cast<uint32_t>(window->getAmbientOcclusionMode());
+                window->setAmbientOcclusionMode(static_cast<render::AmbientOcclusionMode>((mode + 1u) % 3u));
+                return true;
+            }
+        };
+    }  // namespace
 
     class DemoSceneListener final : public scene::ISceneListener
     {

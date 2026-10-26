@@ -1,16 +1,16 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
+#include <EASTL/optional.h>
 
 #include "graphics_assets/texture_asset.h"
+#include "nau/debugRenderer/debug_render_system.h"
 #include "nau/gui/imguiInput.h"
 #include "nau/image/dag_texPixel.h"
-#include "nau/shaders/shader_globals.h"
 #include "nau/shaders/dag_renderStateId.h"
-#include "nau/debugRenderer/debug_render_system.h"
+#include "nau/shaders/shader_globals.h"
 #include "render/daBfg/bfg.h"
 #include "render_window_impl.h"
-
 
 namespace nau::render
 {
@@ -141,7 +141,7 @@ namespace nau::render
             dabfg::register_node(nau::utils::format("{}_{}", "gbuffer_resolve", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
             registry.orderMeAfter(nau::utils::format("{}_{}", "CSM", m_swapchain).c_str());
-            std::optional<dabfg::VirtualResourceHandle<const BaseTexture, true, false>> ambientOcclusion;
+            eastl::optional<dabfg::VirtualResourceHandle<const BaseTexture, true, false>> ambientOcclusion;
             if (m_ambientOcclusion)
             {
                 ambientOcclusion = registry.readTexture(nau::utils::format("ssao_texture_{}", m_swapchain).c_str())

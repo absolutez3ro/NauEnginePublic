@@ -1,7 +1,7 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
-
+#include <EASTL/optional.h>
 #include <nau/assets/asset_manager.h>
 
 #include "graphics_impl.h"
@@ -9,7 +9,6 @@
 #include "nau/gui/imguiInput.h"
 #include "nau/ui.h"
 #include "render_window_impl.h"
-
 
 namespace nau::render
 {
@@ -38,6 +37,7 @@ namespace nau::render
         if (m_swapchain == DEFAULT_SWAPID && AmbientOcclusion::isRequested())
         {
             m_ambientOcclusion = eastl::make_unique<AmbientOcclusion>();
+            setAmbientOcclusionMode(AmbientOcclusion::getInitialMode());
             loadTasks.push(m_ambientOcclusion->loadAssets());
         }
 
@@ -67,11 +67,6 @@ namespace nau::render
         loadTasks.push(openMaterialAsset({"file:/res/materials/pp_deferred_resolve.nmat_json"}, matPPResolve));
 
         co_await loadTasks.awaitCompletion();
-
-        if (m_ambientOcclusion)
-        {
-            setAmbientOcclusionMode(m_ambientOcclusion->getMode());
-        }
 
         if (!shader_globals::containsName("ssaoControl"))
         {
@@ -179,7 +174,7 @@ namespace nau::render
         m_postFxNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "post_fx_nodes", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
-            std::optional<dabfg::VirtualResourceHandle<const BaseTexture, true, false>> ambientOcclusion;
+            eastl::optional<dabfg::VirtualResourceHandle<const BaseTexture, true, false>> ambientOcclusion;
             if (m_ambientOcclusion)
             {
                 ambientOcclusion = registry.readTexture(nau::utils::format("ssao_texture_{}", m_swapchain).c_str())

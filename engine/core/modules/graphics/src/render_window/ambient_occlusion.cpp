@@ -31,6 +31,11 @@ namespace nau::render
         return readSetting<bool>("render/ssao/enabled", false);
     }
 
+    AmbientOcclusionMode AmbientOcclusion::getInitialMode()
+    {
+        return static_cast<AmbientOcclusionMode>(eastl::min(readSetting<uint32_t>("render/ssao/mode", 1), 2u));
+    }
+
     async::Task<> AmbientOcclusion::loadAssets()
     {
         MaterialAssetRef raw{"file:/res/materials/ssao.nmat_json"};
@@ -46,14 +51,8 @@ namespace nau::render
         const float epsilon = readFiniteSetting("render/ssao/surfaceEpsilon", 0.05f, 0.0001f, fadeEnd);
         m_parameters = math::Vector4(radius, fadeStart, fadeEnd, epsilon);
         m_blurDepthThreshold = readFiniteSetting("render/ssao/blurDepthThreshold", 0.2f, 0.0f, 10.0f);
-        m_mode = static_cast<AmbientOcclusionMode>(eastl::min(readSetting<uint32_t>("render/ssao/mode", 1), 2u));
         m_blur = readSetting<bool>("render/ssao/blur", true);
-        NAU_LOG_INFO("SSAO: full resolution, G-buffer normals, mode={}", static_cast<uint32_t>(m_mode));
-    }
-
-    AmbientOcclusionMode AmbientOcclusion::getMode() const
-    {
-        return m_mode;
+        NAU_LOG_INFO("SSAO: full resolution, G-buffer normals");
     }
 
     void AmbientOcclusion::beginFrame(const math::Matrix4& view, const math::Matrix4& projection, AmbientOcclusionMode mode)
@@ -77,7 +76,7 @@ namespace nau::render
     {
         d3d::set_render_target();
         d3d::set_depth(nullptr, DepthAccess::RW);
-        if (m_mode == AmbientOcclusionMode::Off)
+        if (m_mode == AmbientOcclusionMode::off)
         {
             d3d::set_render_target(output, 0);
             d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
@@ -147,11 +146,11 @@ namespace nau::render
 
     bool AmbientOcclusion::isDebugView() const
     {
-        return m_mode == AmbientOcclusionMode::Debug;
+        return m_mode == AmbientOcclusionMode::debug;
     }
 
     math::Vector4 AmbientOcclusion::getResolveControl() const
     {
-        return math::Vector4(m_mode != AmbientOcclusionMode::Off ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+        return math::Vector4(m_mode != AmbientOcclusionMode::off ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
     }
 }  // namespace nau::render

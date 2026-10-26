@@ -259,7 +259,7 @@ namespace nau::sample
         auto& sceneFactory = getServiceProvider().get<scene::ISceneFactory>();
 
         {  // choose camera control kind: from scene object or standalone detached camera (from cam. manager):
-            auto& properties = getServiceProvider().get<GlobalProperties>();
+            GlobalProperties& properties = getServiceProvider().get<GlobalProperties>();
             const bool overview = properties.getValue<bool>("sample/camera/overview").value_or(false);
             const CamControlKind cameraControlKind = overview ? CamControlKind::UseSceneObject : CamControlKind::UseCameraManager;
 
