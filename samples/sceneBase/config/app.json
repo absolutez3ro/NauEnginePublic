@@ -18,7 +18,26 @@
     "sample": {
         "assetsToReload": [
             "file:/content/textures/rusted_pbr/rusted_albedo_ao.png"
-        ]
+        ],
+        "camera": {
+            "overview": false,
+            "x": 0.0,
+            "y": 5.0,
+            "z": 10.0,
+            "pitch": -0.25
+        }
+    },
+    "render": {
+        "ssao": {
+            "enabled": true,
+            "mode": 1,
+            "radius": 0.5,
+            "fadeStart": 0.2,
+            "fadeEnd": 1.0,
+            "surfaceEpsilon": 0.05,
+            "blur": true,
+            "blurDepthThreshold": 0.2
+        }
     },
     "contentPath": "test"
 }

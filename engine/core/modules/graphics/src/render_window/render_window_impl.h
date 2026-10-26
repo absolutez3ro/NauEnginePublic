@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "ambient_occlusion.h"
 #include "graphics_nodes.h"
 #include "graphics_scene.h"
 #include "nau/async/work_queue.h"
@@ -54,6 +55,8 @@ namespace nau::render
 
         int32_t getMainCameraIndex() override;
         void setMainCameraIndex(int32_t ind) override;
+        AmbientOcclusionMode getAmbientOcclusionMode() const override;
+        void setAmbientOcclusionMode(AmbientOcclusionMode mode) override;
 
         async::Task<> createRenderGraph();
 
@@ -71,6 +74,7 @@ namespace nau::render
 
     private:
         void createGBufferNodes();
+        void createAmbientOcclusionNode();
         void createOutlineNodes();
 
         void resizeResolutions();
@@ -119,6 +123,8 @@ namespace nau::render
         nau::Uid m_world = nau::NullUid;
         eastl::shared_ptr<GraphicsScene> m_graphicsScene = nullptr;
 
+        eastl::unique_ptr<AmbientOcclusion> m_ambientOcclusion;
+        std::atomic<AmbientOcclusionMode> m_ambientOcclusionMode = AmbientOcclusionMode::lighting;
         eastl::unique_ptr<render::PostFxRenderer> m_postFXRenderer;
         eastl::unique_ptr<render::EnvironmentRenderer> m_environmentRenderer;
 

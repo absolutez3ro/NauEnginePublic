@@ -1,0 +1,121 @@
+{
+    "name": "ssao_blur",
+    "pipelines": {
+        "default": {
+            "properties": {
+                "aoProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoInverseProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoView": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoParameters": [
+                    0.5,
+                    0.2,
+                    1,
+                    0.05
+                ],
+                "aoFilter": [
+                    0,
+                    0,
+                    0.2,
+                    1
+                ],
+                "aoNormals": "file:/content/textures/white_8x8.png",
+                "aoDepth": "file:/content/textures/white_8x8.png",
+                "aoInput": "file:/content/textures/white_8x8.png"
+            },
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psmain]"
+            ],
+            "cullMode": "None",
+            "depthMode": "Disabled",
+            "blendMode": "Opaque"
+        },
+        "debug": {
+            "blendMode": "Opaque",
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psdebug]"
+            ],
+            "cullMode": "None",
+            "properties": {
+                "aoInput": "file:/content/textures/white_8x8.png"
+            },
+            "depthMode": "Disabled"
+        }
+    }
+}

@@ -15,7 +15,7 @@ bool imgui_handle_special_keys_up(bool ctrl, bool shift, bool alt, int btn_idx, 
 void imgui_register_global_input_handler(GlobalInputHandler);
 
 bool imgui_in_hybrid_input_mode();
-void imgui_use_hybrid_input_mode(bool);
+NAU_GRAPHICS_EXPORT void imgui_use_hybrid_input_mode(bool);
 void imgui_switch_state();
 void imgui_switch_overlay();
 void imgui_set_viewport_offset(int offsetX, int offsetY);
