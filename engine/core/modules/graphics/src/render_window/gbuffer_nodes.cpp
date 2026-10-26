@@ -141,6 +141,14 @@ namespace nau::render
             dabfg::register_node(nau::utils::format("{}_{}", "gbuffer_resolve", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
             registry.orderMeAfter(nau::utils::format("{}_{}", "CSM", m_swapchain).c_str());
+            std::optional<dabfg::VirtualResourceHandle<const BaseTexture, true, false>> ambientOcclusion;
+            if (m_ambientOcclusion)
+            {
+                ambientOcclusion = registry.readTexture(nau::utils::format("ssao_texture_{}", m_swapchain).c_str())
+                                       .atStage(dabfg::Stage::PS_OR_CS)
+                                       .useAs(dabfg::Usage::SHADER_RESOURCE)
+                                       .handle();
+            }
 
             auto resolveTarget = registry
                                      .createTexture2d(nau::utils::format("{}_{}", "resolve_texture", m_swapchain).c_str(), dabfg::History::ClearZeroOnFirstFrame,
@@ -150,7 +158,7 @@ namespace nau::render
                                      .useAs(dabfg::Usage::COLOR_ATTACHMENT)
                                      .handle();
 
-            return [resolveTarget, this]()
+            return [resolveTarget, ambientOcclusion, this]()
             {
                 if (m_graphicsScene->hasCamera())
                 {
@@ -183,6 +191,10 @@ namespace nau::render
                     const auto envIntensityVec = math::Vector4(envIntensity, 0, 0, 0);
                     shader_globals::setVariable("envIntensity", &envIntensityVec);
 
+                    const math::Vector4 ssaoControl = m_ambientOcclusion ? m_ambientOcclusion->getResolveControl() : math::Vector4(0.0f);
+                    shader_globals::setVariable("ssaoControl", &ssaoControl);
+                    // Bind an existing G-buffer SRV when SSAO is absent; the shader bypasses it.
+                    d3d::settex(6, ambientOcclusion ? const_cast<BaseTexture*>(ambientOcclusion->get()) : m_gBuffer->getRt(0));
                     m_csm->setCascadesToShader(m_gBuffer->getResolveShading()->getMaterial());
                     m_gBuffer->resolve(resolveTarget.get(),
                                        m_environmentRenderer->getIrradianceMap(),
@@ -199,7 +211,7 @@ namespace nau::render
                     m_graphicsScene->renderLights();
 
                     m_gBuffer->flushResolve();
-
+                    d3d::settex(6, nullptr);
                 }
             };
         }));
@@ -274,6 +286,48 @@ namespace nau::render
                 d3d::set_depth(m_gBuffer->getDepth(), DepthAccess::RW);
 
                 m_graphicsScene->renderTranslucency();
+            };
+        }));
+    }
+
+    void RenderWindowImpl::createAmbientOcclusionNode()
+    {
+        if (!m_ambientOcclusion)
+        {
+            return;
+        }
+        m_gBufferNodes.addNode(dabfg::register_node(nau::utils::format("ssao_{}", m_swapchain).c_str(), DABFG_PP_NODE_SRC,
+                                                    [this](dabfg::Registry registry)
+        {
+            registry.orderMeAfter(nau::utils::format("fill_gbuffer_{}", m_swapchain).c_str());
+            registry.orderMeBefore(nau::utils::format("CSM_{}", m_swapchain).c_str());
+            registry.executionHas(dabfg::SideEffects::External);
+            const auto createTarget = [this, &registry](const char* name, uint32_t format)
+            {
+                return registry.createTexture2d(nau::utils::format("{}_{}", name, m_swapchain).c_str(), dabfg::History::No,
+                                                dabfg::Texture2dCreateInfo{format | TEXCF_RTARGET, registry.getResolution(m_resolutionName.c_str())})
+                    .atStage(dabfg::Stage::POST_RASTER)
+                    .useAs(dabfg::Usage::COLOR_ATTACHMENT)
+                    .handle();
+            };
+            const auto raw = createTarget("ssao_raw_texture", TEXFMT_R32F);
+            const auto horizontal = createTarget("ssao_horizontal_texture", TEXFMT_R32F);
+            const auto output = createTarget("ssao_texture", TEXFMT_R8);
+            return [this, raw, horizontal, output]()
+            {
+                if (!m_graphicsScene->hasCamera())
+                {
+                    d3d::set_render_target();
+                    d3d::set_depth(nullptr, DepthAccess::RW);
+                    d3d::set_render_target(output.get(), 0);
+                    d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
+                    d3d::set_render_target();
+                    return;
+                }
+                const CameraNode& camera = m_graphicsScene->getMainCamera();
+                d3d::setview(0, 0, m_gBuffer->getWidth(), m_gBuffer->getHeight(), 0.0f, 1.0f);
+                m_ambientOcclusion->beginFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), m_windowHandle);
+                m_ambientOcclusion->render(raw.get(), horizontal.get(), output.get(), m_gBuffer->getRt(1), m_gBuffer->getDepth());
             };
         }));
     }
