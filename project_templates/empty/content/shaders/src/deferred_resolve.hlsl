@@ -11,6 +11,7 @@
 
 TextureCube irradianceMap: register(t4);
 TextureCube reflectionMap: register(t5);
+Texture2D<float> ssaoMap : register(t6);
 
 GLOBAL_CBUFFER(SceneBuffer) : register(b0)
 {
@@ -19,6 +20,7 @@ GLOBAL_CBUFFER(SceneBuffer) : register(b0)
     float4 lightDirection;
     float4 lightColorIntensity;
     float4 envIntensity;
+    float4 ssaoControl; // Apply screen-space AO to ambient lighting.
 };
 
 VsOutputResolve VSMain(uint id : SV_VertexID)
@@ -46,6 +48,10 @@ float4 PSMain(VsOutputResolve input) : SV_Target
     }
     
     ProcessedGbuffer gbuffer = readProcessedGbuffer(input.texCoord);
+    if (ssaoControl.x > 0.0)
+    {
+        gbuffer.ao *= ssaoMap.Load(int3(int2(input.position.xy), 0));
+    }
 
     // depth / viewpos
     float4 farpos = float4(input.texCoord.x * 2 - 1, (1 - input.texCoord.y) * 2 - 1, rawDepth, 1.0);

@@ -28,6 +28,13 @@ namespace nau::render
 
     NAU_DEFINE_TYPED_FLAG(NauRenderStage)
 
+    enum class AmbientOcclusionMode : uint32_t
+    {
+        off = 0,
+        lighting = 1,
+        debug = 2
+    };
+
     struct NAU_ABSTRACT_TYPE IRenderWindow : public virtual IRefCounted
     {
         NAU_INTERFACE(nau::render::IRenderWindow, IRefCounted)
@@ -40,6 +47,18 @@ namespace nau::render
 
         virtual int32_t getMainCameraIndex() = 0;
         virtual void setMainCameraIndex(int32_t ind) = 0;
+
+        /**
+         * @brief Returns the most recently requested SSAO mode. Thread safe.
+         * @return The requested mode, independent of whether SSAO was enabled at startup.
+         */
+        virtual AmbientOcclusionMode getAmbientOcclusionMode() const = 0;
+        /**
+         * @brief Requests a mode for SSAO enabled at startup, preserving its resources. Thread safe.
+         * With render/ssao/enabled=false this has no rendering effect and cannot enable SSAO at runtime.
+         * @param mode The requested SSAO mode.
+         */
+        virtual void setAmbientOcclusionMode(AmbientOcclusionMode mode) = 0;
 
         virtual async::Task<> requestViewportResize(int32_t width, int32_t height) = 0;
         virtual async::Task<> requestViewportResizeImmediate(int32_t width, int32_t height) = 0;
