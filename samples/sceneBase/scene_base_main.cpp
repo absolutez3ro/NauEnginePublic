@@ -260,8 +260,8 @@ namespace nau::sample
 
         {  // choose camera control kind: from scene object or standalone detached camera (from cam. manager):
             auto& properties = getServiceProvider().get<GlobalProperties>();
-            const bool ssaoOverview = properties.getValue<bool>("sample/ssao/enabled").value_or(false);
-            const CamControlKind cameraControlKind = ssaoOverview ? CamControlKind::UseSceneObject : CamControlKind::UseCameraManager;
+            const bool overview = properties.getValue<bool>("sample/camera/overview").value_or(false);
+            const CamControlKind cameraControlKind = overview ? CamControlKind::UseSceneObject : CamControlKind::UseCameraManager;
 
             auto scene_00 = sceneFactory.createEmptyScene();
             scene_00->setName("scene_00");
@@ -277,7 +277,7 @@ namespace nau::sample
             }
             cameraObject->setName("Camera.Main");
             CameraControl& cameraControl = cameraObject->addComponent<CameraControl>();
-            if (!ssaoOverview)
+            if (!overview)
             {
                 cameraControl.setCamControlKind(cameraControlKind);
             }
@@ -297,14 +297,14 @@ namespace nau::sample
             
 
             co_await sceneManager.activateScene(std::move(scene_00));
-            if (ssaoOverview)
+            if (overview)
             {
                 // Select the scene camera after activation, then start above the helmet.
                 cameraControl.setCamControlKind(cameraControlKind);
-                cameraObject->setTranslation({properties.getValue<float>("sample/ssao/camera/x").value_or(0.0f),
-                                              properties.getValue<float>("sample/ssao/camera/y").value_or(5.0f),
-                                              properties.getValue<float>("sample/ssao/camera/z").value_or(10.0f)});
-                cameraObject->setRotation(math::quat::rotationX(properties.getValue<float>("sample/ssao/camera/pitch").value_or(-0.25f)));
+                cameraObject->setTranslation({properties.getValue<float>("sample/camera/x").value_or(0.0f),
+                                              properties.getValue<float>("sample/camera/y").value_or(5.0f),
+                                              properties.getValue<float>("sample/camera/z").value_or(10.0f)});
+                cameraObject->setRotation(math::quat::rotationX(properties.getValue<float>("sample/camera/pitch").value_or(-0.25f)));
             }
         }
         nau::async::TaskCollection sceneLoaders;

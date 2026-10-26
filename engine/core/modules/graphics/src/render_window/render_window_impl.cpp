@@ -90,6 +90,11 @@ namespace nau::render
         m_activeCamera = ind;
     }
 
+    void RenderWindowImpl::setAmbientOcclusionMode(AmbientOcclusionMode mode)
+    {
+        m_ambientOcclusionMode.store(mode, std::memory_order_relaxed);
+    }
+
     void RenderWindowImpl::render()
     {
         for (auto& [_, nodeGroup] : m_graphStages)

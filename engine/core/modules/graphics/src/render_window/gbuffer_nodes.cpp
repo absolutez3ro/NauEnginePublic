@@ -310,8 +310,8 @@ namespace nau::render
                     .useAs(dabfg::Usage::COLOR_ATTACHMENT)
                     .handle();
             };
-            const auto raw = createTarget("ssao_raw_texture", TEXFMT_R32F);
-            const auto horizontal = createTarget("ssao_horizontal_texture", TEXFMT_R32F);
+            const auto raw = createTarget("ssao_raw_texture", TEXFMT_R16F);
+            const auto horizontal = createTarget("ssao_horizontal_texture", TEXFMT_R16F);
             const auto output = createTarget("ssao_texture", TEXFMT_R8);
             return [this, raw, horizontal, output]()
             {
@@ -326,7 +326,7 @@ namespace nau::render
                 }
                 const CameraNode& camera = m_graphicsScene->getMainCamera();
                 d3d::setview(0, 0, m_gBuffer->getWidth(), m_gBuffer->getHeight(), 0.0f, 1.0f);
-                m_ambientOcclusion->beginFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), m_windowHandle);
+                m_ambientOcclusion->beginFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), m_ambientOcclusionMode.load(std::memory_order_relaxed));
                 m_ambientOcclusion->render(raw.get(), horizontal.get(), output.get(), m_gBuffer->getRt(1), m_gBuffer->getDepth());
             };
         }));

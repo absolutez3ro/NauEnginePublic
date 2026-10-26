@@ -68,6 +68,11 @@ namespace nau::render
 
         co_await loadTasks.awaitCompletion();
 
+        if (m_ambientOcclusion)
+        {
+            setAmbientOcclusionMode(m_ambientOcclusion->getMode());
+        }
+
         if (!shader_globals::containsName("ssaoControl"))
         {
             const math::Vector4 disabled(0.0f);
@@ -294,10 +299,6 @@ namespace nau::render
         {
             // Initialize the UI before game updates can cache their first frame.
             // A graph declaration can run later, concurrently with those updates.
-            if (m_ambientOcclusion)
-            {
-                imgui_use_hybrid_input_mode(true);
-            }
             imgui_switch_state();
             imgui_update();
             imgui_endframe();

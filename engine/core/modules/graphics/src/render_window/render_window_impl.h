@@ -55,6 +55,7 @@ namespace nau::render
 
         int32_t getMainCameraIndex() override;
         void setMainCameraIndex(int32_t ind) override;
+        void setAmbientOcclusionMode(AmbientOcclusionMode mode) override;
 
         async::Task<> createRenderGraph();
 
@@ -122,6 +123,7 @@ namespace nau::render
         eastl::shared_ptr<GraphicsScene> m_graphicsScene = nullptr;
 
         eastl::unique_ptr<AmbientOcclusion> m_ambientOcclusion;
+        std::atomic<AmbientOcclusionMode> m_ambientOcclusionMode = AmbientOcclusionMode::Lighting;
         eastl::unique_ptr<render::PostFxRenderer> m_postFXRenderer;
         eastl::unique_ptr<render::EnvironmentRenderer> m_environmentRenderer;
 

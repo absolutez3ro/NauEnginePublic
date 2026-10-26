@@ -28,6 +28,13 @@ namespace nau::render
 
     NAU_DEFINE_TYPED_FLAG(NauRenderStage)
 
+    enum class AmbientOcclusionMode : uint32_t
+    {
+        Off = 0,
+        Lighting = 1,
+        Debug = 2
+    };
+
     struct NAU_ABSTRACT_TYPE IRenderWindow : public virtual IRefCounted
     {
         NAU_INTERFACE(nau::render::IRenderWindow, IRefCounted)
@@ -40,6 +47,9 @@ namespace nau::render
 
         virtual int32_t getMainCameraIndex() = 0;
         virtual void setMainCameraIndex(int32_t ind) = 0;
+
+        // Thread safe. Changing the mode preserves resources allocated at startup.
+        virtual void setAmbientOcclusionMode(AmbientOcclusionMode mode) = 0;
 
         virtual async::Task<> requestViewportResize(int32_t width, int32_t height) = 0;
         virtual async::Task<> requestViewportResizeImmediate(int32_t width, int32_t height) = 0;

@@ -26,30 +26,9 @@ namespace nau::render
         }
     }  // namespace
 
-    void AmbientOcclusionInput::setTarget(void* windowHandle)
-    {
-        m_windowHandle.store(windowHandle);
-        m_switchRequests.store(0);
-    }
-
-    uint32_t AmbientOcclusionInput::consumeSwitches()
-    {
-        return m_switchRequests.exchange(0);
-    }
-
-    bool AmbientOcclusionInput::handleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM)
-    {
-        if (hwnd == m_windowHandle.load() && message == WM_KEYUP && wParam == VK_F7)
-        {
-            m_switchRequests.fetch_add(1);
-            return true;
-        }
-        return false;
-    }
-
     bool AmbientOcclusion::isRequested()
     {
-        return readSetting<bool>("sample/ssao/enabled", false);
+        return readSetting<bool>("render/ssao/enabled", false);
     }
 
     async::Task<> AmbientOcclusion::loadAssets()
@@ -61,38 +40,28 @@ namespace nau::render
         m_rawMaterial->enableAutoSetTextures(false);
         m_blurMaterial->enableAutoSetTextures(false);
 
-        const float radius = readFiniteSetting("sample/ssao/radius", 0.5f, 0.0f, 10.0f);
-        const float fadeStart = readFiniteSetting("sample/ssao/fadeStart", 0.2f, 0.0f, 10.0f);
-        const float fadeEnd = readFiniteSetting("sample/ssao/fadeEnd", 1.0f, fadeStart + 0.001f, 20.0f);
-        const float epsilon = readFiniteSetting("sample/ssao/surfaceEpsilon", 0.05f, 0.0001f, fadeEnd);
+        const float radius = readFiniteSetting("render/ssao/radius", 0.5f, 0.0f, 10.0f);
+        const float fadeStart = readFiniteSetting("render/ssao/fadeStart", 0.2f, 0.0f, 10.0f);
+        const float fadeEnd = readFiniteSetting("render/ssao/fadeEnd", 1.0f, fadeStart + 0.001f, 20.0f);
+        const float epsilon = readFiniteSetting("render/ssao/surfaceEpsilon", 0.05f, 0.0001f, fadeEnd);
         m_parameters = math::Vector4(radius, fadeStart, fadeEnd, epsilon);
-        m_blurDepthThreshold = readFiniteSetting("sample/ssao/blurDepthThreshold", 0.2f, 0.0f, 10.0f);
-        m_mode = eastl::min(readSetting<uint32_t>("sample/ssao/mode", 1), 2u);
-        m_blur = readSetting<bool>("sample/ssao/blur", true);
+        m_blurDepthThreshold = readFiniteSetting("render/ssao/blurDepthThreshold", 0.2f, 0.0f, 10.0f);
+        m_mode = static_cast<AmbientOcclusionMode>(eastl::min(readSetting<uint32_t>("render/ssao/mode", 1), 2u));
+        m_blur = readSetting<bool>("render/ssao/blur", true);
+        NAU_LOG_INFO("SSAO: full resolution, G-buffer normals, mode={}", static_cast<uint32_t>(m_mode));
     }
 
-    AmbientOcclusion::~AmbientOcclusion()
+    AmbientOcclusionMode AmbientOcclusion::getMode() const
     {
-        if (m_initialized)
-        {
-            getServiceProvider().get<AmbientOcclusionInput>().setTarget(nullptr);
-        }
+        return m_mode;
     }
 
-    void AmbientOcclusion::beginFrame(const math::Matrix4& view, const math::Matrix4& projection, void* windowHandle)
+    void AmbientOcclusion::beginFrame(const math::Matrix4& view, const math::Matrix4& projection, AmbientOcclusionMode mode)
     {
-        AmbientOcclusionInput& input = getServiceProvider().get<AmbientOcclusionInput>();
-        if (!m_initialized)
+        if (m_mode != mode)
         {
-            input.setTarget(windowHandle);
-            m_initialized = true;
-            NAU_LOG_INFO("SSAO: full resolution, G-buffer normals, F7: off / lit / AO");
-        }
-        const uint32_t switches = input.consumeSwitches();
-        m_mode = (m_mode + switches % 3u) % 3u;
-        if (switches != 0)
-        {
-            NAU_LOG_INFO("SSAO: mode={}", m_mode);
+            m_mode = mode;
+            NAU_LOG_INFO("SSAO: mode={}", static_cast<uint32_t>(m_mode));
         }
         m_rawMaterial->setProperty("default", "aoProjection", projection);
         m_rawMaterial->setProperty("default", "aoParameters", m_parameters);
@@ -108,7 +77,7 @@ namespace nau::render
     {
         d3d::set_render_target();
         d3d::set_depth(nullptr, DepthAccess::RW);
-        if (m_mode == 0)
+        if (m_mode == AmbientOcclusionMode::Off)
         {
             d3d::set_render_target(output, 0);
             d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
@@ -178,11 +147,11 @@ namespace nau::render
 
     bool AmbientOcclusion::isDebugView() const
     {
-        return m_mode == 2;
+        return m_mode == AmbientOcclusionMode::Debug;
     }
 
     math::Vector4 AmbientOcclusion::getResolveControl() const
     {
-        return math::Vector4(m_mode != 0 ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+        return math::Vector4(m_mode != AmbientOcclusionMode::Off ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
     }
 }  // namespace nau::render
