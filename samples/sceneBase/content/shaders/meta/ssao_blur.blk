@@ -1,0 +1,22 @@
+compile_configs {
+    config {
+        stage:t="vs"
+        entry:t="VSMain"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSMain"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSDebug"
+    }
+}
+input_layout {
+}
+permutations {
+    permutation {
+        name:t="regular"
+        defines {}
+    }
+}

@@ -259,13 +259,15 @@ namespace nau::sample
         auto& sceneFactory = getServiceProvider().get<scene::ISceneFactory>();
 
         {  // choose camera control kind: from scene object or standalone detached camera (from cam. manager):
-            constexpr CamControlKind CameraControlKind = CamControlKind::UseCameraManager;
+            GlobalProperties& properties = getServiceProvider().get<GlobalProperties>();
+            const bool overview = properties.getValue<bool>("sample/camera/overview").value_or(false);
+            const CamControlKind cameraControlKind = overview ? CamControlKind::UseSceneObject : CamControlKind::UseCameraManager;
 
             auto scene_00 = sceneFactory.createEmptyScene();
             scene_00->setName("scene_00");
 
             ObjectWeakRef<SceneObject> cameraObject;
-            if (CameraControlKind == CamControlKind::UseSceneObject)
+            if (cameraControlKind == CamControlKind::UseSceneObject)
             {
                 cameraObject = scene_00->getRoot().attachChild(sceneFactory.createSceneObject<scene::CameraComponent>());
             }
@@ -274,7 +276,11 @@ namespace nau::sample
                 cameraObject = scene_00->getRoot().attachChild(sceneFactory.createSceneObject());
             }
             cameraObject->setName("Camera.Main");
-            cameraObject->addComponent<CameraControl>().setCamControlKind(CameraControlKind);
+            CameraControl& cameraControl = cameraObject->addComponent<CameraControl>();
+            if (!overview)
+            {
+                cameraControl.setCamControlKind(cameraControlKind);
+            }
 
             scene_00->getRoot().addComponent<SceneReloader>();
             scene_00->getRoot().addComponent<AssetReloader>();
@@ -291,6 +297,15 @@ namespace nau::sample
             
 
             co_await sceneManager.activateScene(std::move(scene_00));
+            if (overview)
+            {
+                // Select the scene camera after activation, then start above the helmet.
+                cameraControl.setCamControlKind(cameraControlKind);
+                cameraObject->setTranslation({properties.getValue<float>("sample/camera/x").value_or(0.0f),
+                                              properties.getValue<float>("sample/camera/y").value_or(5.0f),
+                                              properties.getValue<float>("sample/camera/z").value_or(10.0f)});
+                cameraObject->setRotation(math::quat::rotationX(properties.getValue<float>("sample/camera/pitch").value_or(-0.25f)));
+            }
         }
         nau::async::TaskCollection sceneLoaders;
 
