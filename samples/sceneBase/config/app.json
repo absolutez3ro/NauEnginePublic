@@ -30,6 +30,7 @@
     "render": {
         "ssao": {
             "enabled": true,
+            "useSecondary": true,
             "mode": 1,
             "radius": 0.5,
             "fadeStart": 0.2,
@@ -38,6 +39,9 @@
             "blur": true,
             "blurDepthThreshold": 0.2
         }
+    },
+    "dx12": {
+        "multiGpu": true
     },
     "contentPath": "test"
 }

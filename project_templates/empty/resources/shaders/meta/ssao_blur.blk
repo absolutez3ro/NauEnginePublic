@@ -11,6 +11,10 @@ compile_configs {
         stage:t="ps"
         entry:t="PSDebug"
     }
+    config {
+        stage:t="ps"
+        entry:t="PSPackNormals"
+    }
 }
 input_layout {
 }

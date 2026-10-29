@@ -116,6 +116,18 @@
                 "aoInput": "file:/content/textures/white_8x8.png"
             },
             "depthMode": "Disabled"
+        },
+        "packNormals": {
+            "properties": {
+                "aoNormals": "file:/content/textures/white_8x8.png"
+            },
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.pspacknormals]"
+            ],
+            "cullMode": "None",
+            "depthMode": "Disabled",
+            "blendMode": "Opaque"
         }
     }
 }
