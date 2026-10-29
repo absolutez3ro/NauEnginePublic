@@ -15,6 +15,10 @@ compile_configs {
         stage:t="ps"
         entry:t="PSPackNormals"
     }
+    config {
+        stage:t="ps"
+        entry:t="PSReproject"
+    }
 }
 input_layout {
 }

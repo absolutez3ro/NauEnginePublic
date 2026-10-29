@@ -35,6 +35,7 @@ namespace nau::render
         void drawBlur(BaseTexture* target, BaseTexture* source, bool horizontal);
         void resetSecondary();
         void packNormals(BaseTexture* source);
+        void reprojectHistory(BaseTexture* target, BaseTexture* depth);
         bool renderSecondary(BaseTexture* output, BaseTexture* normals, BaseTexture* depth);
 
         MaterialAssetView::Ptr m_rawMaterial;
@@ -48,6 +49,13 @@ namespace nau::render
         BaseTexture* m_depthSnapshot = nullptr;
         BaseTexture* m_receiving = nullptr;
         BaseTexture* m_history = nullptr;
+        BaseTexture* m_historyDepth = nullptr;
+        math::Matrix4 m_viewProjection = math::Matrix4::identity();
+        math::Matrix4 m_inverseProjection = math::Matrix4::identity();
+        math::Matrix4 m_pendingViewProjection = math::Matrix4::identity();
+        math::Matrix4 m_pendingInverseProjection = math::Matrix4::identity();
+        math::Matrix4 m_historyViewProjection = math::Matrix4::identity();
+        math::Matrix4 m_historyInverseProjection = math::Matrix4::identity();
         uint32_t m_secondaryWidth = 0;
         uint32_t m_secondaryHeight = 0;
         bool m_useSecondary = false;
@@ -58,7 +66,9 @@ namespace nau::render
         BaseTexture* m_depth = nullptr;
         math::Vector4 m_parameters = math::Vector4(0.5f, 0.2f, 1.0f, 0.05f);
         float m_blurDepthThreshold = 0.2f;
+        float m_reprojectionDepthThreshold = 0.1f;
         AmbientOcclusionMode m_mode = AmbientOcclusionMode::lighting;
         bool m_blur = true;
+        bool m_reprojection = true;
     };
 }  // namespace nau::render

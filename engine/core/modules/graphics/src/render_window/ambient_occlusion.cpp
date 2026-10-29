@@ -61,11 +61,18 @@ namespace nau::render
         m_parameters = math::Vector4(radius, fadeStart, fadeEnd, epsilon);
         m_blurDepthThreshold = readFiniteSetting("render/ssao/blurDepthThreshold", 0.2f, 0.0f, 10.0f);
         m_blur = readSetting<bool>("render/ssao/blur", true);
+        m_reprojection = readSetting<bool>("render/ssao/reprojection", true);
+        m_reprojectionDepthThreshold = readFiniteSetting("render/ssao/reprojectionDepthThreshold", 0.1f, 0.0001f, 10.0f);
         m_useSecondary = readSetting<bool>("render/ssao/useSecondary", false);
         if (m_useSecondary && !m_blurMaterial->getPipelineNames().contains("packNormals"))
         {
             m_useSecondary = false;
             NAU_LOG_WARNING("SSAO: normal packing pipeline unavailable, using GPU 0");
+        }
+        if (m_useSecondary && m_reprojection && !m_blurMaterial->getPipelineNames().contains("reproject"))
+        {
+            m_useSecondary = false;
+            NAU_LOG_WARNING("SSAO: reprojection pipeline unavailable, using GPU 0");
         }
         if (m_useSecondary && d3d::is_multi_gpu_available())
         {
@@ -98,7 +105,7 @@ namespace nau::render
         // Drain foreign queues before destroying any endpoint they may still reference.
         d3d::mgpu::destroySsaoProducer(m_secondary);
         m_secondary = nullptr;
-        for (BaseTexture** texture : {&m_normalsSnapshot, &m_depthSnapshot, &m_receiving, &m_history})
+        for (BaseTexture** texture : {&m_normalsSnapshot, &m_depthSnapshot, &m_receiving, &m_history, &m_historyDepth})
         {
             if (*texture)
             {
@@ -122,6 +129,8 @@ namespace nau::render
         m_rawMaterial->setProperty("default", "aoProjection", projection);
         m_rawMaterial->setProperty("default", "aoParameters", m_parameters);
         const math::Matrix4 inverseProjection = inverse(projection);
+        m_viewProjection = projection * view;
+        m_inverseProjection = inverseProjection;
         static_assert(sizeof(projection) == sizeof(m_constants.projection));
         std::memcpy(m_constants.projection, &projection, sizeof(projection));
         std::memcpy(m_constants.inverseProjection, &inverseProjection, sizeof(inverseProjection));
@@ -200,13 +209,18 @@ namespace nau::render
             m_depthSnapshot = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_DEPTH32 | TEXCF_RTARGET, 1, u8"ssao_depth_snapshot");
             m_receiving = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_receiving");
             m_history = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_history");
-            if (!m_normalsSnapshot || !m_depthSnapshot || !m_receiving || !m_history)
+            if (m_reprojection)
+            {
+                m_historyDepth = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_DEPTH32 | TEXCF_RTARGET, 1, u8"ssao_history_depth");
+            }
+            if (!m_normalsSnapshot || !m_depthSnapshot || !m_receiving || !m_history || (m_reprojection && !m_historyDepth))
             {
                 d3d::report_secondary_gpu_failure(static_cast<uint32_t>(E_OUTOFMEMORY));
                 resetSecondary();
                 return false;
             }
             NAU_LOG_INFO("SSAO: GPU 1 ready, {}x{}, three shared slots, deferred copies", info.w, info.h);
+            NAU_LOG_INFO("SSAO: camera reprojection={}", m_reprojection);
         }
         if (!m_secondary)
         {
@@ -220,7 +234,16 @@ namespace nau::render
         }
         if (received == d3d::mgpu::SsaoResult::submitted && !m_discardPending)
         {
+            // The snapshot still belongs to this result. Preserve it before the next submit overwrites it.
+            if (m_reprojection && !m_historyDepth->update(m_depthSnapshot))
+            {
+                d3d::report_secondary_gpu_failure(static_cast<uint32_t>(E_FAIL));
+                m_historyValid = false;
+                return false;
+            }
             eastl::swap(m_history, m_receiving);
+            m_historyViewProjection = m_pendingViewProjection;
+            m_historyInverseProjection = m_pendingInverseProjection;
             if (!m_historyValid)
             {
                 NAU_LOG_INFO("SSAO: displaying completed GPU 1 result");
@@ -245,11 +268,51 @@ namespace nau::render
             }
             if (submitted == d3d::mgpu::SsaoResult::submitted)
             {
+                m_pendingViewProjection = m_viewProjection;
+                m_pendingInverseProjection = m_inverseProjection;
                 m_discardPending = false;
             }
         }
-        // While GPU 1 is busy, keep the last complete map. GPU 0 handles warm-up and fallback.
-        return m_historyValid && output->update(m_history);
+        if (!m_historyValid)
+        {
+            return false;
+        }
+        // Reproject the original result each frame; never feed a reprojected map back into history.
+        if (m_reprojection)
+        {
+            reprojectHistory(output, depth);
+            return true;
+        }
+        return output->update(m_history);
+    }
+
+    void AmbientOcclusion::reprojectHistory(BaseTexture* target, BaseTexture* depth)
+    {
+        const math::Matrix4 currentToHistory = m_historyViewProjection * inverse(m_viewProjection);
+        m_blurMaterial->setProperty("reproject", "aoCurrentToHistory", currentToHistory);
+        m_blurMaterial->setProperty("reproject", "aoHistoryInverseProjection", m_historyInverseProjection);
+        m_blurMaterial->setProperty("reproject", "aoReprojectionParameters", math::Vector4(m_reprojectionDepthThreshold, 0.0f, 0.0f, 0.0f));
+        for (BaseTexture* source : {depth, m_history, m_historyDepth})
+        {
+            d3d::resource_barrier({source, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+        }
+        d3d::set_render_target();
+        d3d::set_depth(nullptr, DepthAccess::RW);
+        d3d::set_render_target(target, 0);
+        d3d::setview(0, 0, m_secondaryWidth, m_secondaryHeight, 0.0f, 1.0f);
+        d3d::set_srgb_backbuffer_write(false);
+        d3d::settex(1, depth);
+        d3d::settex(2, m_history);
+        d3d::settex(3, m_historyDepth);
+        m_blurMaterial->bindPipeline("reproject");
+        d3d::setvsrc(0, nullptr, 0);
+        d3d::setind(nullptr);
+        d3d::draw(PRIM_TRILIST, 0, 1);
+        for (int slot = 1; slot <= 3; ++slot)
+        {
+            d3d::settex(slot, nullptr);
+        }
+        d3d::set_render_target();
     }
 
     void AmbientOcclusion::packNormals(BaseTexture* source)

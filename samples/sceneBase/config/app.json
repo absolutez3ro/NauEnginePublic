@@ -37,11 +37,17 @@
             "fadeEnd": 1.0,
             "surfaceEpsilon": 0.05,
             "blur": true,
-            "blurDepthThreshold": 0.2
+            "blurDepthThreshold": 0.2,
+            "reprojection": true,
+            "reprojectionDepthThreshold": 0.1
         }
     },
     "dx12": {
         "multiGpu": true
+    },
+    "video": {
+        "vsync": false,
+        "adaptive_vsync": false
     },
     "contentPath": "test"
 }
