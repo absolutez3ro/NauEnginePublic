@@ -301,11 +301,7 @@ namespace nau
             task.detach();
         }
 
-        d3d::finish_render_commands();
-
         co_await executeRenderJobs();
-
-        d3d::finish_render_commands();
 
         renderMainScene();
 
