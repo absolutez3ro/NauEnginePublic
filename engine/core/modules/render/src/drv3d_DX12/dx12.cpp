@@ -223,19 +223,30 @@ static void report_agility_sdk_error(HRESULT hr)
 
 static PresentationMode get_presentation_mode_from_settings()
 {
-  //TODO: repair
-  //const nau::DataBlock *videoBlk = ::dgs_get_settings()->getBlockByNameEx("video");
-  PresentationMode mode;
-  // Only Nvidia modes are disabled
-  const lowlatency::LatencyMode latencyMode = lowlatency::get_from_blk();
-  const bool vsyncDisabled = (latencyMode == lowlatency::LATENCY_MODE_NV_ON || latencyMode == lowlatency::LATENCY_MODE_NV_BOOST);
-  //if (videoBlk->getBool("vsync", false) && !vsyncDisabled)
-    mode = PresentationMode::VSYNCED;
-  //else if (videoBlk->getBool("adaptive_vsync", false))
-    //mode = PresentationMode::CONDITIONAL_VSYNCED;
-  //else
-    //mode = PresentationMode::UNSYNCED;
-  return mode;
+    const nau::DataBlock* video = ::dgs_get_settings()->getBlockByNameEx("video");
+    bool vsync = video->getBool("vsync", true);
+    bool adaptiveVsync = video->getBool("adaptive_vsync", false);
+    if (nau::hasServiceProvider())
+    {
+        if (nau::GlobalProperties* properties = nau::getServiceProvider().find<nau::GlobalProperties>())
+        {
+            vsync = properties->getValue<bool>("video/vsync").value_or(vsync);
+            adaptiveVsync = properties->getValue<bool>("video/adaptive_vsync").value_or(adaptiveVsync);
+        }
+    }
+    const lowlatency::LatencyMode latencyMode = lowlatency::get_from_blk();
+    const bool forceUnsynced = latencyMode == lowlatency::LATENCY_MODE_NV_ON || latencyMode == lowlatency::LATENCY_MODE_NV_BOOST;
+    PresentationMode mode = PresentationMode::UNSYNCED;
+    if (vsync && !forceUnsynced)
+    {
+        mode = PresentationMode::VSYNCED;
+    }
+    else if (adaptiveVsync && !forceUnsynced)
+    {
+        mode = PresentationMode::CONDITIONAL_VSYNCED;
+    }
+    NAU_LOG_INFO("DX12: presentation vsync={}, adaptive={}, mode={}", vsync, adaptiveVsync, static_cast<uint32_t>(mode));
+    return mode;
 }
 
 struct WindowState
