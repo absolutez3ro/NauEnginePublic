@@ -2,6 +2,11 @@
 // Separable bilateral Gaussian blur following Bogdanov M.K.'s SsaoBlur.hlsl.
 #include "ssao_common.hlsli"
 
+float2 PSPackNormals(float4 position : SV_Position) : SV_Target
+{
+    return aoNormals.Load(int3(int2(position.xy), 0)).xy;
+}
+
 float4 PSDebug(float4 position : SV_Position) : SV_Target
 {
     float value = aoInput.Load(int3(int2(position.xy), 0));

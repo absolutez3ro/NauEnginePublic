@@ -5,6 +5,7 @@
 #pragma once
 
 #include "graphics_assets/material_asset.h"
+#include "nau/3d/multi_gpu_ssao.h"
 #include "nau/render/render_window.h"
 
 namespace nau::render
@@ -17,7 +18,7 @@ namespace nau::render
         AmbientOcclusion(AmbientOcclusion&&) = delete;
         AmbientOcclusion& operator=(const AmbientOcclusion&) = delete;
         AmbientOcclusion& operator=(AmbientOcclusion&&) = delete;
-        ~AmbientOcclusion() = default;
+        ~AmbientOcclusion();
 
         static bool isRequested();
         static AmbientOcclusionMode getInitialMode();
@@ -32,9 +33,27 @@ namespace nau::render
         void draw(BaseTexture* target, MaterialAssetView& material, BaseTexture* source = nullptr);
         void drawRaw(BaseTexture* target);
         void drawBlur(BaseTexture* target, BaseTexture* source, bool horizontal);
+        void resetSecondary();
+        void packNormals(BaseTexture* source);
+        bool renderSecondary(BaseTexture* output, BaseTexture* normals, BaseTexture* depth);
 
         MaterialAssetView::Ptr m_rawMaterial;
         MaterialAssetView::Ptr m_blurMaterial;
+        ShaderAssetView::Ptr m_vertexShader;
+        ShaderAssetView::Ptr m_rawShader;
+        ShaderAssetView::Ptr m_blurShader;
+        d3d::mgpu::SsaoProducer* m_secondary = nullptr;
+        d3d::mgpu::SsaoConstants m_constants;
+        BaseTexture* m_normalsSnapshot = nullptr;
+        BaseTexture* m_depthSnapshot = nullptr;
+        BaseTexture* m_receiving = nullptr;
+        BaseTexture* m_history = nullptr;
+        uint32_t m_secondaryWidth = 0;
+        uint32_t m_secondaryHeight = 0;
+        bool m_useSecondary = false;
+        bool m_secondaryAttempted = false;
+        bool m_historyValid = false;
+        bool m_discardPending = false;
         BaseTexture* m_normals = nullptr;
         BaseTexture* m_depth = nullptr;
         math::Vector4 m_parameters = math::Vector4(0.5f, 0.2f, 1.0f, 0.05f);
