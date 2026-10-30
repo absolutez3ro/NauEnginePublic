@@ -8,8 +8,8 @@
 namespace nau::sample
 {
     // Key M switches the Mgpu path (nau::mgpu::bridge) on and off at run time; the "MGPU" window shows what it is
-    // doing. With Mgpu on and two GPUs the screen alternates between the scene and the image the second GPU draws;
-    // with one GPU or Mgpu off only the scene is shown.
+    // doing. With Mgpu on and two GPUs the second GPU draws the shadow cascades; with one GPU or Mgpu off Nau draws
+    // them itself.
     class MgpuToggle final : public scene::Component,
                              public scene::IComponentUpdate
     {

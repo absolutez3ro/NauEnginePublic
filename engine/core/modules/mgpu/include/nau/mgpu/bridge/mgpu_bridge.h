@@ -44,14 +44,21 @@ namespace nau::mgpu::bridge
     {
         bool linked = false; // built with NAU_ENABLE_MGPU
         bool enabled = false; // the setEnabled() switch
-        bool ready = false; // two hardware adapters found, the bridge is initialized
+        bool ready = false; // two hardware adapters found, the second GPU is initialized
         char primaryAdapter[128] = {};
         char secondaryAdapter[128] = {};
         char lastError[256] = {};
-        float imagesPerSecond = 0; // images from GPU2 delivered to Nau per second
-        float latencyMs = 0; // see TransferStats::lastLatencyMs
-        uint64_t imagesOk = 0;
-        uint64_t imagesFailed = 0;
+        float sceneFramesPerSecond = 0; // frames Nau renders per second (ImGui's frame rate is the update loop's)
+
+        // Shadow cascades drawn by the second GPU (mgpu_shadows.h).
+        bool shadowsFromSecondGpu = false; // the last frame used an atlas of the second GPU, not Nau's own cascades
+        uint32_t atlasAgeFrames = 0; // Nau frames between drawing that atlas and using it
+        float atlasesPerSecond = 0; // atlases of the second GPU copied into Nau's atlas per second
+        float latencyMs = 0; // submit -> atlas finished on the second GPU
+        uint32_t drawCount = 0; // draws in the last atlas
+        uint64_t atlasesCompleted = 0;
+        uint64_t skippedBusy = 0; // frames that found the second GPU still busy with the previous atlases
+        uint64_t failed = 0;
     };
 
 #if defined(NAU_ENABLE_MGPU)

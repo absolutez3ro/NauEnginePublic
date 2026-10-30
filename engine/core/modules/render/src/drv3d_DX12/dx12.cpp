@@ -1371,6 +1371,54 @@ int on_get_buffer_gpu_address(void *buffer, void *address)
 
   return 1;
 }
+
+int on_copy_from_external_resource(void *par1, void *par2)
+{
+  auto src = static_cast<ID3D12Resource *>(par1);
+  auto dstTex = cast_to_texture_base(static_cast<BaseTexture *>(par2));
+  if (!src || !dstTex)
+  {
+    return 0;
+  }
+  Image *dst = dstTex->getDeviceImage();
+  if (!dst || !dst->hasTrackedState())
+  {
+    NAU_LOG_ERROR("DX12: DRV3D_COMMAND_D3D12_COPY_FROM_EXTERNAL_RESOURCE: <{}> has no device image", dstTex->getTexName());
+    return 0;
+  }
+
+  ComPtr<ID3D12Device> srcDevice;
+  if (FAILED(src->GetDevice(COM_ARGS(&srcDevice))) ||
+      srcDevice.Get() != static_cast<ID3D12Device *>(drv3d_dx12::api_state.device.getDevice()))
+  {
+    NAU_LOG_ERROR("DX12: DRV3D_COMMAND_D3D12_COPY_FROM_EXTERNAL_RESOURCE: source for <{}> is not created on the driver device",
+      dstTex->getTexName());
+    return 0;
+  }
+
+  // CopyResource requirements: same size, mips, layers and format, no MSAA
+  const D3D12_RESOURCE_DESC srcDesc = src->GetDesc();
+  const D3D12_RESOURCE_DESC dstDesc = dst->getHandle()->GetDesc();
+  if (D3D12_RESOURCE_DIMENSION_TEXTURE2D != srcDesc.Dimension || D3D12_RESOURCE_DIMENSION_TEXTURE2D != dstDesc.Dimension ||
+      srcDesc.Width != dstDesc.Width || srcDesc.Height != dstDesc.Height || 1 != srcDesc.MipLevels || 1 != dstDesc.MipLevels ||
+      1 != srcDesc.DepthOrArraySize || 1 != dstDesc.DepthOrArraySize || 1 != srcDesc.SampleDesc.Count ||
+      1 != dstDesc.SampleDesc.Count || srcDesc.Format != dstDesc.Format)
+  {
+    NAU_LOG_ERROR("DX12: DRV3D_COMMAND_D3D12_COPY_FROM_EXTERNAL_RESOURCE: source {}x{} mips {} layers {} samples {} format {} does "
+                  "not fit <{}> {}x{} mips {} layers {} samples {} format {}",
+      srcDesc.Width, srcDesc.Height, srcDesc.MipLevels, srcDesc.DepthOrArraySize, srcDesc.SampleDesc.Count, (int)srcDesc.Format,
+      dstTex->getTexName(), dstDesc.Width, dstDesc.Height, dstDesc.MipLevels, dstDesc.DepthOrArraySize, dstDesc.SampleDesc.Count,
+      (int)dstDesc.Format);
+    return 0;
+  }
+
+#if DAGOR_DBGLEVEL > 0
+  dstTex->setWasUsed();
+#endif
+  ScopedCommitLock ctxLock{drv3d_dx12::api_state.device.getContext()};
+  drv3d_dx12::api_state.device.getContext().copyFromExternalResource(src, dst);
+  return 1;
+}
 } // namespace
 
 int d3d::driver_command(int command, void *par1, void *par2, void *par3)
@@ -1379,6 +1427,7 @@ int d3d::driver_command(int command, void *par1, void *par2, void *par3)
   switch (command)
   {
     case DRV3D_COMMAND_GET_BUFFER_GPU_ADDRESS: return on_get_buffer_gpu_address(par1, par2);
+    case DRV3D_COMMAND_D3D12_COPY_FROM_EXTERNAL_RESOURCE: return on_copy_from_external_resource(par1, par2);
     case DRV3D_COMMAND_COMPILE_PIPELINE_SET: return on_driver_command_compile_pipeline_set(par1);
     case DRV3D_COMMAND_REMOVE_DEBUG_BREAK_STRING_SEARCH:
       drv3d_dx12::api_state.device.getContext().removeDebugBreakString({static_cast<const char *>(par1)});
@@ -4648,4 +4697,3 @@ BaseTexture* d3d::get_back_buffer_rt(SWAPID id)
 
     return res;
 }
-

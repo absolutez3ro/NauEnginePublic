@@ -280,7 +280,17 @@ namespace nau::sample
             scene_00->getRoot().addComponent<SceneReloader>();
             scene_00->getRoot().addComponent<AssetReloader>();
             scene_00->getRoot().addComponent<MgpuToggle>();
-            scene_00->getRoot().addComponent<DirectionalLightComponent>();
+
+            // Shadows on, so that the cascades (drawn by the second GPU in an Mgpu build, see MgpuToggle) are visible.
+            // Direction: the default of the DirectionalLightControl window of WindowMaker.
+            auto& light = scene_00->getRoot().addComponent<DirectionalLightComponent>();
+            light.setCastShadows(true);
+            {
+                using namespace nau::math;
+                const Vector3 direction(0.5f, -0.5f, 0.0f);
+                const Matrix4 lookAt = Matrix4::lookAtRH(Point3(), Point3(normalize(-direction)), Vector3(0.0f, 1.0f, 0.0f));
+                light.setRotation(Quat(lookAt.getUpper3x3()));
+            }
 
             auto& env = scene_00->getRoot().addComponent<EnvironmentComponent>();
             env.setIntensity(0.5f);

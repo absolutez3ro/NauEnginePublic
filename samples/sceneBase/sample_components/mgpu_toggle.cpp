@@ -26,7 +26,7 @@ namespace nau::sample
         const bridge::Status status = bridge::getStatus();
 
         // Bottom-left corner: the other sample windows open in the top-left one.
-        const ImVec2 windowSize(380, 150);
+        const ImVec2 windowSize(430, 190);
         ImGui::SetNextWindowPos(ImVec2(10, std::max(10.0f, ImGui::GetIO().DisplaySize.y - windowSize.y - 10)), ImGuiCond_Once);
         ImGui::SetNextWindowSize(windowSize, ImGuiCond_Once);
         ImGui::Begin("MGPU");
@@ -46,15 +46,26 @@ namespace nau::sample
         }
         else
         {
-            ImGui::Text("Mode: 2 GPU");
+            ImGui::Text("Mode: 2 GPU, shadow cascades: %s",
+                        status.shadowsFromSecondGpu ? "second GPU" : "Nau (no atlas from the second GPU)");
             ImGui::Text("Scene GPU:  %s", status.primaryAdapter);
-            ImGui::Text("Second GPU: %s", status.secondaryAdapter);
-            ImGui::Text("Second GPU images/s: %.1f, latency %.1f ms", status.imagesPerSecond, status.latencyMs);
-            ImGui::Text("Images OK / failed: %llu / %llu", static_cast<unsigned long long>(status.imagesOk),
-                        static_cast<unsigned long long>(status.imagesFailed));
+            ImGui::Text("Shadow GPU: %s", status.secondaryAdapter);
+            ImGui::Text("Atlases/s: %.1f, latency %.1f ms, atlas age %u frames", status.atlasesPerSecond, status.latencyMs,
+                        status.atlasAgeFrames);
+            ImGui::Text("Draws: %u, completed %llu, skipped (busy) %llu, failed %llu", status.drawCount,
+                        static_cast<unsigned long long>(status.atlasesCompleted),
+                        static_cast<unsigned long long>(status.skippedBusy), static_cast<unsigned long long>(status.failed));
         }
 
-        ImGui::Text("Scene FPS: %.1f", ImGui::GetIO().Framerate);
+        // ImGui's frame rate is the one of the update loop; Nau renders with vsync.
+        if (status.linked)
+        {
+            ImGui::Text("Scene FPS: %.1f (update loop %.1f)", status.sceneFramesPerSecond, ImGui::GetIO().Framerate);
+        }
+        else
+        {
+            ImGui::Text("Update loop FPS: %.1f", ImGui::GetIO().Framerate);
+        }
         if (status.linked)
         {
             ImGui::Text("M - switch MGPU on/off");

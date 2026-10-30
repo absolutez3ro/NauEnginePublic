@@ -123,10 +123,19 @@ namespace nau::render
                 nau::math::NauFrustum frustum;
                 frustum.construct(globtm);
 
-                m_csm->prepareShadowCascades(mode, lightDir, view, cameraPos, proj, 
+                m_csm->prepareShadowCascades(mode, lightDir, view, cameraPos, proj,
                     frustum, nau::math::Vector2(nearZ, farZ), nearZ);
 
-                m_csm->renderShadowsCascades();
+#if defined(NAU_ENABLE_MGPU)
+                // With two GPUs the second one draws the cascades and its newest atlas is already in Nau's atlas.
+                const bool atlasFromSecondGpu = renderMgpuShadows();
+#else
+                const bool atlasFromSecondGpu = false;
+#endif
+                if (!atlasFromSecondGpu)
+                {
+                    m_csm->renderShadowsCascades();
+                }
 
                 BaseTexture* backBuf = d3d::get_back_buffer_rt(m_swapchain);
 
@@ -183,7 +192,17 @@ namespace nau::render
                     const auto envIntensityVec = math::Vector4(envIntensity, 0, 0, 0);
                     shader_globals::setVariable("envIntensity", &envIntensityVec);
 
-                    m_csm->setCascadesToShader(m_gBuffer->getResolveShading()->getMaterial());
+#if defined(NAU_ENABLE_MGPU)
+                    if (m_mgpuShadows.hasAtlas)
+                    {
+                        // The atlas of the second GPU goes with the cascade matrices of the frame it was drawn for.
+                        m_csm->setCascadesToShader(m_gBuffer->getResolveShading()->getMaterial(), m_mgpuShadows.atlasSnapshot);
+                    }
+                    else
+#endif
+                    {
+                        m_csm->setCascadesToShader(m_gBuffer->getResolveShading()->getMaterial());
+                    }
                     m_gBuffer->resolve(resolveTarget.get(),
                                        m_environmentRenderer->getIrradianceMap(),
                                        m_environmentRenderer->getReflectionMap(),
