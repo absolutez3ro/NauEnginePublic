@@ -296,11 +296,27 @@ namespace nau::render
         {
             return;
         }
-        m_gBufferNodes.addNode(dabfg::register_node(nau::utils::format("ssao_{}", m_swapchain).c_str(), DABFG_PP_NODE_SRC,
+        m_gBufferNodes.addNode(dabfg::register_node(nau::utils::format("ssao_submit_{}", m_swapchain).c_str(), DABFG_PP_NODE_SRC,
                                                     [this](dabfg::Registry registry)
         {
             registry.orderMeAfter(nau::utils::format("fill_gbuffer_{}", m_swapchain).c_str());
             registry.orderMeBefore(nau::utils::format("CSM_{}", m_swapchain).c_str());
+            registry.executionHas(dabfg::SideEffects::External);
+            return [this]()
+            {
+                if (m_graphicsScene->hasCamera())
+                {
+                    const CameraNode& camera = m_graphicsScene->getMainCamera();
+                    d3d::setview(0, 0, m_gBuffer->getWidth(), m_gBuffer->getHeight(), 0.0f, 1.0f);
+                    m_ambientOcclusion->prepareFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), m_ambientOcclusionMode.load(std::memory_order_relaxed), m_gBuffer->getRt(1), m_gBuffer->getDepth());
+                }
+            };
+        }));
+        m_gBufferNodes.addNode(dabfg::register_node(nau::utils::format("ssao_receive_{}", m_swapchain).c_str(), DABFG_PP_NODE_SRC,
+                                                    [this](dabfg::Registry registry)
+        {
+            registry.orderMeAfter(nau::utils::format("CSM_{}", m_swapchain).c_str());
+            registry.orderMeBefore(nau::utils::format("gbuffer_resolve_{}", m_swapchain).c_str());
             registry.executionHas(dabfg::SideEffects::External);
             const auto createTarget = [this, &registry](const char* name, uint32_t format)
             {
@@ -324,9 +340,6 @@ namespace nau::render
                     d3d::set_render_target();
                     return;
                 }
-                const CameraNode& camera = m_graphicsScene->getMainCamera();
-                d3d::setview(0, 0, m_gBuffer->getWidth(), m_gBuffer->getHeight(), 0.0f, 1.0f);
-                m_ambientOcclusion->beginFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), m_ambientOcclusionMode.load(std::memory_order_relaxed));
                 m_ambientOcclusion->render(raw.get(), horizontal.get(), output.get(), m_gBuffer->getRt(1), m_gBuffer->getDepth());
             };
         }));

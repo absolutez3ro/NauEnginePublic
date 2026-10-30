@@ -20,11 +20,10 @@ namespace drv3d_dx12
         UINT height = 0;
         D3D12_SHADER_BYTECODE vertexShader = {};
         D3D12_SHADER_BYTECODE rawShader = {};
-        D3D12_SHADER_BYTECODE blurShader = {};
     };
 
     /**
-     * @brief AO and blur draws on one device/queue, using G-buffer normals at full resolution.
+     * @brief Raw SSAO draw on one device/queue, using G-buffer normals at full resolution.
      * Inputs and outputs are COMMON between submissions.
      * Channel endpoints and their fences stay fixed until reset. Input copies wait for getReadyPoint(); execute
      * waits for both copies. releaseOutput orders the next overwrite after the output channel has read it.
@@ -43,7 +42,7 @@ namespace drv3d_dx12
         HRESULT init(const DeviceSsaoPassDesc& desc);
         HRESULT reset(DWORD timeoutMs = 10000);
         HRESULT canSubmit() const;
-        HRESULT execute(const d3d::mgpu::SsaoConstants& constants, bool blur, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {});
+        HRESULT execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {});
         HRESULT releaseOutput(CrossAdapterSyncPoint released);
         CrossAdapterSyncPoint getReadyPoint() const;
         ID3D12Resource* getNormals() const;

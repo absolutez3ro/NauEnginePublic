@@ -23,6 +23,7 @@ namespace nau::render
         static bool isRequested();
         static AmbientOcclusionMode getInitialMode();
         async::Task<> loadAssets();
+        void prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, AmbientOcclusionMode mode, BaseTexture* normals, BaseTexture* depth);
         void beginFrame(const math::Matrix4& view, const math::Matrix4& projection, AmbientOcclusionMode mode);
         void render(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* output, BaseTexture* normals, BaseTexture* depth);
         void drawDebug(BaseTexture* target, BaseTexture* source);
@@ -36,13 +37,13 @@ namespace nau::render
         void resetSecondary();
         void packNormals(BaseTexture* source);
         void reprojectHistory(BaseTexture* target, BaseTexture* depth);
-        bool renderSecondary(BaseTexture* output, BaseTexture* normals, BaseTexture* depth);
+        bool prepareSecondary(BaseTexture* depth);
+        bool receiveSecondary(BaseTexture* target);
 
         MaterialAssetView::Ptr m_rawMaterial;
         MaterialAssetView::Ptr m_blurMaterial;
         ShaderAssetView::Ptr m_vertexShader;
         ShaderAssetView::Ptr m_rawShader;
-        ShaderAssetView::Ptr m_blurShader;
         d3d::mgpu::SsaoProducer* m_secondary = nullptr;
         d3d::mgpu::SsaoConstants m_constants;
         BaseTexture* m_normalsSnapshot = nullptr;

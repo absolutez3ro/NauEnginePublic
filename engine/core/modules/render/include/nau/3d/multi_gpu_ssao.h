@@ -20,8 +20,6 @@ namespace d3d::mgpu
         size_t vertexBytecodeSize = 0;
         const void* rawBytecode = nullptr;
         size_t rawBytecodeSize = 0;
-        const void* blurBytecode = nullptr;
-        size_t blurBytecodeSize = 0;
     };
 
     struct SsaoProducer;
@@ -41,7 +39,7 @@ namespace d3d::mgpu
      * Keep both snapshots alive and unchanged until isSsaoBusy() returns false, even after busy/failed.
      * One job is pending at a time; partial copies retain their leases. No primary queue wait is recorded.
      */
-    NAU_RENDER_EXPORT SsaoResult submitSsao(SsaoProducer* producer, const SsaoConstants& constants, bool blur, BaseTexture* normals, BaseTexture* depth);
+    NAU_RENDER_EXPORT SsaoResult submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth);
     /**
      * @brief Polls GPU 1 output, starts a primary copy, then publishes only after that copy completes.
      * destination must remain alive, unchanged and unread across busy returns. Always pass the same

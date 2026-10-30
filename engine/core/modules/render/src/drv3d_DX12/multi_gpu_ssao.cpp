@@ -58,7 +58,6 @@ namespace d3d::mgpu
             pass.height = desc.height;
             pass.vertexShader = {desc.vertexBytecode, desc.vertexBytecodeSize};
             pass.rawShader = {desc.rawBytecode, desc.rawBytecodeSize};
-            pass.blurShader = {desc.blurBytecode, desc.blurBytecodeSize};
             result = producer->pass.init(pass);
         }
         if (SUCCEEDED(result))
@@ -105,7 +104,7 @@ namespace d3d::mgpu
                             status != S_OK);
     }
 
-    SsaoResult submitSsao(SsaoProducer* producer, const SsaoConstants& constants, bool blur, BaseTexture* normals, BaseTexture* depth)
+    SsaoResult submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth)
     {
         if (!producer || !normals || !depth || !is_multi_gpu_available())
         {
@@ -139,7 +138,7 @@ namespace d3d::mgpu
         }
         else
         {
-            result = producer->pass.execute(constants, blur,
+            result = producer->pass.execute(constants,
                                             {static_cast<ID3D12Fence*>(normalReady.nativeFence), normalReady.value},
                                             {static_cast<ID3D12Fence*>(depthReady.nativeFence), depthReady.value});
         }
