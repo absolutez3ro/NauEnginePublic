@@ -18,6 +18,13 @@ target_link_libraries(${TargetName} PRIVATE
     VFX
 )
 
+# Mgpu transfer bridge (root option NAU_ENABLE_MGPU, preset win_vs2022_x64_mgpu): the MgpuToggle component only uses
+# nau/mgpu/bridge/mgpu_bridge.h, which provides inline stubs when Mgpu is not linked.
+target_include_directories(${TargetName} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../engine/core/modules/mgpu/include)
+if(NAU_ENABLE_MGPU)
+  target_compile_definitions(${TargetName} PRIVATE NAU_ENABLE_MGPU=1)
+endif()
+
 target_precompile_headers(${TargetName} PRIVATE pch.h)
 target_include_directories(${TargetName} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/content/shaders/include)
 

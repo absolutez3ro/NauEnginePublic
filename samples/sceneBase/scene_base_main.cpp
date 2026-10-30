@@ -6,6 +6,7 @@
 
 
 #include "./sample_components/asset_reloader.h"
+#include "./sample_components/mgpu_toggle.h"
 #include "./sample_components/scene_reloader.h"
 #include "./sample_components/window_maker.h"
 #include "./scene_loaders.h"
@@ -278,6 +279,7 @@ namespace nau::sample
 
             scene_00->getRoot().addComponent<SceneReloader>();
             scene_00->getRoot().addComponent<AssetReloader>();
+            scene_00->getRoot().addComponent<MgpuToggle>();
             scene_00->getRoot().addComponent<DirectionalLightComponent>();
 
             auto& env = scene_00->getRoot().addComponent<EnvironmentComponent>();

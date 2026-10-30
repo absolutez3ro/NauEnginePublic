@@ -14,6 +14,8 @@
 #include "render/daBfg/bfg.h"
 
 #if defined(NAU_ENABLE_MGPU)
+#include <chrono>
+
 #include "nau/3d/dag_resPtr.h"
 #include "nau/mgpu/bridge/mgpu_bridge.h"
 #endif
@@ -113,27 +115,39 @@ namespace nau::render
         dabfg::NodeHandle m_csmNode;
 
 #if defined(NAU_ENABLE_MGPU)
-        // Mgpu transfer path: a second GPU produces a test image, it travels through a shared heap to the Mgpu
-        // device on Nau's adapter and is written into a Nau texture. Switch: MGPU_TRANSFER_ENABLED in mgpu_nodes.cpp.
+        // Mgpu path: the second GPU draws an image in parallel with Nau's frame, it travels through a shared heap to
+        // the Mgpu device on Nau's adapter and is written into a Nau texture. On screen the scene and that image
+        // alternate, MGPU_ALTERNATE_PERIOD_FRAMES frames each. With one GPU, or with the path switched off
+        // (nau::mgpu::bridge::setEnabled), only the scene is shown.
         struct MgpuTransferState
         {
             // The bridge is tried once per enable: a failed initialization is not retried every frame.
             bool initAttempted = false;
+            bool hasImage = false; // targetTexture holds at least one image of the second GPU
             uint32_t frameCounter = 0;
+            uint64_t reportedFailures = 0;
+            uint32_t imagesSinceReport = 0;
+            float imagesPerSecond = 0;
+            std::chrono::steady_clock::time_point lastReport;
             nau::mgpu::bridge::TransferBridge bridge;
             TexPtr stagingTexture; // CPU-writable (system memory) copy of the received image
             TexPtr targetTexture; // GPU texture that receives the image from the staging texture
         };
 
-        static constexpr uint32_t MGPU_TRANSFER_PERIOD_FRAMES = 60;
+        // Frames of the scene, then frames of the second GPU's image, and so on. 1 = strict frame-by-frame alternation.
+        static constexpr uint32_t MGPU_ALTERNATE_PERIOD_FRAMES = 30;
+        // Log line and status update for the UI (images per second, latency, failures).
+        static constexpr float MGPU_REPORT_PERIOD_SECONDS = 2.0f;
 
         void updateMgpuTransfer();
         void releaseMgpuTransfer();
+        void uploadMgpuImage();
+        void publishMgpuStatus() const;
 
         MgpuTransferState m_mgpuTransfer;
 
-        // TEST BUILD (local change, not committed): the "mgpu_transfer" node is kept outside the debug stage, which
-        // GraphicsImpl::createRenderWindow disables. Declared after m_mgpuTransfer, so it is unregistered first.
+        // The "mgpu_transfer" node is kept outside the debug stage, which GraphicsImpl::createRenderWindow disables.
+        // Declared after m_mgpuTransfer, so it is unregistered first.
         dabfg::NodeHandle m_mgpuNode;
 #endif
 
