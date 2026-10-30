@@ -18,6 +18,7 @@
 
 #include "nau/3d/dag_resPtr.h"
 #include "nau/mgpu/bridge/mgpu_bridge.h"
+#include "nau/mgpu/bridge/dof_bridge.h"
 #endif
 
 namespace nau
@@ -167,6 +168,23 @@ namespace nau::render
         eastl::shared_ptr<GraphicsScene> m_graphicsScene = nullptr;
 
         eastl::unique_ptr<render::PostFxRenderer> m_postFXRenderer;
+        MaterialAssetView::Ptr m_depthOfFieldMaterial;
+        bool m_depthOfFieldEnabled = false;
+        bool m_depthOfFieldDebugEnabled = false;
+        bool m_depthOfFieldToggleWasDown = false;
+        bool m_depthOfFieldDebugToggleWasDown = false;
+        float m_depthOfFieldFocusDistance = 25.0f;
+        float m_depthOfFieldFocusRange = 6.0f;
+        float m_depthOfFieldMaxCoC = 3.4f;
+        float m_depthOfFieldFilterRadius = 3.0f;
+        float m_depthOfFieldTaps = 32.0f;
+        bool m_dofMultiGpuUsed = false;
+#if defined(NAU_ENABLE_MGPU)
+        nau::mgpu::bridge::DofBridge m_dofBridge;
+        bool m_dofMultiGpuEnabled = true;
+        bool m_dofMultiGpuToggleWasDown = false;
+        bool m_dofMultiGpuReported = false;
+#endif
         eastl::unique_ptr<render::EnvironmentRenderer> m_environmentRenderer;
 
         void* m_windowHandle;

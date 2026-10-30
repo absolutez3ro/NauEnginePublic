@@ -1777,6 +1777,22 @@ int d3d::driver_command(int command, void *par1, void *par2, void *par3)
       (*(void **)par2) = ((BaseTex *)texture)->tex.image->getHandle();
       return 1;
     }
+    case DRV3D_COMMAND_PREPARE_TEXTURE_FOR_EXTERNAL_COPY:
+    {
+      if (!par1 || !par2 || !par3)
+        return 0;
+      ScopedCommitLock ctxLock{drv3d_dx12::api_state.device.getContext()};
+      auto *texture = cast_to_texture_base(static_cast<BaseTexture *>(par1));
+      auto *image = texture->getDeviceImage();
+      if (!image)
+        return 0;
+      const auto state = *static_cast<const bool *>(par2) ? RB_RW_COPY_DEST : RB_RO_COPY_SOURCE;
+      auto &context = drv3d_dx12::api_state.device.getContext();
+      context.textureBarrier(image, image->getSubresourceRangeForBarrier(0, 0), texture->cflg,
+        state, GpuPipeline::GRAPHICS, true);
+      *static_cast<void **>(par3) = image->getHandle();
+      return 1;
+    }
     case DRV3D_COMMAND_GET_RENDERING_COMMAND_QUEUE:
       *(ID3D12CommandQueue **)par1 = drv3d_dx12::api_state.device.getGraphicsCommandQueue();
       return 1;

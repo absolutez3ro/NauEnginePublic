@@ -4,6 +4,7 @@
 
 #include "nau/gui/dag_imgui.h"
 #include "imguiRenderer.h"
+#include "../render_window/dof_controls.h"
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <implot.h>
@@ -335,6 +336,9 @@ ImDrawData* copyDrawData(ImDrawData* data)
 void imgui_cache_render_data()
 {
     std::lock_guard<std::recursive_mutex> lock(imgui_mutex);
+    if (imgui_state != ImGuiState::OFF && !frameEnded)
+        nau::render::drawDofControls();
+
     if(cachedDrawData)
     {
         deleteDrawData(cachedDrawData);

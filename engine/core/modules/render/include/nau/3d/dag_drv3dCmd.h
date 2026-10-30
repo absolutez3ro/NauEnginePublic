@@ -107,6 +107,11 @@ enum
   DRV3D_COMMAND_MAKE_TEXTURE,
   DRV3D_COMMAND_GET_TEXTURE_HANDLE,
 
+  // DX12 external copy bridge. par1: Texture*, par2: bool* (true = COPY_DEST),
+  // par3: ID3D12Resource**. Forces a tracked transition even with automatic barriers.
+  // Caller must finish_render_commands() before native submission and leave this state unchanged.
+  DRV3D_COMMAND_PREPARE_TEXTURE_FOR_EXTERNAL_COPY,
+
   // Start / Finish exclusive access for working with graphical resources and rendering context.
   // It is useful in cases when part of some rendering is performed beyond the borders of the driver
   DRV3D_COMMAND_BEGIN_EXTERNAL_ACCESS,

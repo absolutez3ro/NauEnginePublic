@@ -73,6 +73,16 @@ nau_add_compile_options(${TargetName})
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${Sources})
 
+if(TARGET Mgpu)
+  # GPU1 compiles the same HLSL variants as the Nau material; do not maintain a second algorithm.
+  add_custom_command(TARGET ${TargetName} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${TargetName}>/Shaders/DOF"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/content/shaders/src/dof_pipeline.hlsl"
+      "$<TARGET_FILE_DIR:${TargetName}>/Shaders/DOF/dof_pipeline.hlsl"
+  )
+endif()
+
 set_target_properties(${TargetName} PROPERTIES
     FOLDER "${NauEngineFolder}/samples"
 )

@@ -206,7 +206,7 @@ namespace nau::render
 
         m_gBufferNodes.addNode(dabfg::register_node(nau::utils::format("{}_{}", "compute_env_cubemaps", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
-            registry.orderMeAfter(nau::utils::format("{}_{}", "calculate_outline", m_swapchain).c_str());
+            registry.orderMeBefore(nau::utils::format("{}_{}", "gbuffer_resolve", m_swapchain).c_str());
             registry.executionHas(dabfg::SideEffects::External);
 
             return [this]()
@@ -237,8 +237,8 @@ namespace nau::render
         {
             registry.orderMeAfter(nau::utils::format("{}_{}", "render_envi", m_swapchain).c_str());
 
-            auto resolveTarget = registry.readTexture(nau::utils::format("{}_{}", "resolve_texture", m_swapchain).c_str())
-                                     .atStage(dabfg::Stage::PS_OR_CS)
+            auto resolveTarget = registry.modifyTexture(nau::utils::format("{}_{}", "resolve_texture", m_swapchain).c_str())
+                                     .atStage(dabfg::Stage::POST_RASTER)
                                      .useAs(dabfg::Usage::COLOR_ATTACHMENT)
                                      .handle();
 

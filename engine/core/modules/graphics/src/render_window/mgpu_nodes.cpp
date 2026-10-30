@@ -19,7 +19,7 @@ namespace nau::render
     // key M).
     // It only has an effect in a build with NAU_ENABLE_MGPU (preset win_vs2022_x64_mgpu) on a machine with two distinct
     // GPUs; with one GPU the bridge reports that it is unavailable and only the scene is shown.
-    constexpr bool MGPU_TRANSFER_ENABLED = true;
+    constexpr bool MGPU_TRANSFER_ENABLED = false; // Test pattern is independent of the DOF bridge.
 
     namespace
     {
