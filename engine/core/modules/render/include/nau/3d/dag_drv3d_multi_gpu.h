@@ -35,7 +35,8 @@ namespace d3d::mgpu
         uint32_t height = 0;
         uint32_t format = 0;  ///< TEXFMT_* value shared by both endpoints.
         TransferDirection direction = TransferDirection::secondaryToPrimary;
-        uint32_t slotCount = 2;      ///< Shared copies in flight; at least 2, so the producer can write frame N+1 while frame N is read.
+        uint32_t slotCount = 2;      ///< At least 2 with synchronization; exactly 1 for experimental unsynchronized transfers.
+        bool synchronization = true;  ///< False selects experimental single-slot transfers without cross-adapter waits.
         const char* name = nullptr;  ///< Debug name of the shared resources.
     };
 
@@ -94,6 +95,13 @@ namespace d3d::mgpu
      * The caller must poll before publishing the destination to the engine or reusing the channel.
      */
     NAU_RENDER_EXPORT PrimarySyncPoint begin_receive_on_primary(TransferChannelHandle channel, TransferTicket ticket, BaseTexture* destination);
+
+    /**
+     * @brief Copies the latest shared bytes and orders primary graphics after its local copy.
+     * Used by unsynchronized channels; does not check whether the secondary result is complete.
+     * Same-device endpoint dependencies remain ordered. No CPU wait is performed.
+     */
+    NAU_RENDER_EXPORT bool receive_on_primary(TransferChannelHandle channel, TransferTicket ticket, BaseTexture* destination);
 
     /** @brief Polls a primary copy fence. Never waits; device removal is reported as incomplete. */
     NAU_RENDER_EXPORT bool is_primary_transfer_complete(PrimarySyncPoint point);

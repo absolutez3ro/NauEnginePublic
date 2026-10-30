@@ -38,6 +38,7 @@
             "surfaceEpsilon": 0.05,
             "blur": true,
             "blurDepthThreshold": 0.2,
+            "synchronization": true,
             "reprojection": true,
             "reprojectionDepthThreshold": 0.1
         }

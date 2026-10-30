@@ -1410,6 +1410,7 @@ class DeviceContext : protected ResourceUsageHistoryDataSetDebugger, public debu
       DeviceQueueType queue);
     void transitionTextureForForeignQueue(Image *image);
     void signalForeignFence(ID3D12Fence *fence, uint64_t value);
+    void waitForeignFence(ID3D12Fence *fence, uint64_t value);
     void bufferReadBack(BufferResourceReferenceAndRange buffer, HostDeviceSharedMemoryRegion cpu_memory, size_t offset);
 #if !_TARGET_XBOXONE
     void setVariableRateShading(D3D12_SHADING_RATE rate, D3D12_SHADING_RATE_COMBINER vs_combiner,
@@ -1805,6 +1806,7 @@ public:
   // subresource 0 of image to COMMON, submits everything recorded so far and signals fence with value on the graphics
   // queue after it.
   void releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint64_t value);
+  void waitForForeignQueue(ID3D12Fence *fence, uint64_t value);
   // Similar to flushDraws, with the exception that it will only execute a flush when no queries are active.
   // Returns true if it executed a flush, otherwise it returns false.
   bool flushDrawWhenNoQueries();

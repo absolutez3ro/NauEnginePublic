@@ -64,6 +64,7 @@ namespace nau::render
         m_reprojection = readSetting<bool>("render/ssao/reprojection", true);
         m_reprojectionDepthThreshold = readFiniteSetting("render/ssao/reprojectionDepthThreshold", 0.1f, 0.0001f, 10.0f);
         m_useSecondary = readSetting<bool>("render/ssao/useSecondary", false);
+        m_synchronization = readSetting<bool>("render/ssao/synchronization", true);
         if (m_useSecondary && !m_blurMaterial->getPipelineNames().contains("packNormals"))
         {
             m_useSecondary = false;
@@ -113,6 +114,8 @@ namespace nau::render
         }
         m_historyValid = false;
         m_discardPending = false;
+        m_pendingFrame = false;
+        m_completedFrameValid = false;
     }
 
     void AmbientOcclusion::beginFrame(const math::Matrix4& view, const math::Matrix4& projection, AmbientOcclusionMode mode)
@@ -153,6 +156,12 @@ namespace nau::render
         {
             return;
         }
+        // The last secondary job (including its shared copy) is complete. Preserve its camera
+        // and input depth before overwriting the snapshot, even though shared AO may change later.
+        if (!m_synchronization && m_pendingFrame && !publishHistory())
+        {
+            return;
+        }
         packNormals(normals);
         if (!m_depthSnapshot->update(depth))
         {
@@ -167,6 +176,7 @@ namespace nau::render
         }
         if (submitted == d3d::mgpu::SsaoResult::submitted)
         {
+            m_pendingFrame = true;
             m_pendingViewProjection = m_viewProjection;
             m_pendingInverseProjection = m_inverseProjection;
             m_discardPending = false;
@@ -219,6 +229,7 @@ namespace nau::render
             const Shader* vertex = m_vertexShader->getShader();
             const Shader* raw = m_rawShader->getShader();
             d3d::mgpu::SsaoProducerDesc desc;
+            desc.synchronization = m_synchronization;
             desc.width = info.w;
             desc.height = info.h;
             desc.vertexBytecode = vertex->bytecode.data();
@@ -245,7 +256,7 @@ namespace nau::render
                 resetSecondary();
                 return false;
             }
-            NAU_LOG_INFO("SSAO: GPU 1 ready, {}x{}, three shared slots, deferred copies", info.w, info.h);
+            NAU_LOG_INFO("SSAO: GPU 1 ready, {}x{}, synchronization={}, shared slots={}", info.w, info.h, m_synchronization, m_synchronization ? 3 : 1);
             NAU_LOG_INFO("SSAO: camera reprojection={}", m_reprojection);
         }
         if (!m_secondary)
@@ -269,21 +280,19 @@ namespace nau::render
         }
         if (received == d3d::mgpu::SsaoResult::submitted && !m_discardPending)
         {
-            // The snapshot still belongs to this result. Preserve it before the next submit overwrites it.
-            if (m_reprojection && !m_historyDepth->update(m_depthSnapshot))
+            if (m_synchronization && !publishHistory())
             {
-                d3d::report_secondary_gpu_failure(static_cast<uint32_t>(E_FAIL));
-                m_historyValid = false;
                 return false;
             }
             eastl::swap(m_history, m_receiving);
-            m_historyViewProjection = m_pendingViewProjection;
-            m_historyInverseProjection = m_pendingInverseProjection;
-            if (!m_historyValid)
+            if (m_completedFrameValid)
             {
-                NAU_LOG_INFO("SSAO: displaying completed GPU 1 result");
+                if (!m_historyValid)
+                {
+                    NAU_LOG_INFO("SSAO: displaying completed GPU 1 result");
+                }
+                m_historyValid = true;
             }
-            m_historyValid = true;
         }
         if (!m_historyValid)
         {
@@ -297,6 +306,21 @@ namespace nau::render
         }
         m_blurMaterial->setProperty("default", "aoFilter", math::Vector4(0.0f, 0.0f, m_blurDepthThreshold, 1.0f));
         draw(target, *m_blurMaterial, m_history);
+        return true;
+    }
+
+    bool AmbientOcclusion::publishHistory()
+    {
+        if (m_reprojection && !m_historyDepth->update(m_depthSnapshot))
+        {
+            d3d::report_secondary_gpu_failure(static_cast<uint32_t>(E_FAIL));
+            m_historyValid = false;
+            return false;
+        }
+        m_historyViewProjection = m_pendingViewProjection;
+        m_historyInverseProjection = m_pendingInverseProjection;
+        m_completedFrameValid = true;
+        m_pendingFrame = false;
         return true;
     }
 

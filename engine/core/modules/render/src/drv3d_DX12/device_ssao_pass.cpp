@@ -42,7 +42,7 @@ namespace drv3d_dx12
 
         HRESULT init(const DeviceSsaoPassDesc& desc);
         HRESULT canSubmit() const;
-        HRESULT execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady);
+        HRESULT execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, const DeviceSsaoInputs* sharedInputs);
         HRESULT wait(DWORD timeoutMs);
         HRESULT waitOn(CrossAdapterSyncPoint point, UINT index);
         bool removed() const
@@ -55,6 +55,7 @@ namespace drv3d_dx12
         HRESULT createPipelines(const DeviceSsaoPassDesc& desc);
         HRESULT signal();
         void barrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
+        void copySharedInput(ID3D12Resource* destination, const SharedTextureRead& source);
 
     private:
         // Declaration order keeps the device and allocator alive until the resources are destroyed.
@@ -63,6 +64,7 @@ namespace drv3d_dx12
         DeviceResource m_normals;
         DeviceResource m_depth;
         DeviceResource m_target;
+        DeviceSsaoInputs m_sharedInputs;
         DeviceResource m_constants;
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_queue;
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_commandAllocators[FRAME_COUNT];
@@ -161,10 +163,10 @@ namespace drv3d_dx12
         return m_state ? m_state->canSubmit() : DXGI_ERROR_INVALID_CALL;
     }
 
-    HRESULT DeviceSsaoPass::execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady)
+    HRESULT DeviceSsaoPass::execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, const DeviceSsaoInputs* sharedInputs)
     {
         collectRetiredResources();
-        return m_state ? m_state->execute(constants, normalsReady, depthReady) : DXGI_ERROR_INVALID_CALL;
+        return m_state ? m_state->execute(constants, normalsReady, depthReady, sharedInputs) : DXGI_ERROR_INVALID_CALL;
     }
 
     HRESULT DeviceSsaoPass::releaseOutput(CrossAdapterSyncPoint released)
@@ -448,8 +450,26 @@ namespace drv3d_dx12
         m_list->ResourceBarrier(1, &transition);
     }
 
-    HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady)
+    void DeviceSsaoPass::State::copySharedInput(ID3D12Resource* destination, const SharedTextureRead& source)
     {
+        barrier(destination, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+        D3D12_TEXTURE_COPY_LOCATION target = {};
+        target.pResource = destination;
+        target.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        D3D12_TEXTURE_COPY_LOCATION shared = {};
+        shared.pResource = source.resource.Get();
+        shared.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        shared.PlacedFootprint = source.layout;
+        m_list->CopyTextureRegion(&target, 0, 0, 0, &shared, nullptr);
+        barrier(destination, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+    }
+
+    HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, const DeviceSsaoInputs* sharedInputs)
+    {
+        if (sharedInputs && (!sharedInputs->normals.resource || !sharedInputs->depth.resource || !sharedInputs->normals.heap || !sharedInputs->depth.heap))
+        {
+            return E_INVALIDARG;
+        }
         HRESULT result = canSubmit();
         if (result != S_OK)
         {
@@ -464,6 +484,13 @@ namespace drv3d_dx12
         if (FAILED(result))
         {
             return result;
+        }
+        if (sharedInputs)
+        {
+            // No cross-adapter wait: only the local copies and their consuming draw are ordered.
+            m_sharedInputs = *sharedInputs;
+            copySharedInput(m_normals.getResource(), m_sharedInputs.normals);
+            copySharedInput(m_depth.getResource(), m_sharedInputs.depth);
         }
         ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Get()};
         m_list->SetDescriptorHeaps(1, heaps);

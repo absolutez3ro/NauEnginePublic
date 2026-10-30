@@ -22,11 +22,18 @@ namespace drv3d_dx12
         D3D12_SHADER_BYTECODE rawShader = {};
     };
 
+    struct DeviceSsaoInputs
+    {
+        SharedTextureRead normals;
+        SharedTextureRead depth;
+    };
+
     /**
      * @brief Raw SSAO draw on one device/queue, using G-buffer normals at full resolution.
      * Inputs and outputs are COMMON between submissions.
      * Channel endpoints and their fences stay fixed until reset. Input copies wait for getReadyPoint(); execute
      * waits for both copies. releaseOutput orders the next overwrite after the output channel has read it.
+     * Unsynchronized shared inputs are copied on the draw queue, before sampling the local textures.
      * Command/constant slots are polled: busy never blocks the render thread. Destruction retires pending work.
      */
     class DeviceSsaoPass final
@@ -42,7 +49,7 @@ namespace drv3d_dx12
         HRESULT init(const DeviceSsaoPassDesc& desc);
         HRESULT reset(DWORD timeoutMs = 10000);
         HRESULT canSubmit() const;
-        HRESULT execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {});
+        HRESULT execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {}, const DeviceSsaoInputs* sharedInputs = nullptr);
         HRESULT releaseOutput(CrossAdapterSyncPoint released);
         CrossAdapterSyncPoint getReadyPoint() const;
         ID3D12Resource* getNormals() const;

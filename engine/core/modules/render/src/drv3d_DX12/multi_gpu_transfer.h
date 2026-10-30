@@ -13,8 +13,22 @@
 #include "multi_gpu_fence.h"
 #include "nau/directx/d3d12.h"
 
+namespace d3d::mgpu
+{
+    struct TransferChannel;
+}
+
 namespace drv3d_dx12
 {
+    struct SharedTextureRead
+    {
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+        Microsoft::WRL::ComPtr<ID3D12Heap> heap;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout = {};
+    };
+
+    SharedTextureRead getSecondarySharedInput(d3d::mgpu::TransferChannel* channel, uint64_t ticket, ID3D12Resource* destination);
+
     /**
      * @brief A fence and a value on one device. Queues of that device may wait for it on the GPU.
      */
@@ -40,6 +54,9 @@ namespace drv3d_dx12
      * receive of its frame. A frame that was never received but is older than a received one is skipped without a wait.
      * If neither holds, the consumer is late and the new frame is dropped (send returns ticket 0) rather than stalling the
      * producer for a receive that may never come.
+     *
+     * Experimental synchronization=false uses one shared slot and omits cross-adapter read/write ordering.
+     * Endpoint dependencies, command allocator fences and destruction drains still apply.
      *
      * Nothing is allocated per call: slots and command lists come from fixed pools. If the CPU runs more than
      * MAX_RECORDINGS submissions ahead of a GPU, further calls fail instead of blocking.
@@ -94,6 +111,7 @@ namespace drv3d_dx12
         CrossAdapterFence m_consumed;  // consumer signals after a slot is read
         Slot m_slotStates[MAX_SLOTS];
         uint32_t m_slotCount = 0;
+        bool m_synchronization = true;
         D3D12_RESOURCE_DESC m_payload = {};
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_footprint = {};
         uint64_t m_slotSize = 0;
@@ -278,16 +296,16 @@ namespace drv3d_dx12
          * @param consumer Device that receives, on another adapter.
          * @param heap_owner producer or consumer: the device that creates the shared heap.
          * @param payload_desc Description of a 2D texture: single plane, no MSAA; subresource 0 is moved.
-         * @param slot_count Frames in flight, from 2 to MAX_SLOTS.
+         * @param slot_count From 2 to MAX_SLOTS with synchronization, exactly 1 without it.
          * @param name Debug name prefix for the queues and slots, may be nullptr.
          * @return S_OK, E_INVALIDARG for unsupported input, DXGI_ERROR_UNSUPPORTED if the adapters disagree on the copy
          *         layout, or the failing HRESULT. On failure the object stays empty.
          */
-        HRESULT init(ID3D12Device* producer, ID3D12Device* consumer, ID3D12Device* heap_owner, const D3D12_RESOURCE_DESC& payload_desc, uint32_t slot_count, const wchar_t* name)
+        HRESULT init(ID3D12Device* producer, ID3D12Device* consumer, ID3D12Device* heap_owner, const D3D12_RESOURCE_DESC& payload_desc, uint32_t slot_count, const wchar_t* name, bool synchronization = true)
         {
             reset();
             if (!producer || !consumer || producer == consumer || (heap_owner != producer && heap_owner != consumer) ||
-                slot_count < 2 || slot_count > MAX_SLOTS || !isSupportedPayload(producer, payload_desc) || !isSupportedPayload(consumer, payload_desc))
+                slot_count < (synchronization ? 2u : 1u) || slot_count > MAX_SLOTS || (!synchronization && slot_count != 1) || !isSupportedPayload(producer, payload_desc) || !isSupportedPayload(consumer, payload_desc))
             {
                 return E_INVALIDARG;
             }
@@ -328,6 +346,7 @@ namespace drv3d_dx12
             m_sides[PRODUCER].device = producer;
             m_sides[CONSUMER].device = consumer;
             m_slotCount = slot_count;
+            m_synchronization = synchronization;
             m_slotSize = payloadSize;
             m_payload = payload_desc;
 
@@ -400,6 +419,7 @@ namespace drv3d_dx12
                 slot = {};
             }
             m_slotCount = 0;
+            m_synchronization = true;
             m_payload = {};
             m_footprint = {};
             m_slotSize = 0;
@@ -423,7 +443,7 @@ namespace drv3d_dx12
                 return false;
             }
             const Slot& slot = m_slotStates[(m_lastSent + 1) % m_slotCount];
-            return slot.ticket == 0 || slot.consumedValue != 0 || m_lastReceived >= slot.ticket;
+            return !m_synchronization || slot.ticket == 0 || slot.consumedValue != 0 || m_lastReceived >= slot.ticket;
         }
 
         /**
@@ -440,6 +460,17 @@ namespace drv3d_dx12
         bool isReady(uint64_t ticket) const
         {
             return holds(ticket) && !isLost() && m_written.isCompleted(m_slotStates[ticket % m_slotCount].writtenValue);
+        }
+
+        // The technique records this read on its own queue. Keep both resource and heap alive until that queue finishes.
+        SharedTextureRead getSharedRead(uint64_t ticket, ID3D12Resource* destination) const
+        {
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout = {};
+            if (m_synchronization || !holds(ticket) || !matchesPayload(destination, CONSUMER, layout))
+            {
+                return {};
+            }
+            return {m_sides[CONSUMER].slots[ticket % m_slotCount], m_sides[CONSUMER].heap, layout};
         }
 
         /**
@@ -471,7 +502,7 @@ namespace drv3d_dx12
                 return {};
             }
             if (!enqueueExternalWait(PRODUCER, source_ready) ||
-                (slot.consumedValue != 0 && !m_consumed.enqueueWait(m_sides[PRODUCER].queue.Get(), slot.consumedValue)))
+                (m_synchronization && slot.consumedValue != 0 && !m_consumed.enqueueWait(m_sides[PRODUCER].queue.Get(), slot.consumedValue)))
             {
                 list->Close();
                 return {};
@@ -522,7 +553,8 @@ namespace drv3d_dx12
             {
                 return {};
             }
-            if (!enqueueExternalWait(CONSUMER, destination_free) || !m_written.enqueueWait(m_sides[CONSUMER].queue.Get(), slot.writtenValue))
+            if (!enqueueExternalWait(CONSUMER, destination_free) ||
+                (m_synchronization && !m_written.enqueueWait(m_sides[CONSUMER].queue.Get(), slot.writtenValue)))
             {
                 list->Close();
                 return {};

@@ -26,6 +26,7 @@ namespace d3d::mgpu
         PrimarySyncPoint receiving;
         BaseTexture* destination = nullptr;
         TransferTicket pendingOutput = 0;
+        bool synchronization = true;
 
         ~SsaoProducer()
         {
@@ -60,12 +61,14 @@ namespace d3d::mgpu
             pass.rawShader = {desc.rawBytecode, desc.rawBytecodeSize};
             result = producer->pass.init(pass);
         }
+        producer->synchronization = desc.synchronization;
         if (SUCCEEDED(result))
         {
             TransferChannelDesc channel;
             channel.width = desc.width;
             channel.height = desc.height;
-            channel.slotCount = 3;
+            channel.synchronization = desc.synchronization;
+            channel.slotCount = desc.synchronization ? 3 : 1;
             channel.direction = TransferDirection::primaryToSecondary;
             channel.format = TEXFMT_G32R32F;
             channel.name = "SSAO G-buffer normals GPU 0 -> GPU 1";
@@ -98,10 +101,10 @@ namespace d3d::mgpu
         {
             report_secondary_gpu_failure(static_cast<uint32_t>(status));
         }
-        return producer && (producer->pendingOutput != 0 ||
-                            !is_primary_transfer_complete(producer->normalsReleased) ||
-                            !is_primary_transfer_complete(producer->depthReleased) ||
-                            status != S_OK);
+        const bool outputPending = producer->pendingOutput != 0 &&
+                                   (producer->synchronization || !is_transfer_ready(producer->output, producer->pendingOutput));
+        return outputPending || !is_primary_transfer_complete(producer->normalsReleased) ||
+               !is_primary_transfer_complete(producer->depthReleased) || status != S_OK;
     }
 
     SsaoResult submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth)
@@ -118,29 +121,43 @@ namespace d3d::mgpu
         const PrimarySend depthSent = send_from_primary_deferred(producer->depth, depth);
         producer->normalsReleased = normalSent.sourceReleased;
         producer->depthReleased = depthSent.sourceReleased;
-        const drv3d_dx12::CrossAdapterSyncPoint free = producer->pass.getReadyPoint();
-        const SecondarySyncPoint destinationFree = {free.fence, free.value};
-        // Consume either successful send, including a partial pair, to release every shared slot.
-        const SecondarySyncPoint normalReady = normalSent.ticket
-                                                   ? receive_on_secondary(producer->normals, normalSent.ticket, producer->pass.getNormals(), destinationFree)
-                                                   : SecondarySyncPoint{};
-        const SecondarySyncPoint depthReady = depthSent.ticket
-                                                  ? receive_on_secondary(producer->depth, depthSent.ticket, producer->pass.getDepth(), destinationFree)
-                                                  : SecondarySyncPoint{};
         HRESULT result = S_OK;
-        if ((normalSent.ticket && !normalReady.nativeFence) || (depthSent.ticket && !depthReady.nativeFence))
+        if (!producer->synchronization)
         {
-            result = E_FAIL;
-        }
-        else if (!normalSent.ticket || !depthSent.ticket)
-        {
-            return SsaoResult::busy;
+            if (!normalSent.ticket || !depthSent.ticket)
+            {
+                return SsaoResult::busy;
+            }
+            const drv3d_dx12::DeviceSsaoInputs inputs = {
+                drv3d_dx12::getSecondarySharedInput(producer->normals, normalSent.ticket, producer->pass.getNormals()),
+                drv3d_dx12::getSecondarySharedInput(producer->depth, depthSent.ticket, producer->pass.getDepth())};
+            result = producer->pass.execute(constants, {}, {}, &inputs);
         }
         else
         {
-            result = producer->pass.execute(constants,
-                                            {static_cast<ID3D12Fence*>(normalReady.nativeFence), normalReady.value},
-                                            {static_cast<ID3D12Fence*>(depthReady.nativeFence), depthReady.value});
+            const drv3d_dx12::CrossAdapterSyncPoint free = producer->pass.getReadyPoint();
+            const SecondarySyncPoint destinationFree = {free.fence, free.value};
+            // Consume either successful send, including a partial pair, to release every shared slot.
+            const SecondarySyncPoint normalReady = normalSent.ticket
+                                                       ? receive_on_secondary(producer->normals, normalSent.ticket, producer->pass.getNormals(), destinationFree)
+                                                       : SecondarySyncPoint{};
+            const SecondarySyncPoint depthReady = depthSent.ticket
+                                                      ? receive_on_secondary(producer->depth, depthSent.ticket, producer->pass.getDepth(), destinationFree)
+                                                      : SecondarySyncPoint{};
+            if ((normalSent.ticket && !normalReady.nativeFence) || (depthSent.ticket && !depthReady.nativeFence))
+            {
+                result = E_FAIL;
+            }
+            else if (!normalSent.ticket || !depthSent.ticket)
+            {
+                return SsaoResult::busy;
+            }
+            else
+            {
+                result = producer->pass.execute(constants,
+                                                {static_cast<ID3D12Fence*>(normalReady.nativeFence), normalReady.value},
+                                                {static_cast<ID3D12Fence*>(depthReady.nativeFence), depthReady.value});
+            }
         }
         if (SUCCEEDED(result))
         {
@@ -166,6 +183,10 @@ namespace d3d::mgpu
         if (!producer->pendingOutput)
         {
             return SsaoResult::busy;
+        }
+        if (!producer->synchronization)
+        {
+            return receive_on_primary(producer->output, producer->pendingOutput, destination) ? SsaoResult::submitted : SsaoResult::busy;
         }
         if (!producer->receiving.nativeFence)
         {

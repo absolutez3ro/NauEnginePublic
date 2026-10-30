@@ -1293,6 +1293,14 @@ void DeviceContext::releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint
   immediateModeExecute();
 }
 
+void DeviceContext::waitForForeignQueue(ID3D12Fence *fence, uint64_t value)
+{
+  DX12_LOCK_FRONT();
+
+  commandStream.pushBack(make_command<CmdWaitForeignFence>(fence, value));
+  immediateModeExecute();
+}
+
 bool DeviceContext::flushDrawWhenNoQueries()
 {
   DX12_LOCK_FRONT();
@@ -5225,6 +5233,11 @@ void DeviceContext::ExecutionContext::transitionTextureForForeignQueue(Image *im
 void DeviceContext::ExecutionContext::signalForeignFence(ID3D12Fence *fence, uint64_t value)
 {
   device.queues[DeviceQueueType::GRAPHICS].enqueueProgressUpdate(fence, value);
+}
+
+void DeviceContext::ExecutionContext::waitForeignFence(ID3D12Fence *fence, uint64_t value)
+{
+  device.queues[DeviceQueueType::GRAPHICS].syncWith(fence, value);
 }
 
 void DeviceContext::ExecutionContext::textureReadBack(Image *image, HostDeviceSharedMemoryRegion cpu_memory,

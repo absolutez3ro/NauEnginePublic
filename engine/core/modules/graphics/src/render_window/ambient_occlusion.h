@@ -39,6 +39,7 @@ namespace nau::render
         void reprojectHistory(BaseTexture* target, BaseTexture* depth);
         bool prepareSecondary(BaseTexture* depth);
         bool receiveSecondary(BaseTexture* target);
+        bool publishHistory();
 
         MaterialAssetView::Ptr m_rawMaterial;
         MaterialAssetView::Ptr m_blurMaterial;
@@ -63,6 +64,9 @@ namespace nau::render
         bool m_secondaryAttempted = false;
         bool m_historyValid = false;
         bool m_discardPending = false;
+        bool m_pendingFrame = false;
+        bool m_completedFrameValid = false;
+        bool m_synchronization = true;
         BaseTexture* m_normals = nullptr;
         BaseTexture* m_depth = nullptr;
         math::Vector4 m_parameters = math::Vector4(0.5f, 0.2f, 1.0f, 0.05f);
