@@ -14,7 +14,7 @@
         "file:/res/shaders/cache/shader_cache.nsbc+[texturedInstanced.vs.zprepassinstancedvsmain]",
         "file:/res/shaders/cache/shader_cache.nsbc+[texturedInstanced.ps.zprepasspsmain]"
       ],
-      "cullMode": "Clockwise",
+      "cullMode": "CounterClockwise",
       "depthMode": "Default",
       "blendMode": "Opaque"
     },
@@ -48,7 +48,7 @@
         "file:/res/shaders/cache/shader_cache.nsbc+[texturedInstanced.vs.zprepassinstancedvsmain]",
         "file:/res/shaders/cache/shader_cache.nsbc+[texturedInstanced.ps.zprepassnormalspsmain]"
       ],
-      "cullMode": "Clockwise",
+      "cullMode": "CounterClockwise",
       "depthMode": "Default",
       "blendMode": "Opaque"
     },

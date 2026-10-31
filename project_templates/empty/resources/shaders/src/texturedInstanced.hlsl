@@ -57,6 +57,7 @@ VsOutputZPrepass zprepassSkinnedVSMain(VsInputZPrepassSkinned input, uint instID
     float4 skinnedPos = float4(0.0, 0.0, 0.0, 0.0);
     float3 skinnedNormal = float3(0.0, 0.0, 0.0);
 
+    [unroll]
     for (int i = 0; i < 4; i++)
     {
         const uint boneIndex = input.boneIndices[i];

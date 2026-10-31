@@ -67,7 +67,7 @@ struct VsInputZPrepassSkinned
 
 struct VsOutputGBuff
 {
-    float4 position : SV_Position;
+    precise float4 position : SV_Position;
     float3 norm : NORMAL;
     float3 tangent : TANGENT;
     float2 texCoord : TEXCOORD;
@@ -76,7 +76,7 @@ struct VsOutputGBuff
 
 struct VsOutputZPrepass
 {
-    float4 position : SV_Position;
+    precise float4 position : SV_Position;
     nointerpolation uint4 uid : TEXCOORD0;
     float3 viewNormal : TEXCOORD1;
 };

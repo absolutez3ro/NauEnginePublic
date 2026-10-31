@@ -21,6 +21,7 @@ SamplerState metalRoughnessAoSampler : register(s2);
 
 GLOBAL_CBUFFER(SceneBuffer) : register(b0)
 {
+    float4x4 vp;
     float4x4 mvp;
     float4x4 worldMatrix;
     float4x4 normalMatrix;
@@ -31,7 +32,8 @@ VsOutputGBuff VSMain(VsInputLit input)
 {
     VsOutputGBuff output;
 
-    output.position = mul(mvp, float4(input.position, 1.0f));
+    // Match the prepass transform and operation order for identical depth values.
+    output.position = mul(mul(vp, worldMatrix), float4(input.position, 1.0f));
     output.norm = normalize(mul(normalMatrix, float4(input.normal, 0.0f)).xyz);
     output.tangent = normalize(mul(worldMatrix, float4(input.tangent.xyz, 0.0f)).xyz);
     output.texCoord = input.texCoord;
