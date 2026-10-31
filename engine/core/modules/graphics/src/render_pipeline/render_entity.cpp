@@ -69,25 +69,21 @@ void nau::RenderEntity::renderZPrepass(const math::Matrix4& viewProj, MaterialAs
 
     if (skinned)
     {
-        static constexpr auto bonesTransforms = "BonesTransforms";
-
-        auto& [size, ptr] = cbStructsData.at(bonesTransforms);
-
-        nau::shader_globals::setVariable(bonesTransforms, ptr);
+        shader_globals::setVariable("BonesTransforms", cbStructsData.at("BonesTransforms").dataPtr);
+        shader_globals::setVariable("BonesNormalTransforms", cbStructsData.at("BonesNormalTransforms").dataPtr);
 
         prepareZPrepass("skinned", viewProj, zPrepassMat);
         d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
-        d3d::setvsrc(1, boneWeightsBuffer, sizeof(nau::math::float4));
-        d3d::setvsrc(2, boneIndicesBuffer, sizeof(nau::math::float4));
+        d3d::setvsrc(2, boneWeightsBuffer, sizeof(math::float4));
+        d3d::setvsrc(3, boneIndicesBuffer, sizeof(math::IVector4));
     }
     else
     {
-        auto mvp = viewProj * worldTransform;
-        shader_globals::setVariable("vp", &mvp);
         prepareZPrepass("default", viewProj, zPrepassMat);
         d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
     }
 
+    d3d::setvsrc(1, normalsBuffer, sizeof(math::float3));
     d3d::setind(indexBuffer);
     d3d::drawind(PRIM_TRILIST, startIndex, (endIndex - startIndex) / 3, 0);
 }
@@ -98,6 +94,7 @@ void nau::RenderEntity::renderZPrepassInstanced(const math::Matrix4& viewProj, M
     prepareZPrepass("default", viewProj, zPrepassMat);
 
     d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
+    d3d::setvsrc(1, normalsBuffer, sizeof(math::float3));
     d3d::setind(indexBuffer);
     d3d::drawind_instanced(PRIM_TRILIST, startIndex, (endIndex - startIndex) / 3, 0, instancesCount, 0);
 }

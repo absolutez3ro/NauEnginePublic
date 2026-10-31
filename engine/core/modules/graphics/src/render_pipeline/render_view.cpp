@@ -24,6 +24,10 @@ nau::RenderView::RenderView(eastl::string_view viewName) :
     {
         nau::shader_globals::addVariable("normalMatrix", sizeof(math::Matrix4));
     }
+    if (!nau::shader_globals::containsName("prepassView"))
+    {
+        nau::shader_globals::addVariable("prepassView", sizeof(math::Matrix4));
+    }
     if (!nau::shader_globals::containsName("worldMatrix"))
     {
         nau::shader_globals::addVariable("worldMatrix", sizeof(math::Matrix4));

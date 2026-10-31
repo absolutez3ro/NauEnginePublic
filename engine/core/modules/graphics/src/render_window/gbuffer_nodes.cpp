@@ -30,14 +30,25 @@ namespace nau::render
                                  .useAs(dabfg::Usage::COLOR_ATTACHMENT)
                                  .handle();
 
-            return [=, this]()
+            const auto normalsTarget = registry
+                                           .createTexture2d(nau::utils::format("prepass_normals_{}", m_swapchain).c_str(),
+                                                            dabfg::History::No,
+                                                            dabfg::Texture2dCreateInfo{TEXFMT_G32R32F | TEXCF_RTARGET,
+                                                                                       registry.getResolution(m_resolutionName.c_str())})
+                                           .atStage(dabfg::Stage::POST_RASTER)
+                                           .useAs(dabfg::Usage::COLOR_ATTACHMENT)
+                                           .handle();
+
+            return [this, uidTarget, normalsTarget]()
             {
                 d3d::set_render_target(const_cast<BaseTexture*>(uidTarget.get()), 0);
+                d3d::set_render_target(1, normalsTarget.get(), 0);
                 d3d::set_depth(m_gBuffer->getDepth(), DepthAccess::RW);
                 d3d::clearview(CLEAR_TARGET | CLEAR_ZBUFFER | CLEAR_STENCIL, nau::math::E3DCOLOR(0, 0, 0, 0), 0, 0);
 
                 m_graphicsScene->renderDepth();
                 d3d::set_depth(nullptr, DepthAccess::RW);
+                d3d::set_render_target();
             };
         }));
 
@@ -299,16 +310,20 @@ namespace nau::render
         m_gBufferNodes.addNode(dabfg::register_node(nau::utils::format("ssao_submit_{}", m_swapchain).c_str(), DABFG_PP_NODE_SRC,
                                                     [this](dabfg::Registry registry)
         {
-            registry.orderMeAfter(nau::utils::format("fill_gbuffer_{}", m_swapchain).c_str());
-            registry.orderMeBefore(nau::utils::format("CSM_{}", m_swapchain).c_str());
+            registry.orderMeAfter(nau::utils::format("z-prepass_{}", m_swapchain).c_str());
+            registry.orderMeBefore(nau::utils::format("fill_gbuffer_{}", m_swapchain).c_str());
             registry.executionHas(dabfg::SideEffects::External);
-            return [this]()
+            const auto normals = registry.readTexture(nau::utils::format("prepass_normals_{}", m_swapchain).c_str())
+                                     .atStage(dabfg::Stage::PS_OR_CS)
+                                     .useAs(dabfg::Usage::SHADER_RESOURCE)
+                                     .handle();
+            return [this, normals]()
             {
                 if (m_graphicsScene->hasCamera())
                 {
                     const CameraNode& camera = m_graphicsScene->getMainCamera();
                     d3d::setview(0, 0, m_gBuffer->getWidth(), m_gBuffer->getHeight(), 0.0f, 1.0f);
-                    m_ambientOcclusion->prepareFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), m_ambientOcclusionMode.load(std::memory_order_relaxed), m_gBuffer->getRt(1), m_gBuffer->getDepth());
+                    m_ambientOcclusion->prepareFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), m_ambientOcclusionMode.load(std::memory_order_relaxed), const_cast<BaseTexture*>(normals.get()), m_gBuffer->getDepth());
                 }
             };
         }));
@@ -318,6 +333,10 @@ namespace nau::render
             registry.orderMeAfter(nau::utils::format("CSM_{}", m_swapchain).c_str());
             registry.orderMeBefore(nau::utils::format("gbuffer_resolve_{}", m_swapchain).c_str());
             registry.executionHas(dabfg::SideEffects::External);
+            const auto normals = registry.readTexture(nau::utils::format("prepass_normals_{}", m_swapchain).c_str())
+                                     .atStage(dabfg::Stage::PS_OR_CS)
+                                     .useAs(dabfg::Usage::SHADER_RESOURCE)
+                                     .handle();
             const auto createTarget = [this, &registry](const char* name, uint32_t format)
             {
                 return registry.createTexture2d(nau::utils::format("{}_{}", name, m_swapchain).c_str(), dabfg::History::No,
@@ -329,7 +348,7 @@ namespace nau::render
             const auto raw = createTarget("ssao_raw_texture", TEXFMT_R16F);
             const auto horizontal = createTarget("ssao_horizontal_texture", TEXFMT_R16F);
             const auto output = createTarget("ssao_texture", TEXFMT_R8);
-            return [this, raw, horizontal, output]()
+            return [this, raw, horizontal, output, normals]()
             {
                 if (!m_graphicsScene->hasCamera())
                 {
@@ -340,7 +359,7 @@ namespace nau::render
                     d3d::set_render_target();
                     return;
                 }
-                m_ambientOcclusion->render(raw.get(), horizontal.get(), output.get(), m_gBuffer->getRt(1), m_gBuffer->getDepth());
+                m_ambientOcclusion->render(raw.get(), horizontal.get(), output.get(), const_cast<BaseTexture*>(normals.get()), m_gBuffer->getDepth());
             };
         }));
     }

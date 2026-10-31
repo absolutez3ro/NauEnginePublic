@@ -66,11 +66,6 @@ namespace nau::render
         m_reprojectionDepthThreshold = readFiniteSetting("render/ssao/reprojectionDepthThreshold", 0.1f, 0.0001f, 10.0f);
         m_useSecondary = readSetting<bool>("render/ssao/useSecondary", false);
         m_synchronization = readSetting<bool>("render/ssao/synchronization", true);
-        if (m_useSecondary && !m_blurMaterial->getPipelineNames().contains("packNormals"))
-        {
-            m_useSecondary = false;
-            NAU_LOG_WARNING("SSAO: normal packing pipeline unavailable, using GPU 0");
-        }
         if (m_useSecondary && m_reprojection && !m_blurMaterial->getPipelineNames().contains("reproject"))
         {
             m_useSecondary = false;
@@ -97,7 +92,7 @@ namespace nau::render
         {
             NAU_LOG_WARNING("SSAO: using GPU 0: {}", d3d::get_multi_gpu_fallback_reason());
         }
-        NAU_LOG_INFO("SSAO: full resolution, G-buffer normals");
+        NAU_LOG_INFO("SSAO: full resolution, prepass view normals");
     }
 
     AmbientOcclusion::~AmbientOcclusion()
@@ -168,8 +163,8 @@ namespace nau::render
         {
             return;
         }
-        packNormals(normals);
-        if (!m_depthSnapshot->update(depth))
+        // Keep both snapshots alive while the secondary GPU is still reading this frame.
+        if (!m_normalsSnapshot->update(normals) || !m_depthSnapshot->update(depth))
         {
             d3d::report_secondary_gpu_failure(static_cast<uint32_t>(E_FAIL));
             m_historyValid = false;
@@ -262,7 +257,7 @@ namespace nau::render
             {
                 return false;
             }
-            // SSAO reads only the sphere-map .xy encoding; pack it without reconstruction or resampling.
+            // The prepass already writes the compact format used by the transfer channel.
             m_normalsSnapshot = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_G32R32F | TEXCF_RTARGET, 1, u8"ssao_normals_snapshot");
             m_depthSnapshot = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_DEPTH32 | TEXCF_RTARGET, 1, u8"ssao_depth_snapshot");
             m_receiving = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_receiving");
@@ -372,23 +367,6 @@ namespace nau::render
         {
             d3d::settex(slot, nullptr);
         }
-        d3d::set_render_target();
-    }
-
-    void AmbientOcclusion::packNormals(BaseTexture* source)
-    {
-        d3d::resource_barrier({source, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
-        d3d::set_render_target();
-        d3d::set_depth(nullptr, DepthAccess::RW);
-        d3d::set_render_target(m_normalsSnapshot, 0);
-        d3d::setview(0, 0, m_secondaryWidth, m_secondaryHeight, 0.0f, 1.0f);
-        d3d::set_srgb_backbuffer_write(false);
-        d3d::settex(0, source);
-        m_blurMaterial->bindPipeline("packNormals");
-        d3d::setvsrc(0, nullptr, 0);
-        d3d::setind(nullptr);
-        d3d::draw(PRIM_TRILIST, 0, 1);
-        d3d::settex(0, nullptr);
         d3d::set_render_target();
     }
 

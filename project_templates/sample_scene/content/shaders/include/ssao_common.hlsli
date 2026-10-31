@@ -12,7 +12,7 @@ cbuffer AmbientOcclusionConstants : register(b0)
     float4 aoFilter;     // Horizontal pixel step, vertical pixel step, depth threshold, enabled.
 };
 
-Texture2D<float4> aoNormals : register(t0); // Sphere-map world normals in .xy.
+Texture2D<float2> aoNormals : register(t0); // Sphere-map view normals from z-prepass.
 Texture2D<float> aoDepth : register(t1);    // Reversed-Z: background = 0.
 Texture2D<float> aoInput : register(t2);
 
@@ -30,11 +30,10 @@ float3 reconstructViewPosition(float2 uv, float depth)
 
 float3 readViewNormal(int2 pixel)
 {
-    // Matches sphere-map decoding in gbuffer_base.hlsli.
+    // Matches the sphere-map encoding written by zprepassPSMain.
     float2 encoded = aoNormals.Load(int3(pixel, 0)).xy * 2.0 - 1.0;
     float lengthSquared = dot(encoded, encoded);
-    float3 worldNormal = float3(2.0 * encoded * sqrt(max(0.0, 1.0 - lengthSquared)), 1.0 - 2.0 * lengthSquared);
-    return normalize(mul((float3x3)aoView, worldNormal));
+    return normalize(float3(2.0 * encoded * sqrt(max(0.0, 1.0 - lengthSquared)), 1.0 - 2.0 * lengthSquared));
 }
 
 uint aoHash(uint value)

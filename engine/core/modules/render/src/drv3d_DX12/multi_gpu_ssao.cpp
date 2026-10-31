@@ -73,7 +73,7 @@ namespace d3d::mgpu
             channel.slotCount = desc.synchronization ? 3 : 1;
             channel.direction = TransferDirection::primaryToSecondary;
             channel.format = TEXFMT_G32R32F;
-            channel.name = "SSAO G-buffer normals GPU 0 -> GPU 1";
+            channel.name = "SSAO prepass normals GPU 0 -> GPU 1";
             producer->normals = create_transfer_channel(channel);
             channel.format = TEXFMT_DEPTH32;
             channel.name = "SSAO depth GPU 0 -> GPU 1";

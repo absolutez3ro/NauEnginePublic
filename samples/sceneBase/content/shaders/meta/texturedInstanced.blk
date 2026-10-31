@@ -29,6 +29,41 @@ compile_configs {
     }
 }
 
+input_layout {
+    vertex_shader_declaration {
+        stream:t="VSD_STREAM_PER_VERTEX_DATA"
+        number:i=0
+        vsd_reg {
+            semantic_name:t="POSITION"
+            type:t="VSDT_FLOAT3"
+        }
+    }
+    vertex_shader_declaration {
+        stream:t="VSD_STREAM_PER_VERTEX_DATA"
+        number:i=1
+        vsd_reg {
+            semantic_name:t="NORMAL"
+            type:t="VSDT_FLOAT3"
+        }
+    }
+    vertex_shader_declaration {
+        stream:t="VSD_STREAM_PER_VERTEX_DATA"
+        number:i=2
+        vsd_reg {
+            semantic_name:t="BLENDWEIGHT"
+            type:t="VSDT_FLOAT4"
+        }
+    }
+    vertex_shader_declaration {
+        stream:t="VSD_STREAM_PER_VERTEX_DATA"
+        number:i=3
+        vsd_reg {
+            semantic_name:t="BLENDINDICES"
+            type:t="VSDT_UINT4"
+        }
+    }
+}
+
 permutations {
     permutation {
         name:t="regular"

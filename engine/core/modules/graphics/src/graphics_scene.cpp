@@ -385,6 +385,8 @@ namespace nau
         }
 
         auto& activeCamera = getMainCamera();
+        const math::Matrix4 prepassView = activeCamera.getViewMatrix();
+        shader_globals::setVariable("prepassView", &prepassView);
         m_renderScene->renderDepth(activeCamera.getViewProjectionMatrix());
     }
 

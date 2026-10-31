@@ -35,7 +35,6 @@ namespace nau::render
         void drawRaw(BaseTexture* target);
         void drawBlur(BaseTexture* target, BaseTexture* source, bool horizontal);
         void resetSecondary();
-        void packNormals(BaseTexture* source);
         void reprojectHistory(BaseTexture* target, BaseTexture* depth);
         bool prepareSecondary(BaseTexture* depth);
         bool receiveSecondary(BaseTexture* target);

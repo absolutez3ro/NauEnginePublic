@@ -54,11 +54,13 @@ struct VsOutputLitForward
 struct VsInputZPrepass
 {
     float3 position : POSITION;
+    float3 normal : NORMAL;
 };
 
 struct VsInputZPrepassSkinned
 {
     float3 position : POSITION;
+    float3 normal : NORMAL;
     float4 boneWeights : BLENDWEIGHT;
     uint4 boneIndices : BLENDINDICES;
 };
@@ -76,6 +78,7 @@ struct VsOutputZPrepass
 {
     float4 position : SV_Position;
     nointerpolation uint4 uid : TEXCOORD0;
+    float3 viewNormal : TEXCOORD1;
 };
 
 struct VsOutputResolve
