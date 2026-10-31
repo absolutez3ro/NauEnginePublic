@@ -61,6 +61,7 @@ namespace nau::render
         m_parameters = math::Vector4(radius, fadeStart, fadeEnd, epsilon);
         m_blurDepthThreshold = readFiniteSetting("render/ssao/blurDepthThreshold", 0.2f, 0.0f, 10.0f);
         m_blur = readSetting<bool>("render/ssao/blur", true);
+        m_blurOnSecondary = m_blur && readSetting<bool>("render/ssao/blurOnSecondary", false);
         m_reprojection = readSetting<bool>("render/ssao/reprojection", true);
         m_reprojectionDepthThreshold = readFiniteSetting("render/ssao/reprojectionDepthThreshold", 0.1f, 0.0001f, 10.0f);
         m_useSecondary = readSetting<bool>("render/ssao/useSecondary", false);
@@ -81,7 +82,12 @@ namespace nau::render
             ShaderAssetRef rawShader{"file:/res/shaders/cache/shader_cache.nsbc+[ssao.ps.psmain]"};
             m_vertexShader = co_await vertex.getAssetViewTyped<ShaderAssetView>();
             m_rawShader = co_await rawShader.getAssetViewTyped<ShaderAssetView>();
-            if (!m_vertexShader || !m_rawShader)
+            if (m_blurOnSecondary)
+            {
+                ShaderAssetRef blurShader{"file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psmain]"};
+                m_blurShader = co_await blurShader.getAssetViewTyped<ShaderAssetView>();
+            }
+            if (!m_vertexShader || !m_rawShader || (m_blurOnSecondary && !m_blurShader))
             {
                 m_useSecondary = false;
                 NAU_LOG_ERROR("SSAO: secondary shaders unavailable, using GPU 0");
@@ -198,7 +204,15 @@ namespace nau::render
         m_depth = depth;
         d3d::resource_barrier({normals, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         d3d::resource_barrier({depth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
-        if (!m_useSecondary || !receiveSecondary(raw))
+        if (m_useSecondary && receiveSecondary(m_blurOnSecondary ? output : raw))
+        {
+            if (m_blurOnSecondary)
+            {
+                // GPU 1 already filtered the source frame. Reprojection writes the final output.
+                return;
+            }
+        }
+        else
         {
             drawRaw(raw);
         }
@@ -236,6 +250,13 @@ namespace nau::render
             desc.vertexBytecodeSize = vertex->bytecode.size();
             desc.rawBytecode = raw->bytecode.data();
             desc.rawBytecodeSize = raw->bytecode.size();
+            desc.blur = m_blurOnSecondary;
+            if (m_blurOnSecondary)
+            {
+                const Shader* blur = m_blurShader->getShader();
+                desc.blurBytecode = blur->bytecode.data();
+                desc.blurBytecodeSize = blur->bytecode.size();
+            }
             m_secondary = d3d::mgpu::createSsaoProducer(desc);
             if (!m_secondary)
             {
@@ -258,6 +279,7 @@ namespace nau::render
             }
             NAU_LOG_INFO("SSAO: GPU 1 ready, {}x{}, synchronization={}, shared slots={}", info.w, info.h, m_synchronization, m_synchronization ? 3 : 1);
             NAU_LOG_INFO("SSAO: camera reprojection={}", m_reprojection);
+            NAU_LOG_INFO("SSAO: blur={}, blurOnSecondary={}", m_blur, m_blurOnSecondary);
         }
         if (!m_secondary)
         {

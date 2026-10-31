@@ -17,10 +17,13 @@ namespace d3d::mgpu
         uint32_t width = 0;
         uint32_t height = 0;
         bool synchronization = true;
+        bool blur = false;
         const void* vertexBytecode = nullptr;
         size_t vertexBytecodeSize = 0;
         const void* rawBytecode = nullptr;
         size_t rawBytecodeSize = 0;
+        const void* blurBytecode = nullptr;
+        size_t blurBytecodeSize = 0;
     };
 
     struct SsaoProducer;
@@ -31,7 +34,7 @@ namespace d3d::mgpu
         failed
     };
 
-    /** @brief Creates full-resolution raw SSAO with synchronized or experimental single-slot channels on the render thread. */
+    /** @brief Creates full-resolution SSAO with optional bilateral blur and synchronized or experimental single-slot channels on the render thread. */
     NAU_RENDER_EXPORT SsaoProducer* createSsaoProducer(const SsaoProducerDesc& desc);
     /** @brief Polls pending work and input-copy leases. Never waits on the CPU or primary graphics queue. */
     NAU_RENDER_EXPORT bool isSsaoBusy(const SsaoProducer* producer);

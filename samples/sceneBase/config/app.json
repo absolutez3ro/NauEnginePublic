@@ -28,6 +28,7 @@
         }
     },
     "render": {
+        "showFrameStatistics": true,
         "ssao": {
             "enabled": true,
             "useSecondary": true,
@@ -37,6 +38,7 @@
             "fadeEnd": 1.0,
             "surfaceEpsilon": 0.05,
             "blur": true,
+            "blurOnSecondary": true,
             "blurDepthThreshold": 0.2,
             "synchronization": true,
             "reprojection": true,

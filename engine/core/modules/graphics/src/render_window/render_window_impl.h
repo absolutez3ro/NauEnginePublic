@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <chrono>
+
 #include "ambient_occlusion.h"
 #include "graphics_nodes.h"
 #include "graphics_scene.h"
@@ -78,6 +80,7 @@ namespace nau::render
         void createOutlineNodes();
 
         void resizeResolutions();
+        void updateFrameStatistics();
 
     private:
         void setName(eastl::string_view name);
@@ -134,6 +137,9 @@ namespace nau::render
         eastl::string m_name;
         eastl::string m_resolutionName;
         eastl::string m_displayName;
+        bool m_showFrameStatistics = false;
+        std::chrono::steady_clock::time_point m_frameStatisticsStart;
+        uint32_t m_frameStatisticsCount = 0;
         WeakPtr<async::Executor> m_preRenderWorkQueueRef;
 
         eastl::unique_ptr<render::DeferredRenderTarget> m_gBuffer;

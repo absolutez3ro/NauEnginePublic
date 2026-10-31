@@ -18,8 +18,10 @@ namespace drv3d_dx12
         eastl::shared_ptr<IDeviceResourceAllocator> allocator;
         UINT width = 0;
         UINT height = 0;
+        bool blur = false;
         D3D12_SHADER_BYTECODE vertexShader = {};
         D3D12_SHADER_BYTECODE rawShader = {};
+        D3D12_SHADER_BYTECODE blurShader = {};
     };
 
     struct DeviceSsaoInputs
@@ -29,7 +31,7 @@ namespace drv3d_dx12
     };
 
     /**
-     * @brief Raw SSAO draw on one device/queue, using G-buffer normals at full resolution.
+     * @brief SSAO and optional bilateral blur on one device/queue, using G-buffer normals at full resolution.
      * Inputs and outputs are COMMON between submissions.
      * Channel endpoints and their fences stay fixed until reset. Input copies wait for getReadyPoint(); execute
      * waits for both copies. releaseOutput orders the next overwrite after the output channel has read it.

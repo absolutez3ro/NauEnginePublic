@@ -57,8 +57,10 @@ namespace d3d::mgpu
             pass.allocator = allocator;
             pass.width = desc.width;
             pass.height = desc.height;
+            pass.blur = desc.blur;
             pass.vertexShader = {desc.vertexBytecode, desc.vertexBytecodeSize};
             pass.rawShader = {desc.rawBytecode, desc.rawBytecodeSize};
+            pass.blurShader = {desc.blurBytecode, desc.blurBytecodeSize};
             result = producer->pass.init(pass);
         }
         producer->synchronization = desc.synchronization;

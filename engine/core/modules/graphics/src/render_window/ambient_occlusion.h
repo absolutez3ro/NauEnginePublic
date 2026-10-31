@@ -45,6 +45,7 @@ namespace nau::render
         MaterialAssetView::Ptr m_blurMaterial;
         ShaderAssetView::Ptr m_vertexShader;
         ShaderAssetView::Ptr m_rawShader;
+        ShaderAssetView::Ptr m_blurShader;
         d3d::mgpu::SsaoProducer* m_secondary = nullptr;
         d3d::mgpu::SsaoConstants m_constants;
         BaseTexture* m_normalsSnapshot = nullptr;
@@ -74,6 +75,7 @@ namespace nau::render
         float m_reprojectionDepthThreshold = 0.1f;
         AmbientOcclusionMode m_mode = AmbientOcclusionMode::lighting;
         bool m_blur = true;
+        bool m_blurOnSecondary = false;
         bool m_reprojection = true;
     };
 }  // namespace nau::render

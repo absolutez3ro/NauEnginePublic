@@ -4,11 +4,56 @@
 
 #include "render_window_impl.h"
 
+#include <cstdio>
+
+#include "nau/app/core_window_manager.h"
+#include "nau/app/global_properties.h"
 #include "nau/graphics/core_graphics.h"
 #include "nau/input.h"
+#include "nau/platform/windows/app/windows_window.h"
 
 namespace nau::render
 {
+    namespace
+    {
+        async::Task<> setWindowTitle(void* handle, eastl::string title)
+        {
+            ASYNC_SWITCH_EXECUTOR(getServiceProvider().get<ICoreWindowManager>().getExecutor());
+            HWND window = static_cast<HWND>(handle);
+            if (IsWindow(window))
+            {
+                SetWindowTextA(window, title.c_str());
+            }
+        }
+    }  // namespace
+
+    void RenderWindowImpl::updateFrameStatistics()
+    {
+        if (!m_showFrameStatistics)
+        {
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (m_frameStatisticsStart == std::chrono::steady_clock::time_point{})
+        {
+            m_frameStatisticsStart = now;
+            return;
+        }
+        ++m_frameStatisticsCount;
+        const double milliseconds = std::chrono::duration<double, std::milli>(now - m_frameStatisticsStart).count();
+        if (milliseconds < 1000.0)
+        {
+            return;
+        }
+        // Count render frames, including presentation pacing; these are not GPU pass timings.
+        char title[128] = {};
+        std::snprintf(title, sizeof(title), "NAU | %.1f FPS | %.2f ms/frame",
+                      1000.0 * m_frameStatisticsCount / milliseconds, milliseconds / m_frameStatisticsCount);
+        setWindowTitle(m_windowHandle, title).detach();
+        m_frameStatisticsCount = 0;
+        m_frameStatisticsStart = now;
+    }
+
     void RenderWindowImpl::setWorld(nau::Uid worldUid)
     {
         lock_(m_readWriteMutex);
@@ -102,6 +147,7 @@ namespace nau::render
 
     void RenderWindowImpl::render()
     {
+        updateFrameStatistics();
         for (auto& [_, nodeGroup] : m_graphStages)
         {
             nodeGroup.resetState();
@@ -253,6 +299,7 @@ namespace nau::render
         setName(name);
         m_swapchain = swapchain;
         m_windowHandle = hwnd;
+        m_showFrameStatistics = getServiceProvider().get<GlobalProperties>().getValue<bool>("render/showFrameStatistics").value_or(false);
 
         nau::csm::CascadeShadows::Settings csmSettings;
         csmSettings.cascadeWidth = 1024;
