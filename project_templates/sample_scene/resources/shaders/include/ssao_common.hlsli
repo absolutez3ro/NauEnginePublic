@@ -30,7 +30,7 @@ float3 reconstructViewPosition(float2 uv, float depth)
 
 float3 readViewNormal(int2 pixel)
 {
-    // Matches the sphere-map encoding written by zprepassPSMain.
+    // Matches the sphere-map encoding written by zprepassNormalsPSMain.
     float2 encoded = aoNormals.Load(int3(pixel, 0)).xy * 2.0 - 1.0;
     float lengthSquared = dot(encoded, encoded);
     return normalize(float3(2.0 * encoded * sqrt(max(0.0, 1.0 - lengthSquared)), 1.0 - 2.0 * lengthSquared));
@@ -45,11 +45,28 @@ uint aoHash(uint value)
     return value ^ (value >> 16);
 }
 
+// A fixed 4x4 tile, covered completely by the GPU 0 box filter.
+static const float3 RANDOM_DIRECTIONS[16] = {
+    float3(0.11723767, -0.66131229, 0.74089229),
+    float3(-0.11133004, 0.91610514, -0.38517138),
+    float3(-0.60318909, 0.59611841, -0.52991109),
+    float3(-0.63597903, 0.47813760, -0.60573518),
+    float3(0.42028056, 0.86470351, -0.27504923),
+    float3(-0.70626777, -0.29203203, 0.64490552),
+    float3(0.19309230, 0.79014831, -0.58170526),
+    float3(0.52244947, -0.66537250, -0.53322226),
+    float3(-0.16402077, -0.32514631, -0.93133080),
+    float3(0.46191547, -0.45082770, -0.76379872),
+    float3(-0.43681689, -0.25866798, -0.86155782),
+    float3(-0.87224651, -0.43429847, -0.22487968),
+    float3(-0.38795436, 0.64077083, -0.66249842),
+    float3(-0.94566205, 0.25598346, -0.20048879),
+    float3(-0.55571995, 0.62633098, -0.54670362),
+    float3(-0.96326560, -0.15818593, -0.21701751)
+};
+
 float3 randomDirection(uint2 pixel)
 {
-    // A fixed seed keeps the pattern stable between frames and across devices.
-    uint seed = aoHash(pixel.x + pixel.y * 65537u);
-    float3 random = float3(aoHash(seed + 1u) & 65535u, aoHash(seed + 2u) & 65535u, aoHash(seed + 3u) & 65535u);
-    return normalize(random / 32767.5 - 1.0);
+    return RANDOM_DIRECTIONS[(pixel.x & 3u) + (pixel.y & 3u) * 4u];
 }
 #endif

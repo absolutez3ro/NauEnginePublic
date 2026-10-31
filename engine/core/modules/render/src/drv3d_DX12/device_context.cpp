@@ -1293,12 +1293,17 @@ void DeviceContext::releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint
   immediateModeExecute();
 }
 
-void DeviceContext::waitForForeignQueue(ID3D12Fence *fence, uint64_t value)
+void DeviceContext::waitForForeignQueue(ID3D12Fence* fence, uint64_t value)
 {
-  DX12_LOCK_FRONT();
+    DX12_LOCK_FRONT();
 
-  commandStream.pushBack(make_command<CmdWaitForeignFence>(fence, value));
-  immediateModeExecute();
+    // Submit independent graphics work before enqueueing the foreign wait on its queue.
+    commandStream.pushBack(make_command<CmdFlushWithFence>(front.recordingWorkItemProgress));
+    immediateModeExecute();
+    frontFlush();
+
+    commandStream.pushBack(make_command<CmdWaitForeignFence>(fence, value));
+    immediateModeExecute();
 }
 
 bool DeviceContext::flushDrawWhenNoQueries()

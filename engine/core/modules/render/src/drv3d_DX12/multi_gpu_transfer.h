@@ -5,6 +5,7 @@
 #pragma once
 
 #include <EASTL/shared_ptr.h>
+#include <EASTL/vector.h>
 #include <wrl/client.h>
 
 #include <cstdint>
@@ -20,15 +21,6 @@ namespace d3d::mgpu
 
 namespace drv3d_dx12
 {
-    struct SharedTextureRead
-    {
-        Microsoft::WRL::ComPtr<ID3D12Resource> resource;
-        Microsoft::WRL::ComPtr<ID3D12Heap> heap;
-        D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout = {};
-    };
-
-    SharedTextureRead getSecondarySharedInput(d3d::mgpu::TransferChannel* channel, uint64_t ticket, ID3D12Resource* destination);
-
     /**
      * @brief A fence and a value on one device. Queues of that device may wait for it on the GPU.
      */
@@ -55,11 +47,8 @@ namespace drv3d_dx12
      * If neither holds, the consumer is late and the new frame is dropped (send returns ticket 0) rather than stalling the
      * producer for a receive that may never come.
      *
-     * Experimental synchronization=false uses one shared slot and omits cross-adapter read/write ordering.
-     * Endpoint dependencies, command allocator fences and destruction drains still apply.
-     *
-     * Nothing is allocated per call: slots and command lists come from fixed pools. If the CPU runs more than
-     * MAX_RECORDINGS submissions ahead of a GPU, further calls fail instead of blocking.
+     * Command-storage pools grow when every recording is in flight. Completion values are used only
+     * for safe allocator recycling, never to skip a transfer or block the CPU.
      *
      * Not thread safe: use from one thread.
      */
@@ -67,7 +56,6 @@ namespace drv3d_dx12
     {
     public:
         static constexpr uint32_t MAX_SLOTS = 4;
-        static constexpr uint32_t MAX_RECORDINGS = 8;
 
         struct Send
         {
@@ -96,7 +84,7 @@ namespace drv3d_dx12
             Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
             Microsoft::WRL::ComPtr<ID3D12Heap> heap;
             Microsoft::WRL::ComPtr<ID3D12Resource> slots[MAX_SLOTS];
-            Recording recordings[MAX_RECORDINGS];
+            eastl::vector<Recording> recordings;
         };
 
         struct Slot
@@ -111,7 +99,6 @@ namespace drv3d_dx12
         CrossAdapterFence m_consumed;  // consumer signals after a slot is read
         Slot m_slotStates[MAX_SLOTS];
         uint32_t m_slotCount = 0;
-        bool m_synchronization = true;
         D3D12_RESOURCE_DESC m_payload = {};
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_footprint = {};
         uint64_t m_slotSize = 0;
@@ -198,7 +185,7 @@ namespace drv3d_dx12
             return S_OK;
         }
 
-        // Returns an open command list whose previous submission has finished on the GPU, or nullptr if all are in flight.
+        // Recycle completed allocator memory, or grow the pool without dropping a transfer.
         ID3D12GraphicsCommandList* beginRecording(End end, Recording*& recording)
         {
             Side& side = m_sides[end];
@@ -214,7 +201,7 @@ namespace drv3d_dx12
             }
             if (!recording)
             {
-                return nullptr;
+                recording = &side.recordings.emplace_back();
             }
             if (!recording->allocator)
             {
@@ -296,16 +283,16 @@ namespace drv3d_dx12
          * @param consumer Device that receives, on another adapter.
          * @param heap_owner producer or consumer: the device that creates the shared heap.
          * @param payload_desc Description of a 2D texture: single plane, no MSAA; subresource 0 is moved.
-         * @param slot_count From 2 to MAX_SLOTS with synchronization, exactly 1 without it.
+         * @param slot_count From 2 to MAX_SLOTS.
          * @param name Debug name prefix for the queues and slots, may be nullptr.
          * @return S_OK, E_INVALIDARG for unsupported input, DXGI_ERROR_UNSUPPORTED if the adapters disagree on the copy
          *         layout, or the failing HRESULT. On failure the object stays empty.
          */
-        HRESULT init(ID3D12Device* producer, ID3D12Device* consumer, ID3D12Device* heap_owner, const D3D12_RESOURCE_DESC& payload_desc, uint32_t slot_count, const wchar_t* name, bool synchronization = true)
+        HRESULT init(ID3D12Device* producer, ID3D12Device* consumer, ID3D12Device* heap_owner, const D3D12_RESOURCE_DESC& payload_desc, uint32_t slot_count, const wchar_t* name)
         {
             reset();
             if (!producer || !consumer || producer == consumer || (heap_owner != producer && heap_owner != consumer) ||
-                slot_count < (synchronization ? 2u : 1u) || slot_count > MAX_SLOTS || (!synchronization && slot_count != 1) || !isSupportedPayload(producer, payload_desc) || !isSupportedPayload(consumer, payload_desc))
+                slot_count < 2 || slot_count > MAX_SLOTS || !isSupportedPayload(producer, payload_desc) || !isSupportedPayload(consumer, payload_desc))
             {
                 return E_INVALIDARG;
             }
@@ -346,7 +333,6 @@ namespace drv3d_dx12
             m_sides[PRODUCER].device = producer;
             m_sides[CONSUMER].device = consumer;
             m_slotCount = slot_count;
-            m_synchronization = synchronization;
             m_slotSize = payloadSize;
             m_payload = payload_desc;
 
@@ -419,7 +405,6 @@ namespace drv3d_dx12
                 slot = {};
             }
             m_slotCount = 0;
-            m_synchronization = true;
             m_payload = {};
             m_footprint = {};
             m_slotSize = 0;
@@ -443,7 +428,7 @@ namespace drv3d_dx12
                 return false;
             }
             const Slot& slot = m_slotStates[(m_lastSent + 1) % m_slotCount];
-            return !m_synchronization || slot.ticket == 0 || slot.consumedValue != 0 || m_lastReceived >= slot.ticket;
+            return slot.ticket == 0 || slot.consumedValue != 0 || m_lastReceived >= slot.ticket;
         }
 
         /**
@@ -460,17 +445,6 @@ namespace drv3d_dx12
         bool isReady(uint64_t ticket) const
         {
             return holds(ticket) && !isLost() && m_written.isCompleted(m_slotStates[ticket % m_slotCount].writtenValue);
-        }
-
-        // The technique records this read on its own queue. Keep both resource and heap alive until that queue finishes.
-        SharedTextureRead getSharedRead(uint64_t ticket, ID3D12Resource* destination) const
-        {
-            D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout = {};
-            if (m_synchronization || !holds(ticket) || !matchesPayload(destination, CONSUMER, layout))
-            {
-                return {};
-            }
-            return {m_sides[CONSUMER].slots[ticket % m_slotCount], m_sides[CONSUMER].heap, layout};
         }
 
         /**
@@ -502,7 +476,7 @@ namespace drv3d_dx12
                 return {};
             }
             if (!enqueueExternalWait(PRODUCER, source_ready) ||
-                (m_synchronization && slot.consumedValue != 0 && !m_consumed.enqueueWait(m_sides[PRODUCER].queue.Get(), slot.consumedValue)))
+                (slot.consumedValue != 0 && !m_consumed.enqueueWait(m_sides[PRODUCER].queue.Get(), slot.consumedValue)))
             {
                 list->Close();
                 return {};
@@ -554,7 +528,7 @@ namespace drv3d_dx12
                 return {};
             }
             if (!enqueueExternalWait(CONSUMER, destination_free) ||
-                (m_synchronization && !m_written.enqueueWait(m_sides[CONSUMER].queue.Get(), slot.writtenValue)))
+                (!m_written.enqueueWait(m_sides[CONSUMER].queue.Get(), slot.writtenValue)))
             {
                 list->Close();
                 return {};

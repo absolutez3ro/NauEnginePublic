@@ -117,73 +117,65 @@
             },
             "depthMode": "Disabled"
         },
-        "reproject": {
+        "downsample": {
             "properties": {
-                "aoCurrentToHistory": [
-                    [
-                        1,
-                        0,
-                        0,
-                        0
-                    ],
-                    [
-                        0,
-                        1,
-                        0,
-                        0
-                    ],
-                    [
-                        0,
-                        0,
-                        1,
-                        0
-                    ],
-                    [
-                        0,
-                        0,
-                        0,
-                        1
-                    ]
-                ],
-                "aoHistoryInverseProjection": [
-                    [
-                        1,
-                        0,
-                        0,
-                        0
-                    ],
-                    [
-                        0,
-                        1,
-                        0,
-                        0
-                    ],
-                    [
-                        0,
-                        0,
-                        1,
-                        0
-                    ],
-                    [
-                        0,
-                        0,
-                        0,
-                        1
-                    ]
-                ],
-                "aoReprojectionParameters": [
-                    0.1,
-                    0,
-                    0,
-                    0
-                ],
-                "aoDepth": "file:/content/textures/white_8x8.png",
-                "aoInput": "file:/content/textures/white_8x8.png",
-                "aoHistoryDepth": "file:/content/textures/white_8x8.png"
+                "aoNormals": "file:/content/textures/white_8x8.png",
+                "aoDepth": "file:/content/textures/white_8x8.png"
             },
             "shaders": [
                 "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
-                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psreproject]"
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psdownsample]"
+            ],
+            "cullMode": "None",
+            "depthMode": "Disabled",
+            "blendMode": "Opaque"
+        },
+        "halfBlur": {
+            "properties": {
+                "aoDepth": "file:/content/textures/white_8x8.png",
+                "aoInput": "file:/content/textures/white_8x8.png",
+                "aoDepthParameters": [
+                    1,
+                    -1,
+                    0,
+                    0.2
+                ],
+                "aoHalfControl": [
+                    1,
+                    0,
+                    0,
+                    0
+                ]
+            },
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.pshalfblur]"
+            ],
+            "cullMode": "None",
+            "depthMode": "Disabled",
+            "blendMode": "Opaque"
+        },
+        "upsample": {
+            "properties": {
+                "aoDepth": "file:/content/textures/white_8x8.png",
+                "aoInput": "file:/content/textures/white_8x8.png",
+                "aoFullDepth": "file:/content/textures/white_8x8.png",
+                "aoDepthParameters": [
+                    1,
+                    -1,
+                    0,
+                    0.2
+                ],
+                "aoHalfControl": [
+                    1,
+                    0,
+                    0,
+                    0
+                ]
+            },
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psupsample]"
             ],
             "cullMode": "None",
             "depthMode": "Disabled",

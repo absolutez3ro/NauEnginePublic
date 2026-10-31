@@ -20,6 +20,10 @@ compile_configs {
         entry:t="zprepassPSMain"
     }
     config {
+        stage:t="ps"
+        entry:t="zprepassNormalsPSMain"
+    }
+    config {
         stage:t="vs"
         entry:t="outlineMaskVSMain"
     }

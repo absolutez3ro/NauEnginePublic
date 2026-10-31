@@ -22,6 +22,12 @@ target_precompile_headers(${TargetName} PRIVATE pch.h)
 target_include_directories(${TargetName} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/content/shaders/include)
 
 if(NOT NauSDKLibraries)
+  file(GLOB_RECURSE SceneBaseShaderSources CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/content/shaders/src/*.hlsl"
+    "${CMAKE_CURRENT_SOURCE_DIR}/content/shaders/include/*.hlsli"
+    "${CMAKE_CURRENT_SOURCE_DIR}/content/shaders/meta/*.blk"
+  )
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SceneBaseShaderSources})
   file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/content/shaders DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 
   nau_add_default_shaders(${TargetName} content shaders

@@ -1,77 +1,92 @@
 // Copyright 2026 N-GINN LLC. All rights reserved.
-// Separable bilateral Gaussian blur following Bogdanov M.K.'s SsaoBlur.hlsl.
+// Full-resolution bilateral blur and half-resolution secondary AO postprocessing.
 #include "ssao_common.hlsli"
 
-cbuffer AmbientOcclusionReprojection : register(b1)
+cbuffer AmbientOcclusionHalfConstants : register(b1)
 {
-    float4x4 aoCurrentToHistory;
-    float4x4 aoHistoryInverseProjection;
-    float4 aoReprojectionParameters; // Absolute view-space depth tolerance.
+    float4 aoDepthParameters; // Projection B, C, A, depth threshold.
+    float4 aoHalfControl;     // Blur enabled.
 };
 
-Texture2D<float> aoHistoryDepth : register(t3);
+Texture2D<float> aoFullDepth : register(t3);
 
-float PSReproject(float4 position : SV_Position) : SV_Target
+struct DownsampleOutput
 {
-    float depth = aoDepth.Load(int3(int2(position.xy), 0));
-    if (depth <= 0.0)
+    float2 normal : SV_Target0;
+    float depth : SV_Target1;
+};
+
+DownsampleOutput PSDownsample(float4 position : SV_Position)
+{
+    // The same real surface sample supplies both depth and normal, including odd-sized edges.
+    uint width, height;
+    aoDepth.GetDimensions(width, height);
+    int2 pixel = min(int2(position.xy) * 2, int2(width, height) - 1);
+    DownsampleOutput output;
+    output.normal = aoNormals.Load(int3(pixel, 0));
+    output.depth = aoDepth.Load(int3(pixel, 0));
+    return output;
+}
+
+float linearViewDepth(float depth)
+{
+    // Perspective z from the projection coefficients: one division, no matrix multiplication.
+    return aoDepthParameters.x / (max(depth, 1e-7) * aoDepthParameters.y - aoDepthParameters.z);
+}
+
+float PSHalfBlur(float4 position : SV_Position) : SV_Target0
+{
+    int2 pixel = int2(position.xy);
+    if (aoHalfControl.x == 0.0)
     {
-        return 1.0;
+        return aoInput.Load(int3(pixel, 0));
     }
     uint width, height;
     aoDepth.GetDimensions(width, height);
-    float2 size = float2(width, height);
-    float2 currentNdc = position.xy / size * float2(2.0, -2.0) + float2(-1.0, 1.0);
-    float4 historyClip = mul(aoCurrentToHistory, float4(currentNdc, depth, 1.0));
-    if (!all(isfinite(historyClip)) || historyClip.w <= 0.0 || historyClip.z < 0.0 || historyClip.z > historyClip.w)
+    float centerZ = linearViewDepth(aoDepth.Load(int3(pixel, 0)));
+    float total = 0.0;
+    float weightSum = 0.0;
+    [unroll]
+    for (int y = -1; y <= 2; ++y)
     {
-        return 1.0;
+        [unroll]
+        for (int x = -1; x <= 2; ++x)
+        {
+            int2 neighbor = clamp(pixel + int2(x, y), int2(0, 0), int2(width, height) - 1);
+            float neighborZ = linearViewDepth(aoDepth.Load(int3(neighbor, 0)));
+            float weight = saturate(1.0 - abs(neighborZ - centerZ) / max(aoDepthParameters.w, 1e-5));
+            total += weight * aoInput.Load(int3(neighbor, 0));
+            weightSum += weight;
+        }
     }
-    float3 historyNdc = historyClip.xyz / historyClip.w;
-    float2 historyUv = historyNdc.xy * float2(0.5, -0.5) + 0.5;
-    if (any(historyUv < 0.0) || any(historyUv >= 1.0))
-    {
-        return 1.0;
-    }
-    float4 expectedView = mul(aoHistoryInverseProjection, float4(historyNdc, 1.0));
-    if (abs(expectedView.w) <= 1e-8)
-    {
-        return 1.0;
-    }
-    float expectedZ = expectedView.z / expectedView.w;
-    float tolerance = max(aoReprojectionParameters.x, abs(expectedZ) * 0.001);
-    float2 historyPixel = historyUv * size - 0.5;
-    int2 origin = int2(floor(historyPixel));
-    float2 fraction = frac(historyPixel);
-    float visibility = 1.0;
+    return saturate(total / weightSum);
+}
+
+float PSUpsample(float4 position : SV_Position) : SV_Target0
+{
+    uint width, height;
+    aoDepth.GetDimensions(width, height);
+    int2 origin = int2(floor(position.xy * 0.5 - 0.5));
+    float fullZ = linearViewDepth(aoFullDepth.Load(int3(int2(position.xy), 0)));
+    float nearestDistance = 3.402823e+38;
+    int2 nearest = clamp(origin, int2(0, 0), int2(width, height) - 1);
     [unroll]
     for (int y = 0; y < 2; ++y)
     {
         [unroll]
         for (int x = 0; x < 2; ++x)
         {
-            int2 pixel = origin + int2(x, y);
-            if (any(pixel < 0) || any(pixel >= int2(width, height)))
+            int2 neighbor = clamp(origin + int2(x, y), int2(0, 0), int2(width, height) - 1);
+            float distance = abs(linearViewDepth(aoDepth.Load(int3(neighbor, 0))) - fullZ);
+            if (distance < nearestDistance)
             {
-                continue;
+                nearestDistance = distance;
+                nearest = neighbor;
             }
-            float previousDepth = aoHistoryDepth.Load(int3(pixel, 0));
-            if (previousDepth <= 0.0)
-            {
-                continue;
-            }
-            float2 tapNdc = (float2(pixel) + 0.5) / size * float2(2.0, -2.0) + float2(-1.0, 1.0);
-            float4 previousView = mul(aoHistoryInverseProjection, float4(tapNdc, previousDepth, 1.0));
-            if (abs(previousView.w) <= 1e-8 || abs(previousView.z / previousView.w - expectedZ) > tolerance)
-            {
-                continue;
-            }
-            float weight = (x == 0 ? 1.0 - fraction.x : fraction.x) * (y == 0 ? 1.0 - fraction.y : fraction.y);
-            // Invalid taps remain unoccluded instead of bleeding another surface's AO across an edge.
-            visibility += weight * (aoInput.Load(int3(pixel, 0)) - 1.0);
         }
     }
-    return saturate(visibility);
+    // Always use the nearest surface's AO; a white fallback opens holes around thin geometry.
+    return aoInput.Load(int3(nearest, 0));
 }
 
 float4 PSDebug(float4 position : SV_Position) : SV_Target

@@ -25,17 +25,7 @@ struct d3d::mgpu::TransferChannel
     // waits for it. Same device, so an ordinary fence.
     ComPtr<ID3D12Fence> engineFence;
     uint64_t engineFenceValue = 0;
-    bool synchronization = true;
 };
-
-drv3d_dx12::SharedTextureRead drv3d_dx12::getSecondarySharedInput(d3d::mgpu::TransferChannel* channel, uint64_t ticket, ID3D12Resource* destination)
-{
-    if (!channel || channel->direction != d3d::mgpu::TransferDirection::primaryToSecondary || channel->synchronization)
-    {
-        return {};
-    }
-    return channel->channel.getSharedRead(ticket, destination);
-}
 
 namespace
 {
@@ -142,9 +132,9 @@ d3d::mgpu::TransferChannelHandle d3d::mgpu::create_transfer_channel(const Transf
     {
         return nullptr;
     }
-    if (desc.slotCount < (desc.synchronization ? 2u : 1u) || desc.slotCount > CrossAdapterChannel::MAX_SLOTS || (!desc.synchronization && desc.slotCount != 1))
+    if (desc.slotCount < 2 || desc.slotCount > CrossAdapterChannel::MAX_SLOTS)
     {
-        NAU_LOG_ERROR("DX12: multi-GPU channel '{}' asks for {} slots, invalid synchronization/slot count, maximum {}", desc.name ? desc.name : "", desc.slotCount,
+        NAU_LOG_ERROR("DX12: multi-GPU channel '{}' asks for {} slots, invalid slot count, maximum {}", desc.name ? desc.name : "", desc.slotCount,
                       CrossAdapterChannel::MAX_SLOTS);
         return nullptr;
     }
@@ -160,7 +150,6 @@ d3d::mgpu::TransferChannelHandle d3d::mgpu::create_transfer_channel(const Transf
 
     auto result = eastl::make_unique<TransferChannel>();
     result->direction = desc.direction;
-    result->synchronization = desc.synchronization;
     HRESULT hr = primary->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&result->engineFence));
     if (SUCCEEDED(hr))
     {
@@ -171,7 +160,7 @@ d3d::mgpu::TransferChannelHandle d3d::mgpu::create_transfer_channel(const Transf
         }
         // Create the shared heap on GPU 0 so its ownership follows the engine device. Transfer cost is adapter-dependent.
         hr = result->channel.init(fromPrimary ? primary : secondary, fromPrimary ? secondary : primary, primary, payload_desc(desc),
-                                  desc.slotCount, desc.name ? name : nullptr, desc.synchronization);
+                                  desc.slotCount, desc.name ? name : nullptr);
     }
     if (FAILED(hr))
     {
@@ -229,19 +218,12 @@ d3d::mgpu::PrimarySyncPoint d3d::mgpu::begin_receive_on_primary(TransferChannelH
     return receive_engine_resource(channel, ticket, image, image->getHandle());
 }
 
-bool d3d::mgpu::receive_on_primary(TransferChannelHandle channel, TransferTicket ticket, BaseTexture* destination)
+void d3d::mgpu::wait_for_primary_transfer(PrimarySyncPoint point)
 {
-    if (!channel || channel->synchronization)
+    if (point.nativeFence)
     {
-        return false;
+        drv3d_dx12::get_device().getContext().waitForForeignQueue(static_cast<ID3D12Fence*>(point.nativeFence), point.value);
     }
-    const PrimarySyncPoint ready = begin_receive_on_primary(channel, ticket, destination);
-    if (!ready.nativeFence)
-    {
-        return false;
-    }
-    drv3d_dx12::get_device().getContext().waitForForeignQueue(static_cast<ID3D12Fence*>(ready.nativeFence), ready.value);
-    return true;
 }
 
 bool d3d::mgpu::is_primary_transfer_complete(PrimarySyncPoint point)

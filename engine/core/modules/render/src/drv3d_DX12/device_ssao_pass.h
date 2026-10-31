@@ -18,25 +18,14 @@ namespace drv3d_dx12
         eastl::shared_ptr<IDeviceResourceAllocator> allocator;
         UINT width = 0;
         UINT height = 0;
-        bool blur = false;
         D3D12_SHADER_BYTECODE vertexShader = {};
         D3D12_SHADER_BYTECODE rawShader = {};
-        D3D12_SHADER_BYTECODE blurShader = {};
-    };
-
-    struct DeviceSsaoInputs
-    {
-        SharedTextureRead normals;
-        SharedTextureRead depth;
     };
 
     /**
-     * @brief SSAO and optional bilateral blur on one device/queue, using G-buffer normals at full resolution.
-     * Inputs and outputs are COMMON between submissions.
-     * Channel endpoints and their fences stay fixed until reset. Input copies wait for getReadyPoint(); execute
-     * waits for both copies. releaseOutput orders the next overwrite after the output channel has read it.
-     * Unsynchronized shared inputs are copied on the draw queue, before sampling the local textures.
-     * Command/constant slots are polled: busy never blocks the render thread. Destruction retires pending work.
+     * @brief Raw half-resolution SSAO on GPU 1. Queue waits order input copies and output reuse.
+     * Inputs and output are COMMON between submissions. Command/constant storage grows when all
+     * recordings are in flight; resource recycling never skips a frame or waits on the CPU.
      */
     class DeviceSsaoPass final
     {
@@ -50,8 +39,7 @@ namespace drv3d_dx12
 
         HRESULT init(const DeviceSsaoPassDesc& desc);
         HRESULT reset(DWORD timeoutMs = 10000);
-        HRESULT canSubmit() const;
-        HRESULT execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {}, const DeviceSsaoInputs* sharedInputs = nullptr);
+        HRESULT execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {});
         HRESULT releaseOutput(CrossAdapterSyncPoint released);
         CrossAdapterSyncPoint getReadyPoint() const;
         ID3D12Resource* getNormals() const;

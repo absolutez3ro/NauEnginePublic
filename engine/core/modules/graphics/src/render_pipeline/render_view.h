@@ -26,7 +26,7 @@ namespace nau
 
         void render(const nau::math::Matrix4& vp) const;
         void renderInstanced(const nau::math::Matrix4& vp) const;
-        void renderZPrepass(const nau::math::Matrix4& vp, nau::MaterialAssetView* zPrepassMat) const;
+        void renderZPrepass(const nau::math::Matrix4& vp, nau::MaterialAssetView* zPrepassMat, bool writeNormals = false) const;
         void renderOutlineMask(const nau::math::Matrix4& vp, nau::MaterialAssetView* zPrepassMat) const;
 
         void updateFrustum(const nau::math::Matrix4& vp);

@@ -79,7 +79,12 @@ struct PsOutputZPrepass
     float2 normal : SV_Target1;
 };
 
-PsOutputZPrepass zprepassPSMain(VsOutputZPrepass input)
+uint4 zprepassPSMain(VsOutputZPrepass input) : SV_Target0
+{
+    return input.uid;
+}
+
+PsOutputZPrepass zprepassNormalsPSMain(VsOutputZPrepass input)
 {
     PsOutputZPrepass output;
     output.uid = input.uid;

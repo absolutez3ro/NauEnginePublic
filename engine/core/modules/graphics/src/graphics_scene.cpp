@@ -372,7 +372,7 @@ namespace nau
         m_renderScene->renderScene(viewProjectionMatrix);
     }
 
-    void GraphicsScene::renderDepth()
+    void GraphicsScene::renderDepth(bool writeNormals)
     {
         if (m_staticMeshes.empty() && m_skinnedMeshes.empty())
         {
@@ -387,7 +387,7 @@ namespace nau
         auto& activeCamera = getMainCamera();
         const math::Matrix4 prepassView = activeCamera.getViewMatrix();
         shader_globals::setVariable("prepassView", &prepassView);
-        m_renderScene->renderDepth(activeCamera.getViewProjectionMatrix());
+        m_renderScene->renderDepth(activeCamera.getViewProjectionMatrix(), writeNormals);
     }
 
     void GraphicsScene::renderOutlineMask()

@@ -7,7 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "nau/3d/dag_drv3d.h"
+#include "nau/3d/dag_drv3d_multi_gpu.h"
 #include "nau/3d/multi_gpu_ssao_types.h"
 
 namespace d3d::mgpu
@@ -16,42 +16,22 @@ namespace d3d::mgpu
     {
         uint32_t width = 0;
         uint32_t height = 0;
-        bool synchronization = true;
-        bool blur = false;
         const void* vertexBytecode = nullptr;
         size_t vertexBytecodeSize = 0;
         const void* rawBytecode = nullptr;
         size_t rawBytecodeSize = 0;
-        const void* blurBytecode = nullptr;
-        size_t blurBytecodeSize = 0;
     };
 
     struct SsaoProducer;
-    enum class SsaoResult
-    {
-        submitted,
-        busy,
-        failed
-    };
-
-    /** @brief Creates full-resolution SSAO with optional bilateral blur and synchronized or experimental single-slot channels on the render thread. */
+    /** @brief Creates a raw half-resolution SSAO producer with three synchronized shared slots. */
     NAU_RENDER_EXPORT SsaoProducer* createSsaoProducer(const SsaoProducerDesc& desc);
-    /** @brief Polls pending work and input-copy leases. Never waits on the CPU or primary graphics queue. */
-    NAU_RENDER_EXPORT bool isSsaoBusy(const SsaoProducer* producer);
     /**
-     * @brief Sends persistent full-resolution G-buffer snapshots (RG32F sphere-map normals, DEPTH32 depth).
-     * Keep both snapshots alive and unchanged until isSsaoBusy() returns false, even after busy/failed.
-     * One secondary job is pending at a time; partial copies retain their leases. No primary queue wait is recorded.
+     * @brief Queues RG16F/R32F inputs, raw R8 AO, and the return copy for this frame.
+     * Keep endpoints alive until destruction or resize drains both devices. The caller records
+     * wait_for_primary_transfer() before filtering destination, after its independent graphics work.
+     * A null fence reports failure; no readiness polling or CPU wait is performed.
      */
-    NAU_RENDER_EXPORT SsaoResult submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth);
-    /**
-     * @brief Receives GPU 1 output according to the producer's synchronization policy.
-     * Synchronized mode polls shared readiness and local copy completion without primary graphics waits.
-     * Unsynchronized mode copies shared bytes every frame and orders only the local primary copy.
-     * In synchronized mode destination must remain alive, unchanged and unread across busy returns. Always pass the same
-     * destination until submitted is returned.
-     */
-    NAU_RENDER_EXPORT SsaoResult tryReceiveSsao(SsaoProducer* producer, BaseTexture* destination);
+    NAU_RENDER_EXPORT PrimarySyncPoint submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination);
     /** @brief Drains transfers and retires native resources before endpoint destruction, resize or driver shutdown. */
     NAU_RENDER_EXPORT void destroySsaoProducer(SsaoProducer* producer);
     /** @brief Collects retired native resources on the render thread without waiting. */

@@ -63,7 +63,7 @@ void nau::RenderEntity::renderInstanced(nau::math::Matrix4 viewProj, Sbuffer* in
     d3d::drawind_instanced(PRIM_TRILIST, startIndex, (endIndex - startIndex) / 3, 0, instancesCount, 0);
 }
 
-void nau::RenderEntity::renderZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const
+void nau::RenderEntity::renderZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals) const
 {
     const bool skinned = boneWeightsBuffer != nullptr && boneIndicesBuffer != nullptr;
 
@@ -72,14 +72,14 @@ void nau::RenderEntity::renderZPrepass(const math::Matrix4& viewProj, MaterialAs
         shader_globals::setVariable("BonesTransforms", cbStructsData.at("BonesTransforms").dataPtr);
         shader_globals::setVariable("BonesNormalTransforms", cbStructsData.at("BonesNormalTransforms").dataPtr);
 
-        prepareZPrepass("skinned", viewProj, zPrepassMat);
+        prepareZPrepass(writeNormals ? "skinnedNormals" : "skinned", viewProj, zPrepassMat);
         d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
         d3d::setvsrc(2, boneWeightsBuffer, sizeof(math::float4));
         d3d::setvsrc(3, boneIndicesBuffer, sizeof(math::IVector4));
     }
     else
     {
-        prepareZPrepass("default", viewProj, zPrepassMat);
+        prepareZPrepass(writeNormals ? "normals" : "default", viewProj, zPrepassMat);
         d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
     }
 
@@ -88,10 +88,10 @@ void nau::RenderEntity::renderZPrepass(const math::Matrix4& viewProj, MaterialAs
     d3d::drawind(PRIM_TRILIST, startIndex, (endIndex - startIndex) / 3, 0);
 }
 
-void nau::RenderEntity::renderZPrepassInstanced(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const
+void nau::RenderEntity::renderZPrepassInstanced(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals) const
 {
     shader_globals::setVariable("vp", &viewProj);
-    prepareZPrepass("default", viewProj, zPrepassMat);
+    prepareZPrepass(writeNormals ? "normals" : "default", viewProj, zPrepassMat);
 
     d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
     d3d::setvsrc(1, normalsBuffer, sizeof(math::float3));

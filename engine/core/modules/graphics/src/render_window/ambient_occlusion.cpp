@@ -61,38 +61,23 @@ namespace nau::render
         m_parameters = math::Vector4(radius, fadeStart, fadeEnd, epsilon);
         m_blurDepthThreshold = readFiniteSetting("render/ssao/blurDepthThreshold", 0.2f, 0.0f, 10.0f);
         m_blur = readSetting<bool>("render/ssao/blur", true);
-        m_blurOnSecondary = m_blur && readSetting<bool>("render/ssao/blurOnSecondary", false);
-        m_reprojection = readSetting<bool>("render/ssao/reprojection", true);
-        m_reprojectionDepthThreshold = readFiniteSetting("render/ssao/reprojectionDepthThreshold", 0.1f, 0.0001f, 10.0f);
         m_useSecondary = readSetting<bool>("render/ssao/useSecondary", false);
-        m_synchronization = readSetting<bool>("render/ssao/synchronization", true);
-        if (m_useSecondary && m_reprojection && !m_blurMaterial->getPipelineNames().contains("reproject"))
-        {
-            m_useSecondary = false;
-            NAU_LOG_WARNING("SSAO: reprojection pipeline unavailable, using GPU 0");
-        }
         if (m_useSecondary && d3d::is_multi_gpu_available())
         {
             ShaderAssetRef vertex{"file:/res/shaders/cache/shader_cache.nsbc+[ssao.vs.vsmain]"};
             ShaderAssetRef rawShader{"file:/res/shaders/cache/shader_cache.nsbc+[ssao.ps.psmain]"};
             m_vertexShader = co_await vertex.getAssetViewTyped<ShaderAssetView>();
             m_rawShader = co_await rawShader.getAssetViewTyped<ShaderAssetView>();
-            if (m_blurOnSecondary)
-            {
-                ShaderAssetRef blurShader{"file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psmain]"};
-                m_blurShader = co_await blurShader.getAssetViewTyped<ShaderAssetView>();
-            }
-            if (!m_vertexShader || !m_rawShader || (m_blurOnSecondary && !m_blurShader))
+            if (!m_vertexShader || !m_rawShader)
             {
                 m_useSecondary = false;
                 NAU_LOG_ERROR("SSAO: secondary shaders unavailable, using GPU 0");
             }
         }
-        if (m_useSecondary && !d3d::is_multi_gpu_available())
+        if (!m_useSecondary || !d3d::is_multi_gpu_available())
         {
-            NAU_LOG_WARNING("SSAO: using GPU 0: {}", d3d::get_multi_gpu_fallback_reason());
+            NAU_LOG_INFO("SSAO: GPU 0, full resolution, RG16F prepass normals");
         }
-        NAU_LOG_INFO("SSAO: full resolution, prepass view normals");
     }
 
     AmbientOcclusion::~AmbientOcclusion()
@@ -105,7 +90,7 @@ namespace nau::render
         // Drain foreign queues before destroying any endpoint they may still reference.
         d3d::mgpu::destroySsaoProducer(m_secondary);
         m_secondary = nullptr;
-        for (BaseTexture** texture : {&m_normalsSnapshot, &m_depthSnapshot, &m_receiving, &m_history, &m_historyDepth})
+        for (BaseTexture** texture : {&m_normalsSnapshot, &m_depthSnapshot, &m_receiving, &m_filtered})
         {
             if (*texture)
             {
@@ -113,75 +98,46 @@ namespace nau::render
                 *texture = nullptr;
             }
         }
-        m_historyValid = false;
-        m_discardPending = false;
-        m_pendingFrame = false;
-        m_completedFrameValid = false;
+        m_secondaryReady = {};
     }
 
-    void AmbientOcclusion::beginFrame(const math::Matrix4& view, const math::Matrix4& projection, AmbientOcclusionMode mode)
+    void AmbientOcclusion::prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, AmbientOcclusionMode mode, BaseTexture* normals, BaseTexture* depth)
     {
         if (m_mode != mode)
         {
             resetSecondary();
             m_secondaryAttempted = false;
             m_mode = mode;
-            m_historyValid = false;
-            m_discardPending = true;
-            NAU_LOG_INFO("SSAO: mode={}", static_cast<uint32_t>(m_mode));
         }
+        m_normals = normals;
+        m_depth = depth;
+        m_secondaryReady = {};
+        const math::Matrix4 inverseProjection = inverse(projection);
         m_rawMaterial->setProperty("default", "aoProjection", projection);
         m_rawMaterial->setProperty("default", "aoParameters", m_parameters);
-        const math::Matrix4 inverseProjection = inverse(projection);
-        m_viewProjection = projection * view;
-        m_inverseProjection = inverseProjection;
+        for (MaterialAssetView* material : {m_rawMaterial.get(), m_blurMaterial.get()})
+        {
+            material->setProperty("default", "aoInverseProjection", inverseProjection);
+            material->setProperty("default", "aoView", view);
+        }
         static_assert(sizeof(projection) == sizeof(m_constants.projection));
         std::memcpy(m_constants.projection, &projection, sizeof(projection));
         std::memcpy(m_constants.inverseProjection, &inverseProjection, sizeof(inverseProjection));
         std::memcpy(m_constants.view, &view, sizeof(view));
         std::memcpy(m_constants.parameters, &m_parameters, sizeof(m_parameters));
         m_constants.filter[2] = m_blurDepthThreshold;
-        for (MaterialAssetView* material : {m_rawMaterial.get(), m_blurMaterial.get()})
-        {
-            material->setProperty("default", "aoInverseProjection", inverseProjection);
-            material->setProperty("default", "aoView", view);
-        }
-    }
-
-    void AmbientOcclusion::prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, AmbientOcclusionMode mode, BaseTexture* normals, BaseTexture* depth)
-    {
-        beginFrame(view, projection, mode);
-        m_normals = normals;
-        m_depth = depth;
-        if (m_mode == AmbientOcclusionMode::off || !m_useSecondary || !prepareSecondary(depth) || d3d::mgpu::isSsaoBusy(m_secondary))
+        if (m_mode == AmbientOcclusionMode::off || !m_useSecondary || !prepareSecondary(depth))
         {
             return;
         }
-        // The last secondary job (including its shared copy) is complete. Preserve its camera
-        // and input depth before overwriting the snapshot, even though shared AO may change later.
-        if (!m_synchronization && m_pendingFrame && !publishHistory())
+        const math::Vector4 depthParameters(projection.getElem(3, 2), projection.getElem(2, 3), projection.getElem(2, 2), m_blurDepthThreshold);
+        for (const char* pipeline : {"halfBlur", "upsample"})
         {
-            return;
+            m_blurMaterial->setProperty(pipeline, "aoDepthParameters", depthParameters);
         }
-        // Keep both snapshots alive while the secondary GPU is still reading this frame.
-        if (!m_normalsSnapshot->update(normals) || !m_depthSnapshot->update(depth))
-        {
-            d3d::report_secondary_gpu_failure(static_cast<uint32_t>(E_FAIL));
-            m_historyValid = false;
-            return;
-        }
-        const d3d::mgpu::SsaoResult submitted = d3d::mgpu::submitSsao(m_secondary, m_constants, m_normalsSnapshot, m_depthSnapshot);
-        if (submitted == d3d::mgpu::SsaoResult::failed)
-        {
-            m_historyValid = false;
-        }
-        if (submitted == d3d::mgpu::SsaoResult::submitted)
-        {
-            m_pendingFrame = true;
-            m_pendingViewProjection = m_viewProjection;
-            m_pendingInverseProjection = m_inverseProjection;
-            m_discardPending = false;
-        }
+        downsampleInputs();
+        // Queue both input copies, GPU 1 AO, and its return copy now. GPU 0 keeps drawing.
+        m_secondaryReady = d3d::mgpu::submitSsao(m_secondary, m_constants, m_normalsSnapshot, m_depthSnapshot, m_receiving);
     }
 
     void AmbientOcclusion::render(BaseTexture* raw, BaseTexture* horizontal, BaseTexture* output, BaseTexture* normals, BaseTexture* depth)
@@ -199,19 +155,16 @@ namespace nau::render
         m_depth = depth;
         d3d::resource_barrier({normals, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         d3d::resource_barrier({depth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
-        if (m_useSecondary && receiveSecondary(m_blurOnSecondary ? output : raw))
+        if (m_secondaryReady.nativeFence && d3d::is_multi_gpu_available())
         {
-            if (m_blurOnSecondary)
-            {
-                // GPU 1 already filtered the source frame. Reprojection writes the final output.
-                return;
-            }
+            // This wait is recorded after G-buffer/CSM, immediately before consuming this frame's AO.
+            d3d::mgpu::wait_for_primary_transfer(m_secondaryReady);
+            m_blurMaterial->setProperty("halfBlur", "aoHalfControl", math::Vector4(m_blur ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f));
+            drawSecondaryFilter(m_filtered, m_receiving, "halfBlur");
+            drawSecondaryFilter(output, m_filtered, "upsample");
+            return;
         }
-        else
-        {
-            drawRaw(raw);
-        }
-        // Filter after reprojection, against this frame's depth and normals.
+        drawRaw(raw);
         drawBlur(horizontal, raw, true);
         drawBlur(output, horizontal, false);
     }
@@ -220,16 +173,19 @@ namespace nau::render
     {
         if (!d3d::is_multi_gpu_available() || !m_vertexShader || !m_rawShader)
         {
-            m_historyValid = false;
             return false;
         }
         TextureInfo info;
         depth->getinfo(info);
-        if (m_secondaryWidth != info.w || m_secondaryHeight != info.h)
+        const uint32_t width = (info.w + 1) / 2;
+        const uint32_t height = (info.h + 1) / 2;
+        if (m_primaryWidth != info.w || m_primaryHeight != info.h)
         {
             resetSecondary();
-            m_secondaryWidth = info.w;
-            m_secondaryHeight = info.h;
+            m_secondaryWidth = width;
+            m_secondaryHeight = height;
+            m_primaryWidth = info.w;
+            m_primaryHeight = info.h;
             m_secondaryAttempted = false;
         }
         if (!m_secondaryAttempted)
@@ -238,43 +194,28 @@ namespace nau::render
             const Shader* vertex = m_vertexShader->getShader();
             const Shader* raw = m_rawShader->getShader();
             d3d::mgpu::SsaoProducerDesc desc;
-            desc.synchronization = m_synchronization;
-            desc.width = info.w;
-            desc.height = info.h;
+            desc.width = width;
+            desc.height = height;
             desc.vertexBytecode = vertex->bytecode.data();
             desc.vertexBytecodeSize = vertex->bytecode.size();
             desc.rawBytecode = raw->bytecode.data();
             desc.rawBytecodeSize = raw->bytecode.size();
-            desc.blur = m_blurOnSecondary;
-            if (m_blurOnSecondary)
-            {
-                const Shader* blur = m_blurShader->getShader();
-                desc.blurBytecode = blur->bytecode.data();
-                desc.blurBytecodeSize = blur->bytecode.size();
-            }
             m_secondary = d3d::mgpu::createSsaoProducer(desc);
             if (!m_secondary)
             {
                 return false;
             }
-            // The prepass already writes the compact format used by the transfer channel.
-            m_normalsSnapshot = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_G32R32F | TEXCF_RTARGET, 1, u8"ssao_normals_snapshot");
-            m_depthSnapshot = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_DEPTH32 | TEXCF_RTARGET, 1, u8"ssao_depth_snapshot");
-            m_receiving = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_receiving");
-            m_history = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_history");
-            if (m_reprojection)
-            {
-                m_historyDepth = d3d::create_tex(nullptr, info.w, info.h, TEXFMT_DEPTH32 | TEXCF_RTARGET, 1, u8"ssao_history_depth");
-            }
-            if (!m_normalsSnapshot || !m_depthSnapshot || !m_receiving || !m_history || (m_reprojection && !m_historyDepth))
+            m_normalsSnapshot = d3d::create_tex(nullptr, width, height, TEXFMT_G16R16F | TEXCF_RTARGET, 1, u8"ssao_half_normals");
+            m_depthSnapshot = d3d::create_tex(nullptr, width, height, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ssao_half_depth");
+            m_receiving = d3d::create_tex(nullptr, width, height, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_half_raw");
+            m_filtered = d3d::create_tex(nullptr, width, height, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_half_filtered");
+            if (!m_normalsSnapshot || !m_depthSnapshot || !m_receiving || !m_filtered)
             {
                 d3d::report_secondary_gpu_failure(static_cast<uint32_t>(E_OUTOFMEMORY));
                 resetSecondary();
                 return false;
             }
-            NAU_LOG_INFO("SSAO: GPU 1 ready, {}x{}, synchronization={}, shared slots={}", info.w, info.h, m_synchronization, m_synchronization ? 3 : 1);
-            NAU_LOG_INFO("SSAO: camera reprojection={}", m_reprojection);
-            NAU_LOG_INFO("SSAO: blur={}, blurOnSecondary={}", m_blur, m_blurOnSecondary);
+            NAU_LOG_INFO("SSAO: same-frame GPU 1, half resolution {}x{}, RG16F normals, GPU 0 blur/upsample", width, height);
         }
         if (!m_secondary)
         {
@@ -283,83 +224,43 @@ namespace nau::render
         return true;
     }
 
-    bool AmbientOcclusion::receiveSecondary(BaseTexture* target)
+    void AmbientOcclusion::downsampleInputs()
     {
-        if (!m_secondary || !d3d::is_multi_gpu_available())
-        {
-            return false;
-        }
-        const d3d::mgpu::SsaoResult received = d3d::mgpu::tryReceiveSsao(m_secondary, m_receiving);
-        if (received == d3d::mgpu::SsaoResult::failed)
-        {
-            m_historyValid = false;
-            return false;
-        }
-        if (received == d3d::mgpu::SsaoResult::submitted && !m_discardPending)
-        {
-            if (m_synchronization && !publishHistory())
-            {
-                return false;
-            }
-            eastl::swap(m_history, m_receiving);
-            if (m_completedFrameValid)
-            {
-                if (!m_historyValid)
-                {
-                    NAU_LOG_INFO("SSAO: displaying completed GPU 1 result");
-                }
-                m_historyValid = true;
-            }
-        }
-        if (!m_historyValid)
-        {
-            return false;
-        }
-        // Reproject the original result each frame; never feed a reprojected map back into history.
-        if (m_reprojection)
-        {
-            reprojectHistory(target, m_depth);
-            return true;
-        }
-        m_blurMaterial->setProperty("default", "aoFilter", math::Vector4(0.0f, 0.0f, m_blurDepthThreshold, 1.0f));
-        draw(target, *m_blurMaterial, m_history);
-        return true;
-    }
-
-    bool AmbientOcclusion::publishHistory()
-    {
-        if (m_reprojection && !m_historyDepth->update(m_depthSnapshot))
-        {
-            d3d::report_secondary_gpu_failure(static_cast<uint32_t>(E_FAIL));
-            m_historyValid = false;
-            return false;
-        }
-        m_historyViewProjection = m_pendingViewProjection;
-        m_historyInverseProjection = m_pendingInverseProjection;
-        m_completedFrameValid = true;
-        m_pendingFrame = false;
-        return true;
-    }
-
-    void AmbientOcclusion::reprojectHistory(BaseTexture* target, BaseTexture* depth)
-    {
-        const math::Matrix4 currentToHistory = m_historyViewProjection * inverse(m_viewProjection);
-        m_blurMaterial->setProperty("reproject", "aoCurrentToHistory", currentToHistory);
-        m_blurMaterial->setProperty("reproject", "aoHistoryInverseProjection", m_historyInverseProjection);
-        m_blurMaterial->setProperty("reproject", "aoReprojectionParameters", math::Vector4(m_reprojectionDepthThreshold, 0.0f, 0.0f, 0.0f));
-        for (BaseTexture* source : {depth, m_history, m_historyDepth})
-        {
-            d3d::resource_barrier({source, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
-        }
+        d3d::resource_barrier({m_normals, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+        d3d::resource_barrier({m_depth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         d3d::set_render_target();
         d3d::set_depth(nullptr, DepthAccess::RW);
-        d3d::set_render_target(target, 0);
+        d3d::set_render_target(m_normalsSnapshot, 0);
+        d3d::set_render_target(1, m_depthSnapshot, 0);
         d3d::setview(0, 0, m_secondaryWidth, m_secondaryHeight, 0.0f, 1.0f);
         d3d::set_srgb_backbuffer_write(false);
-        d3d::settex(1, depth);
-        d3d::settex(2, m_history);
-        d3d::settex(3, m_historyDepth);
-        m_blurMaterial->bindPipeline("reproject");
+        d3d::settex(0, m_normals);
+        d3d::settex(1, m_depth);
+        m_blurMaterial->bindPipeline("downsample");
+        d3d::setvsrc(0, nullptr, 0);
+        d3d::setind(nullptr);
+        d3d::draw(PRIM_TRILIST, 0, 1);
+        d3d::settex(0, nullptr);
+        d3d::settex(1, nullptr);
+        d3d::set_render_target();
+    }
+
+    void AmbientOcclusion::drawSecondaryFilter(BaseTexture* target, BaseTexture* source, const char* pipeline)
+    {
+        d3d::resource_barrier({source, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+        d3d::resource_barrier({m_depthSnapshot, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+        d3d::set_render_target(target, 0);
+        TextureInfo info;
+        target->getinfo(info);
+        d3d::setview(0, 0, info.w, info.h, 0.0f, 1.0f);
+        d3d::set_srgb_backbuffer_write(false);
+        d3d::settex(1, m_depthSnapshot);
+        d3d::settex(2, source);
+        if (target != m_filtered)
+        {
+            d3d::settex(3, m_depth);
+        }
+        m_blurMaterial->bindPipeline(pipeline);
         d3d::setvsrc(0, nullptr, 0);
         d3d::setind(nullptr);
         d3d::draw(PRIM_TRILIST, 0, 1);

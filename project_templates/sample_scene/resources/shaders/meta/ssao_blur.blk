@@ -13,7 +13,15 @@ compile_configs {
     }
     config {
         stage:t="ps"
-        entry:t="PSReproject"
+        entry:t="PSDownsample"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSHalfBlur"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSUpsample"
     }
 }
 input_layout {

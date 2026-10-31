@@ -21,12 +21,6 @@ namespace d3d::mgpu
         TransferChannelHandle normals = nullptr;
         TransferChannelHandle depth = nullptr;
         TransferChannelHandle output = nullptr;
-        PrimarySyncPoint normalsReleased;
-        PrimarySyncPoint depthReleased;
-        PrimarySyncPoint receiving;
-        BaseTexture* destination = nullptr;
-        TransferTicket pendingOutput = 0;
-        bool synchronization = true;
 
         ~SsaoProducer()
         {
@@ -57,25 +51,21 @@ namespace d3d::mgpu
             pass.allocator = allocator;
             pass.width = desc.width;
             pass.height = desc.height;
-            pass.blur = desc.blur;
             pass.vertexShader = {desc.vertexBytecode, desc.vertexBytecodeSize};
             pass.rawShader = {desc.rawBytecode, desc.rawBytecodeSize};
-            pass.blurShader = {desc.blurBytecode, desc.blurBytecodeSize};
             result = producer->pass.init(pass);
         }
-        producer->synchronization = desc.synchronization;
         if (SUCCEEDED(result))
         {
             TransferChannelDesc channel;
             channel.width = desc.width;
             channel.height = desc.height;
-            channel.synchronization = desc.synchronization;
-            channel.slotCount = desc.synchronization ? 3 : 1;
+            channel.slotCount = 3;
             channel.direction = TransferDirection::primaryToSecondary;
-            channel.format = TEXFMT_G32R32F;
+            channel.format = TEXFMT_G16R16F;
             channel.name = "SSAO prepass normals GPU 0 -> GPU 1";
             producer->normals = create_transfer_channel(channel);
-            channel.format = TEXFMT_DEPTH32;
+            channel.format = TEXFMT_R32F;
             channel.name = "SSAO depth GPU 0 -> GPU 1";
             producer->depth = create_transfer_channel(channel);
             channel.direction = TransferDirection::secondaryToPrimary;
@@ -92,74 +82,29 @@ namespace d3d::mgpu
         return producer.release();
     }
 
-    bool isSsaoBusy(const SsaoProducer* producer)
+    PrimarySyncPoint submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination)
     {
-        if (!producer)
+        if (!producer || !normals || !depth || !destination || !is_multi_gpu_available())
         {
-            return false;
-        }
-        const HRESULT status = producer->pass.canSubmit();
-        if (FAILED(status) && status != DXGI_ERROR_WAS_STILL_DRAWING)
-        {
-            report_secondary_gpu_failure(static_cast<uint32_t>(status));
-        }
-        const bool outputPending = producer->pendingOutput != 0 &&
-                                   (producer->synchronization || !is_transfer_ready(producer->output, producer->pendingOutput));
-        return outputPending || !is_primary_transfer_complete(producer->normalsReleased) ||
-               !is_primary_transfer_complete(producer->depthReleased) || status != S_OK;
-    }
-
-    SsaoResult submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth)
-    {
-        if (!producer || !normals || !depth || !is_multi_gpu_available())
-        {
-            return SsaoResult::failed;
-        }
-        if (isSsaoBusy(producer))
-        {
-            return SsaoResult::busy;
+            return {};
         }
         const PrimarySend normalSent = send_from_primary_deferred(producer->normals, normals);
         const PrimarySend depthSent = send_from_primary_deferred(producer->depth, depth);
-        producer->normalsReleased = normalSent.sourceReleased;
-        producer->depthReleased = depthSent.sourceReleased;
-        HRESULT result = S_OK;
-        if (!producer->synchronization)
+        const drv3d_dx12::CrossAdapterSyncPoint free = producer->pass.getReadyPoint();
+        const SecondarySyncPoint destinationFree = {free.fence, free.value};
+        // Consume partial sends as well, so failure recovery can drain every issued copy.
+        const SecondarySyncPoint normalReady = normalSent.ticket
+                                                   ? receive_on_secondary(producer->normals, normalSent.ticket, producer->pass.getNormals(), destinationFree)
+                                                   : SecondarySyncPoint{};
+        const SecondarySyncPoint depthReady = depthSent.ticket
+                                                  ? receive_on_secondary(producer->depth, depthSent.ticket, producer->pass.getDepth(), destinationFree)
+                                                  : SecondarySyncPoint{};
+        HRESULT result = normalReady.nativeFence && depthReady.nativeFence ? S_OK : E_FAIL;
+        if (SUCCEEDED(result))
         {
-            if (!normalSent.ticket || !depthSent.ticket)
-            {
-                return SsaoResult::busy;
-            }
-            const drv3d_dx12::DeviceSsaoInputs inputs = {
-                drv3d_dx12::getSecondarySharedInput(producer->normals, normalSent.ticket, producer->pass.getNormals()),
-                drv3d_dx12::getSecondarySharedInput(producer->depth, depthSent.ticket, producer->pass.getDepth())};
-            result = producer->pass.execute(constants, {}, {}, &inputs);
-        }
-        else
-        {
-            const drv3d_dx12::CrossAdapterSyncPoint free = producer->pass.getReadyPoint();
-            const SecondarySyncPoint destinationFree = {free.fence, free.value};
-            // Consume either successful send, including a partial pair, to release every shared slot.
-            const SecondarySyncPoint normalReady = normalSent.ticket
-                                                       ? receive_on_secondary(producer->normals, normalSent.ticket, producer->pass.getNormals(), destinationFree)
-                                                       : SecondarySyncPoint{};
-            const SecondarySyncPoint depthReady = depthSent.ticket
-                                                      ? receive_on_secondary(producer->depth, depthSent.ticket, producer->pass.getDepth(), destinationFree)
-                                                      : SecondarySyncPoint{};
-            if ((normalSent.ticket && !normalReady.nativeFence) || (depthSent.ticket && !depthReady.nativeFence))
-            {
-                result = E_FAIL;
-            }
-            else if (!normalSent.ticket || !depthSent.ticket)
-            {
-                return SsaoResult::busy;
-            }
-            else
-            {
-                result = producer->pass.execute(constants,
-                                                {static_cast<ID3D12Fence*>(normalReady.nativeFence), normalReady.value},
-                                                {static_cast<ID3D12Fence*>(depthReady.nativeFence), depthReady.value});
-            }
+            result = producer->pass.execute(constants,
+                                            {static_cast<ID3D12Fence*>(normalReady.nativeFence), normalReady.value},
+                                            {static_cast<ID3D12Fence*>(depthReady.nativeFence), depthReady.value});
         }
         if (SUCCEEDED(result))
         {
@@ -168,54 +113,17 @@ namespace d3d::mgpu
             result = sent.ticket ? producer->pass.releaseOutput({static_cast<ID3D12Fence*>(sent.sourceReleased.nativeFence), sent.sourceReleased.value}) : E_FAIL;
             if (SUCCEEDED(result))
             {
-                producer->pendingOutput = sent.ticket;
-                return SsaoResult::submitted;
+                // The copy queue waits for AO on GPU 1. Graphics waits only later, at ssao_receive.
+                const PrimarySyncPoint receiving = begin_receive_on_primary(producer->output, sent.ticket, destination);
+                if (receiving.nativeFence)
+                {
+                    return receiving;
+                }
+                result = E_FAIL;
             }
         }
         report_secondary_gpu_failure(static_cast<uint32_t>(result));
-        return SsaoResult::failed;
-    }
-
-    SsaoResult tryReceiveSsao(SsaoProducer* producer, BaseTexture* destination)
-    {
-        if (!producer || !destination || !is_multi_gpu_available())
-        {
-            return SsaoResult::failed;
-        }
-        if (!producer->pendingOutput)
-        {
-            return SsaoResult::busy;
-        }
-        if (!producer->synchronization)
-        {
-            return receive_on_primary(producer->output, producer->pendingOutput, destination) ? SsaoResult::submitted : SsaoResult::busy;
-        }
-        if (!producer->receiving.nativeFence)
-        {
-            if (!is_transfer_ready(producer->output, producer->pendingOutput))
-            {
-                return SsaoResult::busy;
-            }
-            producer->receiving = begin_receive_on_primary(producer->output, producer->pendingOutput, destination);
-            producer->destination = destination;
-            if (!producer->receiving.nativeFence)
-            {
-                report_secondary_gpu_failure(static_cast<uint32_t>(E_FAIL));
-                return SsaoResult::failed;
-            }
-        }
-        if (producer->destination != destination)
-        {
-            return SsaoResult::failed;
-        }
-        if (!is_primary_transfer_complete(producer->receiving))
-        {
-            return SsaoResult::busy;
-        }
-        producer->pendingOutput = 0;
-        producer->receiving = {};
-        producer->destination = nullptr;
-        return SsaoResult::submitted;
+        return {};
     }
 
     void destroySsaoProducer(SsaoProducer* producer)

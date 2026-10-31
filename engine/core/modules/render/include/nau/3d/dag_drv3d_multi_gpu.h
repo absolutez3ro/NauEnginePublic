@@ -35,8 +35,7 @@ namespace d3d::mgpu
         uint32_t height = 0;
         uint32_t format = 0;  ///< TEXFMT_* value shared by both endpoints.
         TransferDirection direction = TransferDirection::secondaryToPrimary;
-        uint32_t slotCount = 2;      ///< At least 2 with synchronization; exactly 1 for experimental unsynchronized transfers.
-        bool synchronization = true;  ///< False selects experimental single-slot transfers without cross-adapter waits.
+        uint32_t slotCount = 2;      ///< At least 2 synchronized shared slots.
         const char* name = nullptr;  ///< Debug name of the shared resources.
     };
 
@@ -84,24 +83,21 @@ namespace d3d::mgpu
 
     /**
      * @brief Sends a persistent texture without waiting on the primary graphics queue.
-     * Keep the source alive and unchanged until sourceReleased completes, including after a partial job failure.
-     * Call is_primary_transfer_complete() before reusing it. A zero ticket means no copy was submitted.
+     * Keep the source alive until sourceReleased completes, including after a partial job failure.
+     * Order later GPU writes after that point or a dependency that includes it. Poll only before CPU reuse.
+     * A zero ticket means no copy was submitted.
      */
     NAU_RENDER_EXPORT PrimarySend send_from_primary_deferred(TransferChannelHandle channel, BaseTexture* source);
 
     /**
      * @brief Starts a receive without waiting on the primary graphics queue.
      * Keep destination alive and unused until the returned point completes. A null fence means failure.
-     * The caller must poll before publishing the destination to the engine or reusing the channel.
+     * Record wait_for_primary_transfer() before graphics consumes the destination.
      */
     NAU_RENDER_EXPORT PrimarySyncPoint begin_receive_on_primary(TransferChannelHandle channel, TransferTicket ticket, BaseTexture* destination);
 
-    /**
-     * @brief Copies the latest shared bytes and orders primary graphics after its local copy.
-     * Used by unsynchronized channels; does not check whether the secondary result is complete.
-     * Same-device endpoint dependencies remain ordered. No CPU wait is performed.
-     */
-    NAU_RENDER_EXPORT bool receive_on_primary(TransferChannelHandle channel, TransferTicket ticket, BaseTexture* destination);
+    /** @brief Orders the primary graphics queue after a local receive copy, without blocking the CPU. */
+    NAU_RENDER_EXPORT void wait_for_primary_transfer(PrimarySyncPoint point);
 
     /** @brief Polls a primary copy fence. Never waits; device removal is reported as incomplete. */
     NAU_RENDER_EXPORT bool is_primary_transfer_complete(PrimarySyncPoint point);
@@ -110,7 +106,7 @@ namespace d3d::mgpu
     // issued for the ticket in that slot. If the consumer skipped that ticket and already received a newer one, the slot
     // is reused without waiting. If the consumer has not received that ticket or a newer one yet, the send is dropped and
     // returns ticket 0 instead of waiting, so a consumer that skips frames can never hang the producer GPU. A send or
-    // receive also fails instead of blocking when the CPU has run several submissions ahead of the GPUs.
+    // receive grows its command-storage pool when the CPU runs ahead of a GPU; it never drops work for that reason.
 
     /**
      * @brief Creates a transfer channel.

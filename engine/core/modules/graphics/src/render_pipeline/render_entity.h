@@ -61,8 +61,8 @@ namespace nau
         void render(nau::math::Matrix4 viewProj) const;
         void renderInstanced(nau::math::Matrix4 viewProj, Sbuffer* instanceData) const;
 
-        void renderZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const;
-        void renderZPrepassInstanced(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const;
+        void renderZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals = false) const;
+        void renderZPrepassInstanced(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals = false) const;
     private:
         void prepareZPrepass(eastl::string_view pipeline, const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const;
     };
