@@ -39,7 +39,7 @@ namespace nau::sample
 
             bool handleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM) override
             {
-                if (message != WM_KEYUP || wParam != VK_F7)
+                if (message != WM_KEYUP || (wParam != VK_F7 && wParam != VK_F8 && wParam != VK_F9))
                 {
                     return false;
                 }
@@ -49,8 +49,25 @@ namespace nau::sample
                 {
                     return false;
                 }
-                const uint32_t mode = static_cast<uint32_t>(window->getAmbientOcclusionMode());
-                window->setAmbientOcclusionMode(static_cast<render::AmbientOcclusionMode>((mode + 1u) % 3u));
+                if (wParam == VK_F7)
+                {
+                    const uint32_t mode = static_cast<uint32_t>(window->getAmbientOcclusionMode());
+                    window->setAmbientOcclusionMode(static_cast<render::AmbientOcclusionMode>((mode + 1u) % 3u));
+                }
+                else if (wParam == VK_F8)
+                {
+                    const render::AmbientOcclusionExecution execution = window->getAmbientOcclusionExecution();
+                    window->setAmbientOcclusionExecution(execution == render::AmbientOcclusionExecution::singleGpu
+                                                            ? render::AmbientOcclusionExecution::multiGpu
+                                                            : render::AmbientOcclusionExecution::singleGpu);
+                }
+                else
+                {
+                    const render::AmbientOcclusionBlur blur = window->getAmbientOcclusionBlur();
+                    window->setAmbientOcclusionBlur(blur == render::AmbientOcclusionBlur::box4x4
+                                                       ? render::AmbientOcclusionBlur::bogdanov
+                                                       : render::AmbientOcclusionBlur::box4x4);
+                }
                 return true;
             }
         };

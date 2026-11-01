@@ -35,6 +35,18 @@ namespace nau::render
         debug = 2
     };
 
+    enum class AmbientOcclusionExecution : uint32_t
+    {
+        singleGpu = 0,
+        multiGpu = 1
+    };
+
+    enum class AmbientOcclusionBlur : uint32_t
+    {
+        box4x4 = 0,
+        bogdanov = 1
+    };
+
     struct NAU_ABSTRACT_TYPE IRenderWindow : public virtual IRefCounted
     {
         NAU_INTERFACE(nau::render::IRenderWindow, IRefCounted)
@@ -59,6 +71,25 @@ namespace nau::render
          * @param mode The requested SSAO mode.
          */
         virtual void setAmbientOcclusionMode(AmbientOcclusionMode mode) = 0;
+
+        /**
+         * @brief Returns the requested SSAO execution mode. Thread safe.
+         */
+        virtual AmbientOcclusionExecution getAmbientOcclusionExecution() const = 0;
+        /**
+         * @brief Requests the GPU for raw AO. MGPU requires dx12/multiGpu at startup. Thread safe.
+         * @param execution The requested execution mode; unavailable MGPU falls back to GPU 0.
+         */
+        virtual void setAmbientOcclusionExecution(AmbientOcclusionExecution execution) = 0;
+        /**
+         * @brief Returns the requested SSAO blur algorithm. Thread safe.
+         */
+        virtual AmbientOcclusionBlur getAmbientOcclusionBlur() const = 0;
+        /**
+         * @brief Requests a blur algorithm independently of the execution mode. Thread safe.
+         * @param blur The blur algorithm applied on GPU 0.
+         */
+        virtual void setAmbientOcclusionBlur(AmbientOcclusionBlur blur) = 0;
 
         virtual async::Task<> requestViewportResize(int32_t width, int32_t height) = 0;
         virtual async::Task<> requestViewportResizeImmediate(int32_t width, int32_t height) = 0;

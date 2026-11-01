@@ -38,7 +38,10 @@ namespace nau::render
         if (m_swapchain == DEFAULT_SWAPID && AmbientOcclusion::isRequested())
         {
             m_ambientOcclusion = eastl::make_unique<AmbientOcclusion>();
-            setAmbientOcclusionMode(AmbientOcclusion::getInitialMode());
+            const AmbientOcclusion::Settings settings = AmbientOcclusion::getInitialSettings();
+            setAmbientOcclusionMode(settings.mode);
+            setAmbientOcclusionExecution(settings.execution);
+            setAmbientOcclusionBlur(settings.blur);
             loadAmbientOcclusion = m_ambientOcclusion->loadAssets();
         }
 

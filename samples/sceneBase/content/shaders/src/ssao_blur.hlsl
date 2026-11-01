@@ -1,11 +1,11 @@
 // Copyright 2026 N-GINN LLC. All rights reserved.
-// Full-resolution bilateral blur and half-resolution secondary AO postprocessing.
+// Half-resolution AO filters shared by single-GPU and MGPU comparison modes.
 #include "ssao_common.hlsli"
 
 cbuffer AmbientOcclusionHalfConstants : register(b1)
 {
     float4 aoDepthParameters; // Projection B, C, A, depth threshold.
-    float4 aoHalfControl;     // Blur enabled.
+    float4 aoHalfControl;     // Blur enabled, horizontal step, vertical step.
 };
 
 Texture2D<float> aoFullDepth : register(t3);
@@ -55,6 +55,52 @@ float PSHalfBlur(float4 position : SV_Position) : SV_Target0
             int2 neighbor = clamp(pixel + int2(x, y), int2(0, 0), int2(width, height) - 1);
             float neighborZ = linearViewDepth(aoDepth.Load(int3(neighbor, 0)));
             float weight = saturate(1.0 - abs(neighborZ - centerZ) / max(aoDepthParameters.w, 1e-5));
+            total += weight * aoInput.Load(int3(neighbor, 0));
+            weightSum += weight;
+        }
+    }
+    return saturate(total / weightSum);
+}
+
+// Adapted from Mikhanil/Multi-GPU-Render-DX12, Shaders/Common/SsaoBlur.hlsl,
+// revision d17e45bc. Radius 5, sigma 2.5; each direction is a separate draw.
+float PSBogdanov(float4 position : SV_Position) : SV_Target0
+{
+    static const float weights[11] = {
+        0.022190548, 0.045589000, 0.079811408, 0.119064630, 0.151360810,
+        0.163967208,
+        0.151360810, 0.119064630, 0.079811408, 0.045589000, 0.022190548
+    };
+    int2 pixel = int2(position.xy);
+    if (aoHalfControl.x == 0.0)
+    {
+        return aoInput.Load(int3(pixel, 0));
+    }
+    float depth = aoDepth.Load(int3(pixel, 0));
+    if (depth <= 0.0)
+    {
+        return 1.0;
+    }
+    uint width, height;
+    aoDepth.GetDimensions(width, height);
+    float3 normal = readViewNormal(pixel);
+    float centerZ = linearViewDepth(depth);
+    float total = weights[5] * aoInput.Load(int3(pixel, 0));
+    float weightSum = weights[5];
+    [unroll]
+    for (int offset = -5; offset <= 5; ++offset)
+    {
+        if (offset == 0)
+        {
+            continue;
+        }
+        // Point-clamp sampling matches the reference at image borders.
+        int2 neighbor = clamp(pixel + int2(aoHalfControl.yz) * offset, int2(0, 0), int2(width, height) - 1);
+        float neighborDepth = aoDepth.Load(int3(neighbor, 0));
+        if (neighborDepth > 0.0 && dot(normal, readViewNormal(neighbor)) >= 0.8 &&
+            abs(linearViewDepth(neighborDepth) - centerZ) <= aoDepthParameters.w)
+        {
+            float weight = weights[offset + 5];
             total += weight * aoInput.Load(int3(neighbor, 0));
             weightSum += weight;
         }

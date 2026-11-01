@@ -46,9 +46,11 @@ namespace nau::render
             return;
         }
         // Count render frames, including presentation pacing; these are not GPU pass timings.
-        char title[128] = {};
-        std::snprintf(title, sizeof(title), "NAU | %.1f FPS | %.2f ms/frame",
-                      1000.0 * m_frameStatisticsCount / milliseconds, milliseconds / m_frameStatisticsCount);
+        char title[256] = {};
+        std::snprintf(title, sizeof(title), "NAU | %.1f FPS | %.2f ms/frame | %s | %s | F8 GPU / F9 blur",
+                      1000.0 * m_frameStatisticsCount / milliseconds, milliseconds / m_frameStatisticsCount,
+                      m_ambientOcclusion ? m_ambientOcclusion->getExecutionLabel() : "AO disabled",
+                      m_ambientOcclusion ? m_ambientOcclusion->getBlurLabel() : "");
         setWindowTitle(m_windowHandle, title).detach();
         m_frameStatisticsCount = 0;
         m_frameStatisticsStart = now;
@@ -143,6 +145,26 @@ namespace nau::render
     void RenderWindowImpl::setAmbientOcclusionMode(AmbientOcclusionMode mode)
     {
         m_ambientOcclusionMode.store(mode, std::memory_order_relaxed);
+    }
+
+    AmbientOcclusionExecution RenderWindowImpl::getAmbientOcclusionExecution() const
+    {
+        return m_ambientOcclusionExecution.load(std::memory_order_relaxed);
+    }
+
+    void RenderWindowImpl::setAmbientOcclusionExecution(AmbientOcclusionExecution execution)
+    {
+        m_ambientOcclusionExecution.store(execution, std::memory_order_relaxed);
+    }
+
+    AmbientOcclusionBlur RenderWindowImpl::getAmbientOcclusionBlur() const
+    {
+        return m_ambientOcclusionBlur.load(std::memory_order_relaxed);
+    }
+
+    void RenderWindowImpl::setAmbientOcclusionBlur(AmbientOcclusionBlur blur)
+    {
+        m_ambientOcclusionBlur.store(blur, std::memory_order_relaxed);
     }
 
     void RenderWindowImpl::render()
