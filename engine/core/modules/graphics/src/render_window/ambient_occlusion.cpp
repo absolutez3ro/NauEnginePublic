@@ -129,11 +129,12 @@ namespace nau::render
 
     void AmbientOcclusion::prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, const Settings& settings, BaseTexture* normals, BaseTexture* depth)
     {
-        if (m_settings.mode != settings.mode || m_settings.execution != settings.execution || m_settings.variant != settings.variant)
+        if (m_settings.mode != settings.mode || m_settings.variant != settings.variant)
         {
             // Mode changes retire both GPUs' work before any shared endpoint is reused.
             resetSecondary();
         }
+        // F8 reuses the same endpoints. Keep the producer alive; each frame chooses which GPU writes AO.
         m_logSettings |= m_settings.mode != settings.mode || m_settings.execution != settings.execution || m_settings.variant != settings.variant;
         m_settings = settings;
         m_normals = normals;
