@@ -61,8 +61,8 @@ namespace nau::render
         void setAmbientOcclusionMode(AmbientOcclusionMode mode) override;
         AmbientOcclusionExecution getAmbientOcclusionExecution() const override;
         void setAmbientOcclusionExecution(AmbientOcclusionExecution execution) override;
-        AmbientOcclusionBlur getAmbientOcclusionBlur() const override;
-        void setAmbientOcclusionBlur(AmbientOcclusionBlur blur) override;
+        AmbientOcclusionVariant getAmbientOcclusionVariant() const override;
+        void setAmbientOcclusionVariant(AmbientOcclusionVariant variant) override;
 
         async::Task<> createRenderGraph();
 
@@ -133,7 +133,7 @@ namespace nau::render
         eastl::unique_ptr<AmbientOcclusion> m_ambientOcclusion;
         std::atomic<AmbientOcclusionMode> m_ambientOcclusionMode = AmbientOcclusionMode::lighting;
         std::atomic<AmbientOcclusionExecution> m_ambientOcclusionExecution = AmbientOcclusionExecution::singleGpu;
-        std::atomic<AmbientOcclusionBlur> m_ambientOcclusionBlur = AmbientOcclusionBlur::box4x4;
+        std::atomic<AmbientOcclusionVariant> m_ambientOcclusionVariant = AmbientOcclusionVariant::current;
         eastl::unique_ptr<render::PostFxRenderer> m_postFXRenderer;
         eastl::unique_ptr<render::EnvironmentRenderer> m_environmentRenderer;
 

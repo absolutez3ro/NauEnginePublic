@@ -2,6 +2,7 @@
 //
 // Copyright 2026 N-GINN LLC. All rights reserved.
 #include "device_ssao_pass.h"
+#include "nau/3d/ssao_random_texture.h"
 
 #include <EASTL/vector.h>
 
@@ -48,6 +49,7 @@ namespace drv3d_dx12
 
     private:
         HRESULT createDescriptors();
+        HRESULT createRandomTexture();
         HRESULT createPipelines(const DeviceSsaoPassDesc& desc);
         HRESULT signal();
         void barrier(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
@@ -77,6 +79,10 @@ namespace drv3d_dx12
         DeviceResource m_normals;
         DeviceResource m_depth;
         DeviceResource m_output;
+        DeviceResource m_random;
+        DeviceResource m_randomUpload;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_randomFootprint = {};
+        bool m_randomUploaded = false;
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_queue;
         eastl::vector<eastl::unique_ptr<Recording>> m_recordings;
         ID3D12GraphicsCommandList* m_list = nullptr;
@@ -119,6 +125,7 @@ namespace drv3d_dx12
         }
         if (!desc.allocator || !desc.allocator->getDevice() || desc.width == 0 || desc.height == 0 ||
             desc.width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION || desc.height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+            desc.inputWidth > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION || desc.inputHeight > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
             !validShader(desc.vertexShader) || !validShader(desc.rawShader))
         {
             return E_INVALIDARG;
@@ -220,15 +227,21 @@ namespace drv3d_dx12
         }
         if (SUCCEEDED(result))
         {
-            result = m_normals.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R16G16_FLOAT);
+            result = m_normals.createTexture(m_allocator.get(), desc.inputWidth ? desc.inputWidth : m_width,
+                                              desc.inputHeight ? desc.inputHeight : m_height, DXGI_FORMAT_R16G16_FLOAT);
         }
         if (SUCCEEDED(result))
         {
-            result = m_depth.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R32_FLOAT);
+            result = m_depth.createTexture(m_allocator.get(), desc.inputWidth ? desc.inputWidth : m_width,
+                                            desc.inputHeight ? desc.inputHeight : m_height, DXGI_FORMAT_R32_FLOAT);
         }
         if (SUCCEEDED(result))
         {
             result = m_output.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        }
+        if (SUCCEEDED(result))
+        {
+            result = createRandomTexture();
         }
         if (SUCCEEDED(result))
         {
@@ -242,6 +255,40 @@ namespace drv3d_dx12
         return result;
     }
 
+    HRESULT DeviceSsaoPass::State::createRandomTexture()
+    {
+        constexpr UINT SIZE = d3d::mgpu::SSAO_RANDOM_TEXTURE_SIZE;
+        HRESULT result = m_random.createTexture(m_allocator.get(), SIZE, SIZE, DXGI_FORMAT_R8G8B8A8_UNORM);
+        if (FAILED(result))
+        {
+            return result;
+        }
+        const D3D12_RESOURCE_DESC desc = m_random.getResource()->GetDesc();
+        UINT64 uploadBytes = 0;
+        m_device->GetCopyableFootprints(&desc, 0, 1, 0, &m_randomFootprint, nullptr, nullptr, &uploadBytes);
+        result = m_randomUpload.createBuffer(m_allocator.get(), uploadBytes, D3D12_HEAP_TYPE_UPLOAD);
+        if (FAILED(result))
+        {
+            return result;
+        }
+        const D3D12_RANGE noRead = {0, 0};
+        void* mapped = nullptr;
+        result = m_randomUpload.getResource()->Map(0, &noRead, &mapped);
+        if (SUCCEEDED(result))
+        {
+            for (UINT y = 0; y < SIZE; ++y)
+            {
+                uint32_t* row = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(mapped) + m_randomFootprint.Offset + y * m_randomFootprint.Footprint.RowPitch);
+                for (UINT x = 0; x < SIZE; ++x)
+                {
+                    row[x] = d3d::mgpu::ssaoRandomTexel(y * SIZE + x);
+                }
+            }
+            m_randomUpload.getResource()->Unmap(0, nullptr);
+        }
+        return result;
+    }
+
     HRESULT DeviceSsaoPass::State::createDescriptors()
     {
         D3D12_DESCRIPTOR_HEAP_DESC desc = {};
@@ -249,7 +296,7 @@ namespace drv3d_dx12
         desc.NumDescriptors = 1;
         HRESULT result = m_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&m_rtvHeap));
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        desc.NumDescriptors = 3;
+        desc.NumDescriptors = 5;
         desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (SUCCEEDED(result))
         {
@@ -262,11 +309,11 @@ namespace drv3d_dx12
         m_srvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         m_rtvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         m_device->CreateRenderTargetView(m_output.getResource(), nullptr, m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-        ID3D12Resource* inputs[] = {m_normals.getResource(), m_depth.getResource(), m_depth.getResource()};
-        for (UINT input = 0; input < 3; ++input)
+        ID3D12Resource* inputs[] = {m_normals.getResource(), m_depth.getResource(), m_depth.getResource(), m_depth.getResource(), m_random.getResource()};
+        for (UINT input = 0; input < 5; ++input)
         {
             D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-            srv.Format = input == 0 ? DXGI_FORMAT_R16G16_FLOAT : DXGI_FORMAT_R32_FLOAT;
+            srv.Format = input == 4 ? DXGI_FORMAT_R8G8B8A8_UNORM : (input == 0 ? DXGI_FORMAT_R16G16_FLOAT : DXGI_FORMAT_R32_FLOAT);
             srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
             srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             srv.Texture2D.MipLevels = 1;
@@ -281,7 +328,7 @@ namespace drv3d_dx12
     {
         D3D12_DESCRIPTOR_RANGE range = {};
         range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        range.NumDescriptors = 3;
+        range.NumDescriptors = 5;
         D3D12_ROOT_PARAMETER parameters[2] = {};
         parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
@@ -292,6 +339,20 @@ namespace drv3d_dx12
         D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
         rootDesc.NumParameters = 2;
         rootDesc.pParameters = parameters;
+        D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+        for (UINT index = 0; index < 2; ++index)
+        {
+            samplers[index].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+            samplers[index].AddressU = samplers[index].AddressV = samplers[index].AddressW =
+                index == 0 ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP : D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+            samplers[index].MaxAnisotropy = 1;
+            samplers[index].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+            samplers[index].MaxLOD = D3D12_FLOAT32_MAX;
+            samplers[index].ShaderRegister = index;
+            samplers[index].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        }
+        rootDesc.NumStaticSamplers = 2;
+        rootDesc.pStaticSamplers = samplers;
         rootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS |
                          D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
                          D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
@@ -472,6 +533,19 @@ namespace drv3d_dx12
             return result;
         }
         m_list = recording->list.Get();
+        if (!m_randomUploaded)
+        {
+            barrier(m_random.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+            D3D12_TEXTURE_COPY_LOCATION source = {};
+            source.pResource = m_randomUpload.getResource();
+            source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            source.PlacedFootprint = m_randomFootprint;
+            D3D12_TEXTURE_COPY_LOCATION destination = {};
+            destination.pResource = m_random.getResource();
+            destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            m_list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+            barrier(m_random.getResource(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
         ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Get()};
         m_list->SetDescriptorHeaps(1, heaps);
         m_list->SetGraphicsRootSignature(m_root.Get());
@@ -510,6 +584,7 @@ namespace drv3d_dx12
         }
         ID3D12CommandList* lists[] = {m_list};
         m_queue->ExecuteCommandLists(1, lists);
+        m_randomUploaded = true;
 
         recording->fenceValue = ++m_serial;
         return signal();

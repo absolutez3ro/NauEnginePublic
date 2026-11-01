@@ -17,6 +17,14 @@ compile_configs {
     }
     config {
         stage:t="ps"
+        entry:t="PSFullInputs"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSDebugBilinear"
+    }
+    config {
+        stage:t="ps"
         entry:t="PSHalfBlur"
     }
     config {

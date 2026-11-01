@@ -180,6 +180,15 @@ namespace nau
         void enableAutoSetTextures(bool isEnabled) { m_autoSetTextures = isEnabled; }
 
         /**
+         * @brief Overrides a pixel-shader sampler after automatic material bindings.
+         * @param pipelineName The material pipeline.
+         * @param samplerName The sampler name declared in HLSL.
+         * @param sampler The sampler handle to bind.
+         * @param slot The HLSL sampler register.
+         */
+        void setSampler(eastl::string_view pipelineName, eastl::string_view samplerName, d3d::SamplerHandle sampler, uint32_t slot);
+
+        /**
          * @brief Checks if automatic texture setting is enabled.
          * 
          * @return `true` if automatic texture setting is enabled, `false` otherwise.
@@ -540,6 +549,7 @@ namespace nau
             
             eastl::unordered_map<eastl::string, TextureCache> samplerTextures;
             eastl::unordered_map<eastl::string, SamplerCache> samplers;
+            eastl::unordered_map<eastl::string, SamplerCache> samplerOverrides;
             
             PROGRAM programID;
 

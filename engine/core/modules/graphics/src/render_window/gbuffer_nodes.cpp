@@ -212,7 +212,8 @@ namespace nau::render
                     const math::Vector4 ssaoControl = m_ambientOcclusion ? m_ambientOcclusion->getResolveControl() : math::Vector4(0.0f);
                     shader_globals::setVariable("ssaoControl", &ssaoControl);
                     // Bind an existing G-buffer SRV when SSAO is absent; the shader bypasses it.
-                    d3d::settex(6, ambientOcclusion ? const_cast<BaseTexture*>(ambientOcclusion->get()) : m_gBuffer->getRt(0));
+                    BaseTexture* aoTexture = ambientOcclusion ? const_cast<BaseTexture*>(ambientOcclusion->get()) : m_gBuffer->getRt(0);
+                    d3d::settex(6, m_ambientOcclusion ? m_ambientOcclusion->getResolveTexture(aoTexture) : aoTexture);
                     m_csm->setCascadesToShader(m_gBuffer->getResolveShading()->getMaterial());
                     m_gBuffer->resolve(resolveTarget.get(),
                                        m_environmentRenderer->getIrradianceMap(),
@@ -331,7 +332,7 @@ namespace nau::render
                     const CameraNode& camera = m_graphicsScene->getMainCamera();
                     d3d::setview(0, 0, m_gBuffer->getWidth(), m_gBuffer->getHeight(), 0.0f, 1.0f);
                     const AmbientOcclusion::Settings settings{
-                        getAmbientOcclusionMode(), getAmbientOcclusionExecution(), getAmbientOcclusionBlur()};
+                        getAmbientOcclusionMode(), getAmbientOcclusionExecution(), getAmbientOcclusionVariant()};
                     m_ambientOcclusion->prepareFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), settings, const_cast<BaseTexture*>(normals.get()), m_gBuffer->getDepth());
                 }
             };

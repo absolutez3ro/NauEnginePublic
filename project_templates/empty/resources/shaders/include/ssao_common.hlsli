@@ -15,6 +15,9 @@ cbuffer AmbientOcclusionConstants : register(b0)
 Texture2D<float2> aoNormals : register(t0); // Sphere-map view normals from z-prepass.
 Texture2D<float> aoDepth : register(t1);    // Reversed-Z: background = 0.
 Texture2D<float> aoInput : register(t2);
+Texture2D<float4> aoRandomMap : register(t4);
+SamplerState aoLinearClamp : register(s0);
+SamplerState aoLinearWrap : register(s1);
 
 float4 VSMain(uint vertexId : SV_VertexID) : SV_Position
 {
@@ -34,6 +37,13 @@ float3 readViewNormal(int2 pixel)
     float2 encoded = aoNormals.Load(int3(pixel, 0)).xy * 2.0 - 1.0;
     float lengthSquared = dot(encoded, encoded);
     return normalize(float3(2.0 * encoded * sqrt(max(0.0, 1.0 - lengthSquared)), 1.0 - 2.0 * lengthSquared));
+}
+
+float3 readViewNormalAtUv(float2 uv)
+{
+    uint width, height;
+    aoNormals.GetDimensions(width, height);
+    return readViewNormal(clamp(int2(uv * float2(width, height)), int2(0, 0), int2(width, height) - 1));
 }
 
 uint aoHash(uint value)

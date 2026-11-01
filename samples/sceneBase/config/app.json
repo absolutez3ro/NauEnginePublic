@@ -38,7 +38,7 @@
             "fadeEnd": 1.0,
             "surfaceEpsilon": 0.05,
             "blur": true,
-            "blurMode": 0,
+            "variant": 0,
             "blurDepthThreshold": 0.2
         }
     },

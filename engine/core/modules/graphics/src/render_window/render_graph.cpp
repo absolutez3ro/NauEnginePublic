@@ -41,7 +41,7 @@ namespace nau::render
             const AmbientOcclusion::Settings settings = AmbientOcclusion::getInitialSettings();
             setAmbientOcclusionMode(settings.mode);
             setAmbientOcclusionExecution(settings.execution);
-            setAmbientOcclusionBlur(settings.blur);
+            setAmbientOcclusionVariant(settings.variant);
             loadAmbientOcclusion = m_ambientOcclusion->loadAssets();
         }
 
@@ -89,6 +89,10 @@ namespace nau::render
             shader_globals::addVariable("ssaoControl", sizeof(disabled), &disabled);
         }
         matPPResolve->enableAutoSetTextures(false);
+        if (m_ambientOcclusion)
+        {
+            m_ambientOcclusion->configureResolveSampler(*matPPResolve);
+        }
         matPPTonemap->enableAutoSetTextures(false);
 
         m_environmentRenderer = eastl::make_unique<render::EnvironmentRenderer>(

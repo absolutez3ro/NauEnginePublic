@@ -64,3 +64,51 @@ float PSMain(float4 position : SV_Position) : SV_Target
     }
     return pow(saturate(1.0 - occlusion / 14.0), 6.0);
 }
+
+// Bogdanov's complete raw AO path: full-size inputs, point normal, bilinear depth,
+// a 256x256 random-vector texture repeated four times, and view-depth attenuation.
+// Adapted from Shaders/Common/Ssao.hlsl at d17e45bc for Nau's right-handed view space.
+float PSBogdanov(float4 position : SV_Position) : SV_Target
+{
+    float2 uv = position.xy / aoFilter.xy;
+    float depth = aoDepth.SampleLevel(aoLinearClamp, uv, 0);
+    if (depth <= 0.0 || aoFilter.w == 0.0 || aoParameters.x <= 0.0)
+    {
+        return 1.0;
+    }
+    float3 center = reconstructViewPosition(uv, depth);
+    float3 normal = readViewNormalAtUv(uv);
+    float3 random = 2.0 * aoRandomMap.SampleLevel(aoLinearWrap, 4.0 * uv, 0).rgb - 1.0;
+    float occlusion = 0.0;
+    [unroll]
+    for (uint index = 0; index < 14; ++index)
+    {
+        float sampleLength = 0.25 + 0.75 * float(aoHash(index + 17u) & 65535u) / 65535.0;
+        float3 offset = reflect(normalize(SAMPLE_DIRECTIONS[index]) * sampleLength, random);
+        float3 samplePoint = center + sign(dot(offset, normal)) * aoParameters.x * offset;
+        float4 projected = mul(aoProjection, float4(samplePoint, 1.0));
+        if (projected.w <= 0.0 || abs(samplePoint.z) < 1e-7)
+        {
+            continue;
+        }
+        float2 sampleUv = projected.xy / projected.w * float2(0.5, -0.5) + 0.5;
+        float neighborDepth = aoDepth.SampleLevel(aoLinearClamp, sampleUv, 0);
+        if (neighborDepth <= 0.0)
+        {
+            continue;
+        }
+        float neighborZ = reconstructViewPosition(sampleUv, neighborDepth).z;
+        float3 occluder = samplePoint * (neighborZ / samplePoint.z);
+        float3 delta = occluder - center;
+        float distanceSquared = dot(delta, delta);
+        // The reference uses p.z-r.z with +Z forward. Nau has -Z forward.
+        float distZ = occluder.z - center.z;
+        if (distZ > aoParameters.w && distanceSquared > 1e-8)
+        {
+            float facing = max(dot(normal, delta * rsqrt(distanceSquared)), 0.0);
+            float fade = saturate((aoParameters.z - distZ) / max(aoParameters.z - aoParameters.y, 1e-5));
+            occlusion += facing * fade;
+        }
+    }
+    return saturate(pow(1.0 - occlusion / 14.0, 6.0));
+}

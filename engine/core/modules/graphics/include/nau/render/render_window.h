@@ -41,9 +41,9 @@ namespace nau::render
         multiGpu = 1
     };
 
-    enum class AmbientOcclusionBlur : uint32_t
+    enum class AmbientOcclusionVariant : uint32_t
     {
-        box4x4 = 0,
+        current = 0,
         bogdanov = 1
     };
 
@@ -82,14 +82,14 @@ namespace nau::render
          */
         virtual void setAmbientOcclusionExecution(AmbientOcclusionExecution execution) = 0;
         /**
-         * @brief Returns the requested SSAO blur algorithm. Thread safe.
+         * @brief Returns the requested complete SSAO variant. Thread safe.
          */
-        virtual AmbientOcclusionBlur getAmbientOcclusionBlur() const = 0;
+        virtual AmbientOcclusionVariant getAmbientOcclusionVariant() const = 0;
         /**
-         * @brief Requests a blur algorithm independently of the execution mode. Thread safe.
-         * @param blur The blur algorithm applied on GPU 0.
+         * @brief Requests inputs, noise, AO formula, blur and reconstruction independently of GPU selection. Thread safe.
+         * @param variant The complete SSAO implementation to compare.
          */
-        virtual void setAmbientOcclusionBlur(AmbientOcclusionBlur blur) = 0;
+        virtual void setAmbientOcclusionVariant(AmbientOcclusionVariant variant) = 0;
 
         virtual async::Task<> requestViewportResize(int32_t width, int32_t height) = 0;
         virtual async::Task<> requestViewportResizeImmediate(int32_t width, int32_t height) = 0;

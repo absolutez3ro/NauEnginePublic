@@ -18,6 +18,8 @@ namespace drv3d_dx12
         eastl::shared_ptr<IDeviceResourceAllocator> allocator;
         UINT width = 0;
         UINT height = 0;
+        UINT inputWidth = 0;
+        UINT inputHeight = 0;
         D3D12_SHADER_BYTECODE vertexShader = {};
         D3D12_SHADER_BYTECODE rawShader = {};
     };

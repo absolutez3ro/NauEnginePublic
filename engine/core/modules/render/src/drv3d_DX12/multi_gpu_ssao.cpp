@@ -51,6 +51,8 @@ namespace d3d::mgpu
             pass.allocator = allocator;
             pass.width = desc.width;
             pass.height = desc.height;
+            pass.inputWidth = desc.inputWidth;
+            pass.inputHeight = desc.inputHeight;
             pass.vertexShader = {desc.vertexBytecode, desc.vertexBytecodeSize};
             pass.rawShader = {desc.rawBytecode, desc.rawBytecodeSize};
             result = producer->pass.init(pass);
@@ -58,8 +60,8 @@ namespace d3d::mgpu
         if (SUCCEEDED(result))
         {
             TransferChannelDesc channel;
-            channel.width = desc.width;
-            channel.height = desc.height;
+            channel.width = desc.inputWidth ? desc.inputWidth : desc.width;
+            channel.height = desc.inputHeight ? desc.inputHeight : desc.height;
             channel.slotCount = 3;
             channel.direction = TransferDirection::primaryToSecondary;
             channel.format = TEXFMT_G16R16F;
@@ -68,6 +70,8 @@ namespace d3d::mgpu
             channel.format = TEXFMT_R32F;
             channel.name = "SSAO depth GPU 0 -> GPU 1";
             producer->depth = create_transfer_channel(channel);
+            channel.width = desc.width;
+            channel.height = desc.height;
             channel.direction = TransferDirection::secondaryToPrimary;
             channel.format = TEXFMT_R8;
             channel.name = "SSAO result GPU 1 -> GPU 0";

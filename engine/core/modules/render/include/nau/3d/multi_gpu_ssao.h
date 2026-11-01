@@ -16,6 +16,8 @@ namespace d3d::mgpu
     {
         uint32_t width = 0;
         uint32_t height = 0;
+        uint32_t inputWidth = 0;  // Zero uses the AO output width.
+        uint32_t inputHeight = 0; // Zero uses the AO output height.
         const void* vertexBytecode = nullptr;
         size_t vertexBytecodeSize = 0;
         const void* rawBytecode = nullptr;
@@ -26,7 +28,7 @@ namespace d3d::mgpu
     /** @brief Creates a raw half-resolution SSAO producer with three synchronized shared slots. */
     NAU_RENDER_EXPORT SsaoProducer* createSsaoProducer(const SsaoProducerDesc& desc);
     /**
-     * @brief Queues RG16F/R32F inputs, raw R8 AO, and the return copy for this frame.
+     * @brief Queues RG16F/R32F inputs at their declared size, raw R8 AO, and its return copy.
      * Keep endpoints alive until destruction or resize drains both devices. The caller records
      * wait_for_primary_transfer() before filtering destination, after its independent graphics work.
      * A null fence reports failure; no readiness polling or CPU wait is performed.

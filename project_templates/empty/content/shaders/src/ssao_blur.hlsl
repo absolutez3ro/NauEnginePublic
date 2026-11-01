@@ -28,6 +28,15 @@ DownsampleOutput PSDownsample(float4 position : SV_Position)
     return output;
 }
 
+DownsampleOutput PSFullInputs(float4 position : SV_Position)
+{
+    int2 pixel = int2(position.xy);
+    DownsampleOutput output;
+    output.normal = aoNormals.Load(int3(pixel, 0));
+    output.depth = aoDepth.Load(int3(pixel, 0));
+    return output;
+}
+
 float linearViewDepth(float depth)
 {
     // Perspective z from the projection coefficients: one division, no matrix multiplication.
@@ -76,14 +85,15 @@ float PSBogdanov(float4 position : SV_Position) : SV_Target0
     {
         return aoInput.Load(int3(pixel, 0));
     }
-    float depth = aoDepth.Load(int3(pixel, 0));
+    uint width, height;
+    aoInput.GetDimensions(width, height);
+    float2 uv = (float2(pixel) + 0.5) / float2(width, height);
+    float depth = aoDepth.SampleLevel(aoLinearClamp, uv, 0);
     if (depth <= 0.0)
     {
         return 1.0;
     }
-    uint width, height;
-    aoDepth.GetDimensions(width, height);
-    float3 normal = readViewNormal(pixel);
+    float3 normal = readViewNormalAtUv(uv);
     float centerZ = linearViewDepth(depth);
     float total = weights[5] * aoInput.Load(int3(pixel, 0));
     float weightSum = weights[5];
@@ -96,8 +106,9 @@ float PSBogdanov(float4 position : SV_Position) : SV_Target0
         }
         // Point-clamp sampling matches the reference at image borders.
         int2 neighbor = clamp(pixel + int2(aoHalfControl.yz) * offset, int2(0, 0), int2(width, height) - 1);
-        float neighborDepth = aoDepth.Load(int3(neighbor, 0));
-        if (neighborDepth > 0.0 && dot(normal, readViewNormal(neighbor)) >= 0.8 &&
+        float2 neighborUv = (float2(neighbor) + 0.5) / float2(width, height);
+        float neighborDepth = aoDepth.SampleLevel(aoLinearClamp, neighborUv, 0);
+        if (neighborDepth > 0.0 && dot(normal, readViewNormalAtUv(neighborUv)) >= 0.8 &&
             abs(linearViewDepth(neighborDepth) - centerZ) <= aoDepthParameters.w)
         {
             float weight = weights[offset + 5];
@@ -138,6 +149,14 @@ float PSUpsample(float4 position : SV_Position) : SV_Target0
 float4 PSDebug(float4 position : SV_Position) : SV_Target
 {
     float value = aoInput.Load(int3(int2(position.xy), 0));
+    return float4(value.xxx, 1.0);
+}
+
+float4 PSDebugBilinear(float4 position : SV_Position) : SV_Target
+{
+    uint width, height;
+    aoFullDepth.GetDimensions(width, height);
+    float value = aoInput.SampleLevel(aoLinearClamp, position.xy / float2(width, height), 0);
     return float4(value.xxx, 1.0);
 }
 

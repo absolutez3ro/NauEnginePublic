@@ -12,6 +12,7 @@
 TextureCube irradianceMap: register(t4);
 TextureCube reflectionMap: register(t5);
 Texture2D<float> ssaoMap : register(t6);
+SamplerState ssaoLinearClamp : register(s6);
 
 GLOBAL_CBUFFER(SceneBuffer) : register(b0)
 {
@@ -50,7 +51,13 @@ float4 PSMain(VsOutputResolve input) : SV_Target
     ProcessedGbuffer gbuffer = readProcessedGbuffer(input.texCoord);
     if (ssaoControl.x > 0.0)
     {
-        gbuffer.ao *= ssaoMap.Load(int3(int2(input.position.xy), 0));
+        uint aoWidth, aoHeight, depthWidth, depthHeight;
+        ssaoMap.GetDimensions(aoWidth, aoHeight);
+        depth_gbuf.GetDimensions(depthWidth, depthHeight);
+        // Select sampling from the bound texture: Bogdanov keeps AO at half size.
+        gbuffer.ao *= aoWidth != depthWidth || aoHeight != depthHeight
+                          ? ssaoMap.SampleLevel(ssaoLinearClamp, input.texCoord, 0)
+                          : ssaoMap.Load(int3(int2(input.position.xy), 0));
     }
 
     // depth / viewpos

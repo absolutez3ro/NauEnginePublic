@@ -63,10 +63,10 @@ namespace nau::sample
                 }
                 else
                 {
-                    const render::AmbientOcclusionBlur blur = window->getAmbientOcclusionBlur();
-                    window->setAmbientOcclusionBlur(blur == render::AmbientOcclusionBlur::box4x4
-                                                       ? render::AmbientOcclusionBlur::bogdanov
-                                                       : render::AmbientOcclusionBlur::box4x4);
+                    const render::AmbientOcclusionVariant variant = window->getAmbientOcclusionVariant();
+                    window->setAmbientOcclusionVariant(variant == render::AmbientOcclusionVariant::current
+                                                       ? render::AmbientOcclusionVariant::bogdanov
+                                                       : render::AmbientOcclusionVariant::current);
                 }
                 return true;
             }

@@ -1600,6 +1600,7 @@ namespace nau
             .constantBuffers = eastl::move(constantBuffers),
             .samplerTextures = eastl::move(textures),
             .samplers = masterPipeline.samplers,
+            .samplerOverrides = masterPipeline.samplerOverrides,
             .programID = PROGRAM_NULL,
             .renderStateId = eastl::nullopt,
             .cullMode = materialPipeline.cullMode.has_value() ? materialPipeline.cullMode : masterPipeline.cullMode,
@@ -1627,6 +1628,15 @@ namespace nau
             default:
                 NAU_FAILURE_ALWAYS("Unreachable code");
         }
+    }
+
+    void MaterialAssetView::setSampler(eastl::string_view pipelineName, eastl::string_view samplerName, d3d::SamplerHandle sampler, uint32_t slot)
+    {
+        NAU_ASSERT(m_pipelines.contains(pipelineName));
+        SamplerCache& binding = m_pipelines.at(pipelineName.data()).samplerOverrides[samplerName.data()];
+        binding.handle = sampler;
+        binding.slot = slot;
+        binding.stages.insert(STAGE_PS);
     }
 
     void MaterialAssetView::makeDepthMode(DepthMode depthMode, shaders::RenderState& renderState)
@@ -2150,6 +2160,10 @@ namespace nau
                 set_sampler(stage, sampl.slot, sampl.handle);
             }
         }
+        for (const auto& [name, sampl] : pipeline.samplerOverrides)
+        {
+            set_sampler(STAGE_PS, sampl.slot, sampl.handle);
+        }
 
         for (const auto& [name, rwBuf] : pipeline.rwBuffers)
         {
@@ -2490,6 +2504,10 @@ namespace nau
             {
                 set_sampler(stage, sampl.slot, sampl.handle);
             }
+        }
+        for (const auto& [name, sampl] : instancePipeline.samplerOverrides)
+        {
+            set_sampler(STAGE_PS, sampl.slot, sampl.handle);
         }
 
         // Some SRV and UAV resources may exist only in the master material.

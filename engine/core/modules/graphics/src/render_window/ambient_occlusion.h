@@ -17,7 +17,7 @@ namespace nau::render
         {
             AmbientOcclusionMode mode = AmbientOcclusionMode::lighting;
             AmbientOcclusionExecution execution = AmbientOcclusionExecution::singleGpu;
-            AmbientOcclusionBlur blur = AmbientOcclusionBlur::box4x4;
+            AmbientOcclusionVariant variant = AmbientOcclusionVariant::current;
         };
 
         AmbientOcclusion() = default;
@@ -36,7 +36,9 @@ namespace nau::render
         bool isDebugView() const;
         math::Vector4 getResolveControl() const;
         const char* getExecutionLabel() const;
-        const char* getBlurLabel() const;
+        const char* getVariantLabel() const;
+        BaseTexture* getResolveTexture(BaseTexture* fullSize) const;
+        void configureResolveSampler(MaterialAssetView& material) const;
 
     private:
         void draw(BaseTexture* target, MaterialAssetView& material, const char* pipeline, BaseTexture* source = nullptr);
@@ -46,11 +48,16 @@ namespace nau::render
         bool prepareTargets(BaseTexture* depth);
         bool prepareSecondary();
         void logSettings();
+        bool createRandomTexture();
 
         MaterialAssetView::Ptr m_rawMaterial;
         MaterialAssetView::Ptr m_blurMaterial;
         ShaderAssetView::Ptr m_vertexShader;
         ShaderAssetView::Ptr m_rawShader;
+        ShaderAssetView::Ptr m_bogdanovShader;
+        Texture* m_randomTexture = nullptr;
+        d3d::SamplerHandle m_linearClamp = {};
+        d3d::SamplerHandle m_linearWrap = {};
         d3d::mgpu::SsaoProducer* m_secondary = nullptr;
         d3d::mgpu::SsaoConstants m_constants;
         d3d::mgpu::PrimarySyncPoint m_secondaryReady;
@@ -63,6 +70,8 @@ namespace nau::render
         uint32_t m_secondaryHeight = 0;
         uint32_t m_primaryWidth = 0;
         uint32_t m_primaryHeight = 0;
+        uint32_t m_inputWidth = 0;
+        uint32_t m_inputHeight = 0;
         bool m_secondaryAttempted = false;
         bool m_usingSecondary = false;
         bool m_logSettings = true;
