@@ -56,3 +56,4 @@ logs.*.log
 *.nsbc
 *imgui.ini
 package-lock.json
+/samples/sceneBase/content/scenes/jungle_ruins/

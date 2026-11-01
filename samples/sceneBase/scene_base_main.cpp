@@ -240,6 +240,12 @@ namespace nau::sample
 
     async::Task<> startupDemo()
     {
+        if (getServiceProvider().get<GlobalProperties>().getValue<eastl::string>("sample/scene").value_or("") == "jungleRuins")
+        {
+            co_await startupJungleRuins();
+            co_return;
+        }
+
         using namespace nau::async;
         using namespace nau::scene;
 #if 1

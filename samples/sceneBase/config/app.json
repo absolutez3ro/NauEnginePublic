@@ -16,15 +16,18 @@
         }
     },
     "sample": {
+        "scene": "jungleRuins",
         "assetsToReload": [
             "file:/content/textures/rusted_pbr/rusted_albedo_ao.png"
         ],
         "camera": {
-            "overview": false,
+            "overview": true,
             "x": 0.0,
-            "y": 5.0,
-            "z": 10.0,
-            "pitch": -0.25
+            "y": 1.385,
+            "z": 0.0,
+            "pitch": -0.011868239,
+            "yaw": 0.675966019,
+            "fov": 50.0
         }
     },
     "render": {
