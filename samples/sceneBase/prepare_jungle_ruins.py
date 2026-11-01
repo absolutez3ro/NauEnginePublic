@@ -166,6 +166,9 @@ class Exporter:
         if len(vertices) > 65535:
             raise RuntimeError("Internal error: chunk exceeds Nau's 16-bit vertex limit")
         positions = np.ascontiguousarray(vertices[:, :3])
+        # Nau places the culling sphere at the node translation; center each chunk there.
+        center = (positions.min(0).astype(np.float64) + positions.max(0)) * 0.5
+        positions = np.ascontiguousarray(positions - center, dtype="<f4")
         normals = np.ascontiguousarray(vertices[:, 3:6])
         uvs = np.ascontiguousarray(vertices[:, 6:8])
         # Preserve USD st: the existing Nau standard shader performs the V flip.
@@ -176,7 +179,7 @@ class Exporter:
         index_id = self.accessor(indices.astype("<u2"), "SCALAR", 5123, 34963)
         mesh = len(self.gltf["meshes"])
         self.gltf["meshes"].append({"primitives": [{"attributes": {"POSITION": pos_id, "NORMAL": normal_id, "TEXCOORD_0": uv_id}, "indices": index_id, "mode": 4}]})
-        self.gltf["nodes"].append({"name": f"JungleRuins_m{material_id}_{mesh}", "mesh": mesh})
+        self.gltf["nodes"].append({"name": f"JungleRuins_m{material_id}_{mesh}", "mesh": mesh, "translation": center.tolist()})
         self.gltf["scenes"][0]["nodes"].append(mesh)
         self.stats["triangles"] += len(indices) // 3
         self.stats["vertices"] += len(vertices)
