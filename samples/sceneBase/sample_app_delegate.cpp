@@ -4,6 +4,7 @@
 #include "nau/samples/sample_app_delegate.h"
 
 #include "./sample_components/asset_reloader.h"
+#include "./sample_components/jungle_load.h"
 #include "./sample_components/scene_reloader.h"
 #include "./sample_components/window_maker.h"
 #include "./texture_import_settings.h"
@@ -126,6 +127,7 @@ namespace nau::sample
             }
             getServiceProvider().addService<TextureImportSettingsProvider>();
             getServiceProvider().addClass<nau::sample::CameraControl>();
+            getServiceProvider().addClass<nau::sample::JungleLoad>();
             getServiceProvider().addClass<nau::sample::MyRotator>();
             getServiceProvider().addClass<nau::sample::AssetReloader>();
             getServiceProvider().addClass<nau::sample::SceneReloader>();

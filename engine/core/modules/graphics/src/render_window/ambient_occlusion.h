@@ -3,6 +3,7 @@
 // Copyright 2026 N-GINN LLC. All rights reserved.
 //
 #pragma once
+#include <array>
 
 #include "graphics_assets/material_asset.h"
 #include "nau/3d/multi_gpu_ssao.h"
@@ -41,6 +42,8 @@ namespace nau::render
         BaseTexture* getResolveTexture(BaseTexture* fullSize) const;
         void configureResolveSampler(MaterialAssetView& material) const;
         void bindResolveInputs();
+        float getWaitMilliseconds() const { return m_usingSecondary && m_settings.pipeline.waitForSecondary && m_settings.mode != AmbientOcclusionMode::off ? m_waitMilliseconds : -1.f; }
+        const char* getWaitLabel() const;
 
     private:
         void draw(BaseTexture* target, MaterialAssetView& material, const char* pipeline, BaseTexture* source = nullptr);
@@ -52,6 +55,8 @@ namespace nau::render
         void setConstants(MaterialAssetView& material, const char* pipeline);
         void logSettings();
         bool createRandomTexture();
+        void pollWaitTimings();
+        void waitForSecondary();
 
         MaterialAssetView::Ptr m_rawMaterial;
         MaterialAssetView::Ptr m_blurMaterial;
@@ -71,6 +76,28 @@ namespace nau::render
         BaseTexture* m_horizontal = nullptr;
         BaseTexture* m_fullOutput = nullptr;
         BaseTexture* m_resolveSource = nullptr;
+        BaseTexture* m_asyncRaw = nullptr;
+        BaseTexture* m_asyncDepth = nullptr;
+        BaseTexture* m_asyncNormals = nullptr;
+        BaseTexture* m_drawRaw = nullptr;
+        BaseTexture* m_drawDepth = nullptr;
+        BaseTexture* m_drawNormals = nullptr;
+        bool m_asyncValid = false;
+        d3d::mgpu::SsaoConstants m_submittedConstants;
+        d3d::mgpu::SsaoConstants m_asyncConstants;
+        struct WaitTiming
+        {
+            void* begin = nullptr;
+            void* end = nullptr;
+            bool pending = false;
+            uint64_t generation = 0;
+            uint64_t sequence = 0;
+        };
+        std::array<WaitTiming, 16> m_waitTimings;
+        uint64_t m_timingGeneration = 0;
+        uint64_t m_nextWaitSequence = 0;
+        uint64_t m_lastWaitSequence = 0;
+        float m_waitMilliseconds = -1.f;
         uint32_t m_secondaryWidth = 0;
         uint32_t m_secondaryHeight = 0;
         uint32_t m_primaryWidth = 0;

@@ -67,6 +67,7 @@ namespace nau::render
         bool rejectOutside = false;
         bool quarterResolution = false;
         bool gatherUpsample = false;
+        bool waitForSecondary = true;
 
         bool operator==(const AmbientOcclusionPipeline&) const = default;
     };
@@ -118,6 +119,8 @@ namespace nau::render
         virtual AmbientOcclusionPipeline getAmbientOcclusionPipeline() const = 0;
         virtual void setAmbientOcclusionPipeline(const AmbientOcclusionPipeline& pipeline) = 0;
         virtual float getFrameRate() const = 0;
+        /** @brief GPU timestamp interval around the AO queue wait; negative until available. */
+        virtual float getAmbientOcclusionWaitMilliseconds() const = 0;
 
         virtual async::Task<> requestViewportResize(int32_t width, int32_t height) = 0;
         virtual async::Task<> requestViewportResizeImmediate(int32_t width, int32_t height) = 0;

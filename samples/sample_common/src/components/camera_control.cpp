@@ -46,6 +46,15 @@ namespace nau::sample
                 if (ImGui::Button("Bogdanov preset (F9)")) window->setAmbientOcclusionVariant(AmbientOcclusionVariant::bogdanov);
                 auto p = window->getAmbientOcclusionPipeline();
                 bool changed = false;
+                if (ImGui::Button(p.waitForSecondary ? "Wait for GPU1: ON" : "Wait for GPU1: OFF (async)"))
+                {
+                    p.waitForSecondary = !p.waitForSecondary;
+                    changed = true;
+                }
+                const float waitMs = window->getAmbientOcclusionWaitMilliseconds();
+                if (!p.waitForSecondary) ImGui::TextWrapped("GPU 0 uses the latest completed AO; it never waits for this frame's GPU 1 result.");
+                else if (waitMs >= 0.f) ImGui::Text("GPU0 queue wait: %.3f ms", waitMs);
+                else ImGui::TextUnformatted("GPU0 queue wait: n/a (no GPU1 result yet)");
                 changed |= combo("Inputs", p.inputs, "Downsample to AO size\0Full resolution\0");
                 changed |= combo("AO algorithm + noise", p.algorithm, "Nau\0Bogdanov\0");
                 changed |= combo("Normals", p.normals, "Transfer prepass normals\0Reconstruct from depth\0");

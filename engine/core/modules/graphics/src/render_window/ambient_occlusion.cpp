@@ -8,6 +8,7 @@
 
 #include "nau/app/global_properties.h"
 #include "nau/3d/ssao_random_texture.h"
+#include "nau/3d/dag_drv3dCmd.h"
 #include "nau/diag/logging.h"
 #include "nau/service/service_provider.h"
 #include "nau/shaders/shader_globals.h"
@@ -62,6 +63,7 @@ namespace nau::render
         p.rejectOutside = readSetting<bool>("render/ssao/rejectOutside", false);
         p.quarterResolution = readSetting<bool>("render/ssao/quarterResolution", false);
         p.gatherUpsample = readSetting<bool>("render/ssao/gatherUpsample", false);
+        p.waitForSecondary = readSetting<bool>("render/ssao/waitForSecondary", true);
         return settings;
     }
 
@@ -121,6 +123,11 @@ namespace nau::render
     AmbientOcclusion::~AmbientOcclusion()
     {
         resetSecondary();
+        for (auto& timing : m_waitTimings)
+        {
+            d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &timing.begin, nullptr, nullptr);
+            d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &timing.end, nullptr, nullptr);
+        }
         if (m_randomTexture)
         {
             m_randomTexture->destroy();
@@ -133,7 +140,9 @@ namespace nau::render
         d3d::mgpu::destroySsaoProducer(m_secondary);
         m_secondary = nullptr;
         m_resolveSource = nullptr;
-        for (BaseTexture** texture : {&m_normalsSnapshot, &m_depthSnapshot, &m_receiving, &m_filtered, &m_horizontal, &m_fullOutput})
+        m_asyncValid = false;
+        m_drawRaw = m_drawDepth = m_drawNormals = nullptr;
+        for (BaseTexture** texture : {&m_normalsSnapshot, &m_depthSnapshot, &m_receiving, &m_filtered, &m_horizontal, &m_fullOutput, &m_asyncRaw, &m_asyncDepth, &m_asyncNormals})
         {
             if (*texture)
             {
@@ -156,13 +165,28 @@ namespace nau::render
     {
         const auto& old = m_settings.pipeline;
         const auto& next = settings.pipeline;
+        pollWaitTimings();
+        const bool asyncChanged = old.waitForSecondary != next.waitForSecondary ||
+            ((!old.waitForSecondary || !next.waitForSecondary) &&
+             (old != next || m_settings.execution != settings.execution));
+        if (old.waitForSecondary != next.waitForSecondary || m_settings.mode != settings.mode || m_settings.execution != settings.execution)
+        {
+            ++m_timingGeneration;
+            m_waitMilliseconds = -1.f;
+        }
         const bool layoutChanged = old.inputs != next.inputs || old.normals != next.normals ||
             old.packedNormals != next.packedNormals || old.linearDepth16 != next.linearDepth16 ||
             old.quarterResolution != next.quarterResolution;
         m_logSettings |= old != next || m_settings.execution != settings.execution || m_settings.mode != settings.mode;
-        if (layoutChanged) resetSecondary();
+        if (layoutChanged || asyncChanged) resetSecondary();
         m_settings = settings;
         prepareTargets(width, height);
+        if (!next.waitForSecondary && d3d::is_multi_gpu_available() && !m_asyncRaw && m_receiving)
+        {
+            m_asyncRaw = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_async_ready");
+            m_asyncDepth = d3d::create_tex(nullptr, m_inputWidth, m_inputHeight, (next.linearDepth16 ? TEXFMT_R16F : TEXFMT_R32F) | TEXCF_RTARGET, 1, u8"ssao_async_depth");
+            m_asyncNormals = d3d::create_tex(nullptr, m_inputWidth, m_inputHeight, (next.packedNormals ? TEXFMT_R8G8 : TEXFMT_G16R16F) | TEXCF_RTARGET, 1, u8"ssao_async_normals");
+        }
         // A full-size AO allocation exists only for a separate reconstruction pass.
         if (next.upsample != AmbientOcclusionUpsample::separate && m_fullOutput)
         {
@@ -177,8 +201,11 @@ namespace nau::render
     {
         m_normals = normals;
         m_depth = depth;
-        m_secondaryReady = {};
+        if (m_settings.pipeline.waitForSecondary) m_secondaryReady = {};
         m_usingSecondary = false;
+        m_drawRaw = m_receiving;
+        m_drawDepth = m_depthSnapshot;
+        m_drawNormals = m_normalsSnapshot;
         const math::Matrix4 inverseProjection = inverse(projection);
         static_assert(sizeof(projection) == sizeof(m_constants.projection));
         std::memcpy(m_constants.projection, &projection, sizeof(projection));
@@ -210,14 +237,30 @@ namespace nau::render
         m_constants.reconstruction[1] = p.gatherUpsample ? 1.f : 0.f;
         m_constants.reconstruction[2] = p.quarterResolution ? 4.f : 2.f;
         m_constants.reconstruction[3] = m_blurDepthThreshold;
-        downsampleInputs();
         m_constants.filter[0] = static_cast<float>(m_secondaryWidth);
         m_constants.filter[1] = static_cast<float>(m_secondaryHeight);
-        if (m_settings.execution == AmbientOcclusionExecution::multiGpu && prepareSecondary())
+        const bool async = !p.waitForSecondary && m_settings.execution == AmbientOcclusionExecution::multiGpu &&
+            m_asyncRaw && m_asyncDepth && m_asyncNormals && prepareSecondary();
+        if (async && m_secondaryReady.nativeFence)
+        {
+            if (!d3d::mgpu::is_primary_transfer_complete(m_secondaryReady))
+            {
+                // Keep all input/output endpoints untouched while GPU 1 is still using them.
+                m_usingSecondary = true;
+                logSettings();
+                return;
+            }
+            m_asyncValid = m_asyncRaw->update(m_receiving) && m_asyncDepth->update(m_depthSnapshot) && m_asyncNormals->update(m_normalsSnapshot);
+            m_asyncConstants = m_submittedConstants;
+            m_secondaryReady = {};
+        }
+        downsampleInputs();
+        if (m_settings.execution == AmbientOcclusionExecution::multiGpu && (p.waitForSecondary || async) && prepareSecondary())
         {
             // Queue both input copies, GPU 1 AO, and its return copy now. GPU 0 keeps drawing.
             m_secondaryReady = d3d::mgpu::submitSsao(m_secondary, m_constants, m_normalsSnapshot, m_depthSnapshot, m_receiving);
             m_usingSecondary = m_secondaryReady.nativeFence != nullptr;
+            m_submittedConstants = m_constants;
             if (!m_usingSecondary)
             {
                 // Drain partial transfers before the primary fallback writes the same raw target.
@@ -243,7 +286,24 @@ namespace nau::render
         if (m_usingSecondary)
         {
             // This wait is recorded after G-buffer/CSM, immediately before consuming this frame's AO.
-            d3d::mgpu::wait_for_primary_transfer(m_secondaryReady);
+            if (m_settings.pipeline.waitForSecondary)
+                waitForSecondary();
+            else if (m_asyncValid)
+            {
+                m_drawRaw = m_asyncRaw;
+                m_drawDepth = m_asyncDepth;
+                m_drawNormals = m_asyncNormals;
+                m_constants = m_asyncConstants;
+            }
+            else
+            {
+                // No completed result yet: render this frame without AO, without a queue wait.
+                m_resolveSource = nullptr;
+                d3d::set_render_target(output, 0);
+                d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
+                d3d::set_render_target();
+                return;
+            }
         }
         else
         {
@@ -355,11 +415,11 @@ namespace nau::render
     {
         const auto& p = m_settings.pipeline;
         const bool blurOnSecondary = m_usingSecondary && p.blurExecution == AmbientOcclusionExecution::multiGpu;
-        m_resolveSource = m_receiving;
+        m_resolveSource = m_drawRaw;
         if (!blurOnSecondary && p.blur != AmbientOcclusionBlur::off && p.blur != AmbientOcclusionBlur::bilateralUpsample)
         {
             m_constants.pipeline[1] = 0.f;
-            draw(p.blur == AmbientOcclusionBlur::gaussian ? m_horizontal : m_filtered, *m_blurMaterial, "halfBlur", m_receiving);
+            draw(p.blur == AmbientOcclusionBlur::gaussian ? m_horizontal : m_filtered, *m_blurMaterial, "halfBlur", m_drawRaw);
             if (p.blur == AmbientOcclusionBlur::gaussian)
             {
                 m_constants.pipeline[1] = 1.f;
@@ -395,8 +455,8 @@ namespace nau::render
 
     void AmbientOcclusion::draw(BaseTexture* target, MaterialAssetView& material, const char* pipeline, BaseTexture* source)
     {
-        d3d::resource_barrier({m_normalsSnapshot, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
-        d3d::resource_barrier({m_depthSnapshot, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+        d3d::resource_barrier({m_drawNormals, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+        d3d::resource_barrier({m_drawDepth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         if (source)
         {
             d3d::resource_barrier({source, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
@@ -406,8 +466,8 @@ namespace nau::render
         target->getinfo(info);
         d3d::setview(0, 0, info.w, info.h, 0.0f, 1.0f);
         d3d::set_srgb_backbuffer_write(false);
-        d3d::settex(0, m_normalsSnapshot);
-        d3d::settex(1, m_depthSnapshot);
+        d3d::settex(0, m_drawNormals);
+        d3d::settex(1, m_drawDepth);
         d3d::settex(2, source);
         d3d::settex(3, m_depth);
         d3d::settex(4, m_randomTexture);
@@ -446,6 +506,52 @@ namespace nau::render
         return math::Vector4(m_settings.mode != AmbientOcclusionMode::off && m_resolveSource ? 1.f : 0.f, m_fullOutput ? -1.f : m_constants.reconstruction[0], m_settings.pipeline.linearDepth16 ? 1.f : 0.f, m_settings.pipeline.gatherUpsample ? 1.f : 0.f);
     }
 
+    void AmbientOcclusion::pollWaitTimings()
+    {
+        uint64_t frequency = 0;
+        d3d::driver_command(D3V3D_COMMAND_TIMESTAMPFREQ, &frequency, nullptr, nullptr);
+        for (auto& timing : m_waitTimings)
+        {
+            uint64_t begin = 0, end = 0;
+            if (timing.pending && d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, timing.begin, &begin, nullptr) &&
+                d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, timing.end, &end, nullptr))
+            {
+                if (timing.generation == m_timingGeneration && timing.sequence > m_lastWaitSequence && frequency && end >= begin)
+                {
+                    m_waitMilliseconds = static_cast<float>(1000.0 * static_cast<double>(end - begin) / frequency);
+                    m_lastWaitSequence = timing.sequence;
+                }
+                timing.pending = false;
+            }
+        }
+    }
+
+    void AmbientOcclusion::waitForSecondary()
+    {
+        WaitTiming* sample = nullptr;
+        for (auto& timing : m_waitTimings)
+            if (!timing.pending) { sample = &timing; break; }
+        // Timestamp queries run on GPU 0 on either side of the graphics-queue Wait.
+        // CPU-side duration of queue submission would not measure GPU idle time.
+        if (sample) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &sample->begin, nullptr, nullptr);
+        d3d::mgpu::wait_for_primary_transfer(m_secondaryReady);
+        if (sample)
+        {
+            d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &sample->end, nullptr, nullptr);
+            sample->generation = m_timingGeneration;
+            sample->sequence = ++m_nextWaitSequence;
+            sample->pending = true;
+        }
+    }
+
+    const char* AmbientOcclusion::getWaitLabel() const
+    {
+        if (m_settings.mode == AmbientOcclusionMode::off) return "n/a (AO off)";
+        if (!m_usingSecondary) return "n/a (no GPU1 AO)";
+        if (!m_settings.pipeline.waitForSecondary) return "OFF (async)";
+        return m_waitMilliseconds < 0.f ? "pending" : nullptr;
+    }
+
     const char* AmbientOcclusion::getExecutionLabel() const
     {
         if (m_settings.mode == AmbientOcclusionMode::off)
@@ -470,11 +576,11 @@ namespace nau::render
     {
         if (!m_logSettings) return;
         const auto& p = m_settings.pipeline;
-        NAU_LOG_INFO("SSAO pipeline: {}, AO={}x{}, inputs={}x{}, algorithm={}, normals={}, blur={}, blurGPU={}, upsample={}, RG8={}, R16F={}, samples={}, weighted={}, reject={}, gatherUp={}, mode={}",
+        NAU_LOG_INFO("SSAO pipeline: {}, AO={}x{}, inputs={}x{}, algorithm={}, normals={}, blur={}, blurGPU={}, upsample={}, RG8={}, R16F={}, samples={}, weighted={}, reject={}, gatherUp={}, wait={}, mode={}",
             getExecutionLabel(), m_secondaryWidth, m_secondaryHeight, m_inputWidth, m_inputHeight,
             static_cast<uint32_t>(p.algorithm), static_cast<uint32_t>(p.normals), static_cast<uint32_t>(p.blur),
             static_cast<uint32_t>(p.blurExecution), static_cast<uint32_t>(p.upsample), p.packedNormals, p.linearDepth16,
-            p.eightSamples ? 8 : 14, p.weightedUpsample, p.rejectOutside, p.gatherUpsample, static_cast<uint32_t>(m_settings.mode));
+            p.eightSamples ? 8 : 14, p.weightedUpsample, p.rejectOutside, p.gatherUpsample, p.waitForSecondary, static_cast<uint32_t>(m_settings.mode));
         m_logSettings = false;
     }
 
@@ -487,8 +593,8 @@ namespace nau::render
     {
         if (BaseTexture* source = getResolveTexture(nullptr))
             d3d::resource_barrier({source, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
-        d3d::resource_barrier({m_depthSnapshot, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
-        d3d::settex(7, m_depthSnapshot);
+        d3d::resource_barrier({m_drawDepth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+        d3d::settex(7, m_drawDepth);
         const math::Vector4 reconstruction(m_constants.reconstruction[2], m_blurDepthThreshold,
             m_constants.projection[14], m_constants.projection[10]);
         shader_globals::setVariable("ssaoReconstruction", &reconstruction);

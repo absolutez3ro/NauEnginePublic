@@ -1,6 +1,7 @@
 // Copyright 2026 N-GINN LLC. All rights reserved.
 
 #include "scene_loaders.h"
+#include "sample_components/jungle_load.h"
 
 #include <charconv>
 
@@ -90,6 +91,7 @@ namespace nau::sample
         light.setShadowMapSize(2048);
         light.setShadowCascadeCount(4);
         light.setRotation(math::quat::rotationZ(math::degToRad(-50.0f)));
+        scene->getRoot().addComponent<JungleLoad>().initialize(cameraObject, light);
         scene::EnvironmentComponent& environment = scene->getRoot().addComponent<scene::EnvironmentComponent>();
         environment.setIntensity(0.5f);
         environment.setTextureAsset(TextureAssetRef{"file:/content/textures/environment/SunnyHills_2k.hdr"});

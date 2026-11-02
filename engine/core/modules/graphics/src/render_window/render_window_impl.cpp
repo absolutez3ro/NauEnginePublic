@@ -29,6 +29,7 @@ namespace nau::render
 
     void RenderWindowImpl::updateFrameStatistics()
     {
+        m_ambientOcclusionWaitMs.store(m_ambientOcclusion ? m_ambientOcclusion->getWaitMilliseconds() : -1.f, std::memory_order_relaxed);
         const auto now = std::chrono::steady_clock::now();
         if (m_frameStatisticsStart == std::chrono::steady_clock::time_point{})
         {
@@ -43,9 +44,14 @@ namespace nau::render
         }
         // Count render frames, including presentation pacing; these are not GPU pass timings.
         m_frameRate.store(static_cast<float>(1000.0 * m_frameStatisticsCount / milliseconds), std::memory_order_relaxed);
-        char title[256] = {};
-        std::snprintf(title, sizeof(title), "NAU | %.1f FPS | %.2f ms/frame | %s | %s | F8 GPU / F9 variant",
+        char wait[64] = {};
+        const char* waitLabel = m_ambientOcclusion ? m_ambientOcclusion->getWaitLabel() : "n/a";
+        if (waitLabel) std::snprintf(wait, sizeof(wait), "%s", waitLabel);
+        else std::snprintf(wait, sizeof(wait), "%.3f ms", m_ambientOcclusion->getWaitMilliseconds());
+        char title[384] = {};
+        std::snprintf(title, sizeof(title), "NAU | %.1f FPS | %.2f ms/frame | GPU0 wait: %s | %s | %s | F8 GPU / F9 preset",
                       1000.0 * m_frameStatisticsCount / milliseconds, milliseconds / m_frameStatisticsCount,
+                      wait,
                       m_ambientOcclusion ? m_ambientOcclusion->getExecutionLabel() : "AO disabled",
                       m_ambientOcclusion ? m_ambientOcclusion->getVariantLabel() : "");
         if (m_showFrameStatistics) setWindowTitle(m_windowHandle, title).detach();
@@ -162,6 +168,7 @@ namespace nau::render
     void RenderWindowImpl::setAmbientOcclusionVariant(AmbientOcclusionVariant variant)
     {
         AmbientOcclusionPipeline pipeline;
+        pipeline.waitForSecondary = getAmbientOcclusionPipeline().waitForSecondary;
         if (variant == AmbientOcclusionVariant::bogdanov)
         {
             pipeline.inputs = AmbientOcclusionInputs::full;

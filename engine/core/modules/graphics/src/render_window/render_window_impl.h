@@ -67,6 +67,7 @@ namespace nau::render
         AmbientOcclusionPipeline getAmbientOcclusionPipeline() const override;
         void setAmbientOcclusionPipeline(const AmbientOcclusionPipeline& pipeline) override;
         float getFrameRate() const override { return m_frameRate.load(std::memory_order_relaxed); }
+        float getAmbientOcclusionWaitMilliseconds() const override { return m_ambientOcclusionWaitMs.load(std::memory_order_relaxed); }
 
         async::Task<> createRenderGraph();
 
@@ -153,6 +154,7 @@ namespace nau::render
         std::chrono::steady_clock::time_point m_frameStatisticsStart;
         uint32_t m_frameStatisticsCount = 0;
         std::atomic<float> m_frameRate = 0.f;
+        std::atomic<float> m_ambientOcclusionWaitMs = -1.f;
         WeakPtr<async::Executor> m_preRenderWorkQueueRef;
 
         eastl::unique_ptr<render::DeferredRenderTarget> m_gBuffer;
