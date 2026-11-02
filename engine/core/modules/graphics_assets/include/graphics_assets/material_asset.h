@@ -99,6 +99,8 @@ namespace nau
          */
         virtual eastl::unordered_set<eastl::string> getPipelineNames() const;
 
+        bool hasPipeline(eastl::string_view pipelineName) const;
+
         /**
          * @brief Sets the cull mode for the specified pipeline.
          * 
@@ -241,6 +243,9 @@ namespace nau
          * @param [in] texture      A pointer to the texture to assign.
          */
         void setTexture(eastl::string_view pipelineName, eastl::string_view propertyName, BaseTexture* texture);
+
+        /// Returns the current texture, including inherited material instance values.
+        virtual BaseTexture* getTexture(eastl::string_view pipelineName, eastl::string_view propertyName);
 
         /**
          * @brief Sets a solid color texture for a pipeline property.
@@ -738,6 +743,8 @@ namespace nau
          * @param [in] pipelineName The name of the pipeline to bind.
          */
         void bindPipeline(eastl::string_view pipelineName) override;
+
+        BaseTexture* getTexture(eastl::string_view pipelineName, eastl::string_view propertyName) override;
 
         /**
          * @brief Retrieves the program associated with the specified pipeline from the master material.

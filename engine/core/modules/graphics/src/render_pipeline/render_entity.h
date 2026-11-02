@@ -64,6 +64,7 @@ namespace nau
         void renderZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals = false) const;
         void renderZPrepassInstanced(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals = false) const;
     private:
+        eastl::string_view prepareStaticZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals) const;
         void prepareZPrepass(eastl::string_view pipeline, const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const;
     };
 

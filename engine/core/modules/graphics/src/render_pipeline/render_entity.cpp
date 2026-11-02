@@ -79,8 +79,12 @@ void nau::RenderEntity::renderZPrepass(const math::Matrix4& viewProj, MaterialAs
     }
     else
     {
-        prepareZPrepass(writeNormals ? "normals" : "default", viewProj, zPrepassMat);
+        const eastl::string_view pipeline = prepareStaticZPrepass(viewProj, zPrepassMat, writeNormals);
         d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
+        if (pipeline == "masked" || pipeline == "maskedNormals")
+        {
+            d3d::setvsrc(2, texcoordsBuffer, sizeof(math::float2));
+        }
     }
 
     d3d::setvsrc(1, normalsBuffer, sizeof(math::float3));
@@ -91,12 +95,29 @@ void nau::RenderEntity::renderZPrepass(const math::Matrix4& viewProj, MaterialAs
 void nau::RenderEntity::renderZPrepassInstanced(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals) const
 {
     shader_globals::setVariable("vp", &viewProj);
-    prepareZPrepass(writeNormals ? "normals" : "default", viewProj, zPrepassMat);
+    const eastl::string_view pipeline = prepareStaticZPrepass(viewProj, zPrepassMat, writeNormals);
 
     d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
     d3d::setvsrc(1, normalsBuffer, sizeof(math::float3));
+    if (pipeline == "masked" || pipeline == "maskedNormals")
+    {
+        d3d::setvsrc(2, texcoordsBuffer, sizeof(math::float2));
+    }
     d3d::setind(indexBuffer);
     d3d::drawind_instanced(PRIM_TRILIST, startIndex, (endIndex - startIndex) / 3, 0, instancesCount, 0);
+}
+
+eastl::string_view nau::RenderEntity::prepareStaticZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals) const
+{
+    eastl::string_view pipeline = writeNormals ? "normals" : "default";
+    // Outline materials keep their own depth shader; masked depth also serves CSM.
+    if (material->getBlendMode("default") == BlendMode::Masked && zPrepassMat->hasPipeline("masked"))
+    {
+        pipeline = writeNormals ? "maskedNormals" : "masked";
+        zPrepassMat->setTexture(pipeline, "albedoTex", material->getTexture("default", "albedoTex"));
+    }
+    prepareZPrepass(pipeline, viewProj, zPrepassMat);
+    return pipeline;
 }
 
 void nau::RenderEntity::prepareZPrepass(eastl::string_view pipeline, const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const

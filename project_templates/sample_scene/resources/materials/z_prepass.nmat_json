@@ -68,6 +68,40 @@
       "cullMode": "CounterClockwise",
       "depthMode": "Default",
       "blendMode": "Opaque"
+    },
+    "masked": {
+      "properties": {
+        "albedoTex": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "shaders": [
+        "file:/res/shaders/cache/shader_cache.nsbc+[masked_depth.vs.vsmain]",
+        "file:/res/shaders/cache/shader_cache.nsbc+[masked_depth.ps.psdepth]"
+      ],
+      "cullMode": "None",
+      "depthMode": "Default",
+      "blendMode": "Masked"
+    },
+    "maskedNormals": {
+      "properties": {
+        "albedoTex": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "shaders": [
+        "file:/res/shaders/cache/shader_cache.nsbc+[masked_depth.vs.vsmain]",
+        "file:/res/shaders/cache/shader_cache.nsbc+[masked_depth.ps.psnormals]"
+      ],
+      "cullMode": "None",
+      "depthMode": "Default",
+      "blendMode": "Masked"
     }
   }
 }

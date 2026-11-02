@@ -120,6 +120,11 @@ void nau::RenderView::renderZPrepass(const nau::math::Matrix4& vp, nau::Material
     zPrepassMat->setRoBuffer("skinned", "instanceBuffer", m_instanceData);
     zPrepassMat->setRoBuffer("normals", "instanceBuffer", m_instanceData);
     zPrepassMat->setRoBuffer("skinnedNormals", "instanceBuffer", m_instanceData);
+    if (zPrepassMat->hasPipeline("masked"))
+    {
+        zPrepassMat->setRoBuffer("masked", "instanceBuffer", m_instanceData);
+        zPrepassMat->setRoBuffer("maskedNormals", "instanceBuffer", m_instanceData);
+    }
 
     for (auto& list : m_lists)
     {

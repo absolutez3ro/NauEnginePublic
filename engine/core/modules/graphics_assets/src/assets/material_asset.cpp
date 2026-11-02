@@ -105,6 +105,11 @@ namespace nau
         return names;
     }
 
+    bool MaterialAssetView::hasPipeline(eastl::string_view pipelineName) const
+    {
+        return m_pipelines.contains(pipelineName);
+    }
+
     void MaterialAssetView::setCullMode(eastl::string_view pipelineName, CullMode cullMode)
     {
         NAU_ASSERT(m_pipelines.contains(pipelineName));
@@ -223,6 +228,14 @@ namespace nau
         property.parentTexture->isOwned = false;
         property.currentValue = makeValueCopy(eastl::string{"Internal BaseTexture"});
         property.timestamp = std::chrono::steady_clock::now();
+    }
+
+    BaseTexture* MaterialAssetView::getTexture(eastl::string_view pipelineName, eastl::string_view propertyName)
+    {
+        NAU_ASSERT(m_pipelines.contains(pipelineName));
+        const auto& pipeline = m_pipelines.at(pipelineName.data());
+        NAU_ASSERT(pipeline.samplerTextures.contains(propertyName));
+        return pipeline.samplerTextures.at(propertyName.data()).getTexture();
     }
 
     void MaterialAssetView::setSolidColorTexture(eastl::string_view pipelineName, eastl::string_view propertyName, math::E3DCOLOR color)
@@ -2596,6 +2609,13 @@ namespace nau
                 instancePipeline.isDirty = true;
             }
         }
+    }
+
+    BaseTexture* MaterialInstanceAssetView::getTexture(eastl::string_view pipelineName, eastl::string_view propertyName)
+    {
+        NAU_ASSERT(m_pipelines.contains(pipelineName));
+        syncTextures(m_masterMaterial->m_pipelines.at(pipelineName.data()), m_pipelines.at(pipelineName.data()));
+        return MaterialAssetView::getTexture(pipelineName, propertyName);
     }
 
     void MaterialInstanceAssetView::syncTextures(const Pipeline& masterPipeline, Pipeline& instancePipeline)

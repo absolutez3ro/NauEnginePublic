@@ -96,6 +96,6 @@ namespace nau::sample
 
         co_await manager.activateScene(std::move(scene));
         control.setCamControlKind(CamControlKind::UseSceneObject);
-        NAU_LOG_INFO("JungleRuins: {} opaque mesh chunks, {} materials, meters, fixed camera; alpha-card vegetation excluded", meshCount, materials->size());
+        NAU_LOG_INFO("JungleRuins: {} mesh instances, {} materials, meters, fixed camera; alpha-masked vegetation supported", meshCount, materials->size());
     }
 }  // namespace nau::sample
