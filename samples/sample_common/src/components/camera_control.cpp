@@ -135,6 +135,7 @@ namespace nau::sample
 
     void CameraControl::updateComponent(float dt)
     {
+        if (getServiceProvider().get<GlobalProperties>().getValue<bool>("sample/automation/enabled").value_or(false)) return;
         using namespace nau::input;
         drawSsaoControls();
 

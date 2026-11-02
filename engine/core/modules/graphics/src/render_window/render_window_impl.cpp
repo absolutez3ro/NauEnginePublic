@@ -5,6 +5,8 @@
 #include "render_window_impl.h"
 
 #include <cstdio>
+#include <iomanip>
+#include <locale>
 
 #include "nau/app/core_window_manager.h"
 #include "nau/app/global_properties.h"
@@ -31,6 +33,7 @@ namespace nau::render
     {
         m_ambientOcclusionWaitMs.store(m_ambientOcclusion ? m_ambientOcclusion->getWaitMilliseconds() : -1.f, std::memory_order_relaxed);
         const auto now = std::chrono::steady_clock::now();
+        recordFrameMeasurements(now);
         if (m_frameStatisticsStart == std::chrono::steady_clock::time_point{})
         {
             m_frameStatisticsStart = now;
@@ -57,6 +60,38 @@ namespace nau::render
         if (m_showFrameStatistics) setWindowTitle(m_windowHandle, title).detach();
         m_frameStatisticsCount = 0;
         m_frameStatisticsStart = now;
+    }
+
+    void RenderWindowImpl::recordFrameMeasurements(std::chrono::steady_clock::time_point now)
+    {
+        auto& properties = getServiceProvider().get<GlobalProperties>();
+        if (!m_measurementsInitialized)
+        {
+            m_measurementsInitialized = true;
+            m_measurementsOrigin = m_measurementsPrevious = now;
+            if (!properties.getValue<bool>("render/measurements/enabled").value_or(false)) return;
+            const auto path = properties.getValue<eastl::string>("render/measurements/csvPath").value_or("");
+            if (path.empty()) return;
+            m_measurementsCsv.open(path.c_str(), std::ios::out | std::ios::trunc);
+            if (!m_measurementsCsv) { NAU_LOG_ERROR("Measurements: cannot open {}", path); return; }
+            m_measurementsCsv.imbue(std::locale::classic());
+            m_measurementsCsv << "frame,elapsed_ms,frame_ms,phase,width,height,requested_gpu,actual_gpu,gpu1_available,wait_enabled,cpu_serialize,ao_valid,ao_source_frame,ao_age_frames,timing_frame,overlap_gpu_ms,wait_interval_ms,ready_at_record_cpu,gpu1_timing_frame,gpu1_raw_ms,gpu1_total_ms,chain_frame,chain_observed_ms,load_mask\n";
+            m_measurementsCsv << std::fixed << std::setprecision(6);
+            NAU_LOG_INFO("Measurements: CSV {} (frame intervals are CPU render/present cadence; chain latency is a frame-polled upper bound)", path);
+        }
+        if (!m_measurementsCsv.is_open() || !m_measurementsCsv) return;
+        const double dt = std::chrono::duration<double, std::milli>(now - m_measurementsPrevious).count();
+        m_measurementsPrevious = now;
+        if (!m_ambientOcclusion || !m_ambientOcclusion->getMeasurements().frame) return;
+        const auto& m = m_ambientOcclusion->getMeasurements();
+        const int64_t age = m.aoValid ? static_cast<int64_t>(m.frame - m.aoFrame) : -1;
+        m_measurementsCsv << m.frame << ',' << std::chrono::duration<double, std::milli>(now - m_measurementsOrigin).count() << ',' << dt << ','
+            << m.phase << ',' << m_gBuffer->getWidth() << ',' << m_gBuffer->getHeight() << ','
+            << static_cast<uint32_t>(getAmbientOcclusionExecution()) << ',' << (m.gpu1 ? 1 : 0) << ',' << (d3d::is_multi_gpu_available() ? 1 : 0) << ','
+            << (getAmbientOcclusionPipeline().waitForSecondary ? 1 : 0) << ',' << (properties.getValue<bool>("graphics/serializeRenderJobs").value_or(false) ? 1 : 0) << ','
+            << (m.aoValid ? 1 : 0) << ',' << m.aoFrame << ',' << age << ',' << m.timingFrame << ',' << m.overlapMs << ',' << m.waitMs << ',' << m.readyAtConsumer << ','
+            << m.gpu1Timing.frame << ',' << m.gpu1Timing.rawMilliseconds << ',' << m.gpu1Timing.totalMilliseconds << ',' << m.chainFrame << ',' << m.chainObservedMs << ','
+            << m.loadMask << '\n';
     }
 
     void RenderWindowImpl::setWorld(nau::Uid worldUid)

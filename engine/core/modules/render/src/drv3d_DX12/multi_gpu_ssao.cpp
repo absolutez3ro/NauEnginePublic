@@ -60,6 +60,7 @@ namespace d3d::mgpu
             pass.reconstructNormals = producer->reconstructNormals = desc.reconstructNormals;
             pass.packedNormals = desc.packedNormals;
             pass.linearDepth16 = desc.linearDepth16;
+            pass.measureTimings = desc.measureTimings;
             result = producer->pass.init(pass);
         }
         if (SUCCEEDED(result))
@@ -91,7 +92,12 @@ namespace d3d::mgpu
         return producer.release();
     }
 
-    PrimarySyncPoint submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination)
+    SsaoGpuTiming pollSsaoTiming(SsaoProducer* producer)
+    {
+        return producer ? producer->pass.pollTiming() : SsaoGpuTiming{};
+    }
+
+    PrimarySyncPoint submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, uint64_t frame)
     {
         if (!producer || !normals || !depth || !destination || !is_multi_gpu_available())
         {
@@ -113,7 +119,7 @@ namespace d3d::mgpu
         {
             result = producer->pass.execute(constants,
                                             {static_cast<ID3D12Fence*>(normalReady.nativeFence), normalReady.value},
-                                            {static_cast<ID3D12Fence*>(depthReady.nativeFence), depthReady.value});
+                                            {static_cast<ID3D12Fence*>(depthReady.nativeFence), depthReady.value}, frame);
         }
         if (SUCCEEDED(result))
         {

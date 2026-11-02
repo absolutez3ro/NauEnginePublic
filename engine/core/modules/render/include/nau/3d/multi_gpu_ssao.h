@@ -27,6 +27,7 @@ namespace d3d::mgpu
         bool reconstructNormals = false;
         bool packedNormals = false;
         bool linearDepth16 = false;
+        bool measureTimings = false;
     };
 
     struct SsaoProducer;
@@ -38,7 +39,9 @@ namespace d3d::mgpu
      * wait_for_primary_transfer() before filtering destination, after its independent graphics work.
      * A null fence reports failure; no readiness polling or CPU wait is performed.
      */
-    NAU_RENDER_EXPORT PrimarySyncPoint submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination);
+    NAU_RENDER_EXPORT PrimarySyncPoint submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, uint64_t frame = 0);
+    /** @brief Latest completed GPU 1 timestamps, read without waiting; frame zero means unavailable. */
+    NAU_RENDER_EXPORT SsaoGpuTiming pollSsaoTiming(SsaoProducer* producer);
     /** @brief Drains transfers and retires native resources before endpoint destruction, resize or driver shutdown. */
     NAU_RENDER_EXPORT void destroySsaoProducer(SsaoProducer* producer);
     /** @brief Collects retired native resources on the render thread without waiting. */

@@ -3,9 +3,16 @@
 // Copyright 2026 N-GINN LLC. All rights reserved.
 //
 #pragma once
+#include <cstdint>
 
 namespace d3d::mgpu
 {
+    struct SsaoGpuTiming
+    {
+        uint64_t frame = 0;
+        float rawMilliseconds = -1.f;
+        float totalMilliseconds = -1.f;
+    };
     /**
      * @brief Column-major matrices and parameters matching ssao_common.hlsli.
      */

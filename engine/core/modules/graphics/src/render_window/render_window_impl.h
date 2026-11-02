@@ -5,6 +5,7 @@
 #pragma once
 
 #include <chrono>
+#include <fstream>
 #include <mutex>
 
 #include "ambient_occlusion.h"
@@ -90,6 +91,7 @@ namespace nau::render
 
         void resizeResolutions();
         void updateFrameStatistics();
+        void recordFrameMeasurements(std::chrono::steady_clock::time_point now);
 
     private:
         void setName(eastl::string_view name);
@@ -155,6 +157,9 @@ namespace nau::render
         uint32_t m_frameStatisticsCount = 0;
         std::atomic<float> m_frameRate = 0.f;
         std::atomic<float> m_ambientOcclusionWaitMs = -1.f;
+        bool m_measurementsInitialized = false;
+        std::ofstream m_measurementsCsv;
+        std::chrono::steady_clock::time_point m_measurementsOrigin, m_measurementsPrevious;
         WeakPtr<async::Executor> m_preRenderWorkQueueRef;
 
         eastl::unique_ptr<render::DeferredRenderTarget> m_gBuffer;

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <EASTL/vector.h>
 #include "nau/scene/components/component.h"
 #include "nau/scene/components/component_life_cycle.h"
@@ -23,6 +24,7 @@ namespace nau::sample
         void toggle(size_t category);
         void spawn(size_t category);
         void clear(size_t category);
+        void updateAutomation();
         struct Item
         {
             scene::ObjectWeakRef<scene::SceneObject> object;
@@ -36,5 +38,10 @@ namespace nau::sample
         std::array<eastl::vector<Item>,4> m_items;
         float m_elapsed = 0.f;
         uint32_t m_originalShadowSize = 2048;
+        bool m_automated = false, m_automationReady = false, m_cameraMotion = true, m_pulseLoads = false;
+        uint32_t m_automationMask = 0, m_automationPhase = 0;
+        float m_warmupSeconds = 5.f, m_measureSeconds = 15.f;
+        math::Transform m_cameraStart;
+        std::chrono::steady_clock::time_point m_automationStart;
     };
 }

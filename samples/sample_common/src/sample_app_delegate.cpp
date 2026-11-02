@@ -114,6 +114,16 @@ namespace nau::sample
     {
         auto& windowService = getServiceProvider().get<IWindowManager>();
         auto& window = windowService.getActiveWindow();
+        auto& properties = getServiceProvider().get<GlobalProperties>();
+        if (properties.getValue<bool>("sample/automation/enabled").value_or(false))
+        {
+            const unsigned width = eastl::clamp(properties.getValue<unsigned>("sample/automation/width").value_or(1280u), 320u, 3840u);
+            const unsigned height = eastl::clamp(properties.getValue<unsigned>("sample/automation/height").value_or(720u), 240u, 2160u);
+            // setSize takes outer dimensions; compensate once to obtain the requested client area.
+            window.setSize(width, height);
+            const auto [clientWidth, clientHeight] = window.getClientSize();
+            window.setSize(width + (width-clientWidth), height + (height-clientHeight));
+        }
         window.setVisible(true);
         const auto [width, height] = window.getClientSize();
         nau::input::setScreenResolution(width, height);

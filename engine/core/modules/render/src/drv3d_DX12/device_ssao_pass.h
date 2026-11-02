@@ -26,6 +26,7 @@ namespace drv3d_dx12
         bool reconstructNormals = false;
         bool packedNormals = false;
         bool linearDepth16 = false;
+        bool measureTimings = false;
     };
 
     /**
@@ -45,7 +46,8 @@ namespace drv3d_dx12
 
         HRESULT init(const DeviceSsaoPassDesc& desc);
         HRESULT reset(DWORD timeoutMs = 10000);
-        HRESULT execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {});
+        HRESULT execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {}, uint64_t frame = 0);
+        d3d::mgpu::SsaoGpuTiming pollTiming();
         HRESULT releaseOutput(CrossAdapterSyncPoint released);
         CrossAdapterSyncPoint getReadyPoint() const;
         ID3D12Resource* getNormals() const;

@@ -4,6 +4,8 @@
 //
 #pragma once
 #include <array>
+#include <chrono>
+#include <deque>
 
 #include "graphics_assets/material_asset.h"
 #include "nau/3d/multi_gpu_ssao.h"
@@ -44,6 +46,16 @@ namespace nau::render
         void bindResolveInputs();
         float getWaitMilliseconds() const { return m_usingSecondary && m_settings.pipeline.waitForSecondary && m_settings.mode != AmbientOcclusionMode::off ? m_waitMilliseconds : -1.f; }
         const char* getWaitLabel() const;
+        struct Measurements
+        {
+            uint64_t frame = 0, aoFrame = 0, timingFrame = 0, chainFrame = 0;
+            uint32_t phase = 0, loadMask = 0;
+            bool gpu1 = false, aoValid = false;
+            int readyAtConsumer = -1;
+            float overlapMs = -1.f, waitMs = -1.f, chainObservedMs = -1.f;
+            d3d::mgpu::SsaoGpuTiming gpu1Timing;
+        };
+        const Measurements& getMeasurements() const { return m_measurements; }
 
     private:
         void draw(BaseTexture* target, MaterialAssetView& material, const char* pipeline, BaseTexture* source = nullptr);
@@ -57,6 +69,7 @@ namespace nau::render
         bool createRandomTexture();
         void pollWaitTimings();
         void waitForSecondary();
+        void beginOverlapTiming();
 
         MaterialAssetView::Ptr m_rawMaterial;
         MaterialAssetView::Ptr m_blurMaterial;
@@ -89,7 +102,11 @@ namespace nau::render
         {
             void* begin = nullptr;
             void* end = nullptr;
+            void* overlapStart = nullptr;
             bool pending = false;
+            bool waited = true;
+            int readyAtConsumer = -1;
+            uint64_t frame = 0;
             uint64_t generation = 0;
             uint64_t sequence = 0;
         };
@@ -98,6 +115,17 @@ namespace nau::render
         uint64_t m_nextWaitSequence = 0;
         uint64_t m_lastWaitSequence = 0;
         float m_waitMilliseconds = -1.f;
+        WaitTiming* m_currentTiming = nullptr;
+        bool m_measureTimings = false;
+        uint64_t m_frameIndex = 0, m_submittedFrame = 0, m_asyncFrame = 0;
+        Measurements m_measurements;
+        struct PendingCompletion
+        {
+            d3d::mgpu::PrimarySyncPoint point;
+            uint64_t frame;
+            std::chrono::steady_clock::time_point submitted;
+        };
+        std::deque<PendingCompletion> m_pendingCompletions;
         uint32_t m_secondaryWidth = 0;
         uint32_t m_secondaryHeight = 0;
         uint32_t m_primaryWidth = 0;

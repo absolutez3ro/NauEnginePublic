@@ -39,7 +39,8 @@ namespace drv3d_dx12
         }
 
         HRESULT init(const DeviceSsaoPassDesc& desc);
-        HRESULT execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady);
+        HRESULT execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame);
+        void pollTiming();
         HRESULT wait(DWORD timeoutMs);
         HRESULT waitOn(CrossAdapterSyncPoint point, UINT index);
         bool removed() const
@@ -60,9 +61,15 @@ namespace drv3d_dx12
             DeviceResource constants;
             uint8_t* mapped = nullptr;
             UINT64 fenceValue = 0;
+            Microsoft::WRL::ComPtr<ID3D12QueryHeap> timestampHeap;
+            DeviceResource timestampReadback;
+            uint64_t* timestamps = nullptr;
+            uint64_t timingFrame = 0;
+            bool timingPending = false;
 
             ~Recording()
             {
+                if (timestamps) timestampReadback.getResource()->Unmap(0, nullptr);
                 if (mapped)
                 {
                     constants.getResource()->Unmap(0, nullptr);
@@ -105,6 +112,8 @@ namespace drv3d_dx12
         UINT m_rtvStride = 0;
         UINT64 m_serial = 0;
         bool m_signalPending = false;
+        UINT64 m_timestampFrequency = 0;
+        d3d::mgpu::SsaoGpuTiming m_timing;
         State* m_nextRetired = nullptr;
     };
 
@@ -181,10 +190,17 @@ namespace drv3d_dx12
         return pending;
     }
 
-    HRESULT DeviceSsaoPass::execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady)
+    HRESULT DeviceSsaoPass::execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame)
     {
         collectRetiredResources();
-        return m_state ? m_state->execute(constants, normalsReady, depthReady) : DXGI_ERROR_INVALID_CALL;
+        return m_state ? m_state->execute(constants, normalsReady, depthReady, frame) : DXGI_ERROR_INVALID_CALL;
+    }
+
+    d3d::mgpu::SsaoGpuTiming DeviceSsaoPass::pollTiming()
+    {
+        if (!m_state) return {};
+        m_state->pollTiming();
+        return m_state->m_timing;
     }
 
     HRESULT DeviceSsaoPass::releaseOutput(CrossAdapterSyncPoint released)
@@ -221,6 +237,8 @@ namespace drv3d_dx12
         D3D12_COMMAND_QUEUE_DESC queueDesc = {};
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         HRESULT result = m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_queue));
+        if (SUCCEEDED(result) && desc.measureTimings)
+            result = m_queue->GetTimestampFrequency(&m_timestampFrequency);
         if (SUCCEEDED(result))
         {
             result = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence));
@@ -457,6 +475,7 @@ namespace drv3d_dx12
 
     HRESULT DeviceSsaoPass::State::acquireRecording(Recording*& recording)
     {
+        pollTiming();
         if (m_signalPending || m_serial >= UINT64_MAX - 4)
         {
             return DXGI_ERROR_INVALID_CALL;
@@ -495,10 +514,43 @@ namespace drv3d_dx12
         }
         if (SUCCEEDED(result))
         {
+            if (m_timestampFrequency)
+            {
+                const D3D12_QUERY_HEAP_DESC desc = {D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 3, 0};
+                result = m_device->CreateQueryHeap(&desc, IID_PPV_ARGS(&next->timestampHeap));
+                if (SUCCEEDED(result)) result = next->timestampReadback.createBuffer(m_allocator.get(), 3 * sizeof(uint64_t), D3D12_HEAP_TYPE_READBACK);
+                if (SUCCEEDED(result))
+                {
+                    const D3D12_RANGE read = {0, 3 * sizeof(uint64_t)};
+                    void* mapped = nullptr;
+                    result = next->timestampReadback.getResource()->Map(0, &read, &mapped);
+                    next->timestamps = static_cast<uint64_t*>(mapped);
+                }
+            }
+        }
+        if (SUCCEEDED(result))
+        {
             recording = next.get();
             m_recordings.push_back(eastl::move(next));
         }
         return result;
+    }
+
+    void DeviceSsaoPass::State::pollTiming()
+    {
+        if (!m_timestampFrequency || !m_fence) return;
+        const uint64_t completed = m_fence->GetCompletedValue();
+        if (completed == UINT64_MAX) return;
+        for (auto& recording : m_recordings)
+        {
+            if (!recording->timingPending || recording->fenceValue > completed) continue;
+            const auto* t = recording->timestamps;
+            if (recording->timingFrame > m_timing.frame && t[1] >= t[0] && t[2] >= t[1])
+                m_timing = {recording->timingFrame,
+                    static_cast<float>(1000.0 * (t[1] - t[0]) / m_timestampFrequency),
+                    static_cast<float>(1000.0 * (t[2] - t[0]) / m_timestampFrequency)};
+            recording->timingPending = false;
+        }
     }
 
     HRESULT DeviceSsaoPass::State::wait(DWORD timeoutMs)
@@ -553,7 +605,7 @@ namespace drv3d_dx12
         m_list->ResourceBarrier(1, &transition);
     }
 
-    HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady)
+    HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame)
     {
         Recording* recording = nullptr;
         HRESULT result = acquireRecording(recording);
@@ -603,7 +655,9 @@ namespace drv3d_dx12
             m_list->DrawInstanced(3, 1, 0, 0);
             barrier(target, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COMMON);
         };
+        if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
         draw(filtered ? m_raw.getResource() : m_output.getResource(), filtered ? 1 : 0, 0, 0, m_rawPso.Get(), data);
+        if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
         if (filtered)
         {
             barrier(m_raw.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -622,6 +676,12 @@ namespace drv3d_dx12
         }
         barrier(m_normals.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         barrier(m_depth.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+        if (recording->timestampHeap)
+        {
+            m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 2);
+            m_list->ResolveQueryData(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 3, recording->timestampReadback.getResource(), 0);
+            recording->timingFrame = frame;
+        }
 
         result = m_list->Close();
         if (SUCCEEDED(result))
@@ -641,6 +701,7 @@ namespace drv3d_dx12
         m_randomUploaded = true;
 
         recording->fenceValue = ++m_serial;
+        recording->timingPending = recording->timestampHeap != nullptr;
         return signal();
     }
 }  // namespace drv3d_dx12

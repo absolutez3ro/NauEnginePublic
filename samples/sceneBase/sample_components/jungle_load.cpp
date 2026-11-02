@@ -3,6 +3,8 @@
 
 #include <cmath>
 #include <imgui.h>
+#include "nau/app/application.h"
+#include "nau/app/global_properties.h"
 #include "nau/scene/scene_factory.h"
 #include "nau/scene/components/static_mesh_component.h"
 #include "nau/scene/components/omnilight_component.h"
@@ -17,6 +19,21 @@ namespace nau::sample
         m_camera = camera;
         m_sun = sun;
         m_originalShadowSize = sun.getShadowMapSize();
+        auto& properties = getServiceProvider().get<GlobalProperties>();
+        m_automated = properties.getValue<bool>("sample/automation/enabled").value_or(false);
+        if (m_automated)
+        {
+            // Automated scenarios can use only objects, particles and lights. Never extra shadows.
+            m_automationMask = properties.getValue<uint32_t>("sample/automation/loadMask").value_or(0) & 7u;
+            m_warmupSeconds = eastl::clamp(properties.getValue<float>("sample/automation/warmupSeconds").value_or(5.f), 1.f, 120.f);
+            m_measureSeconds = eastl::clamp(properties.getValue<float>("sample/automation/measureSeconds").value_or(15.f), 1.f, 300.f);
+            m_cameraMotion = properties.getValue<bool>("sample/automation/cameraMotion").value_or(true);
+            m_pulseLoads = properties.getValue<bool>("sample/automation/pulseLoads").value_or(false);
+            m_cameraStart = camera.getWorldTransform();
+            for (size_t i=0; i<3; ++i) m_enabled[i] = (m_automationMask & (1u << i)) != 0;
+            properties.setValue("sample/automation/activeLoadMask", m_automationMask).ignore();
+            NAU_LOG_INFO("AUTORUN: initialized, loadMask={}, extraShadows=false", m_automationMask);
+        }
     }
 
     void JungleLoad::clear(size_t category)
@@ -93,6 +110,7 @@ namespace nau::sample
     void JungleLoad::updateComponent(float dt)
     {
         m_elapsed += dt;
+        if (m_automated) updateAutomation();
         ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x > 1000.f ? 780.f : 260.f,40.f),ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(350.f,250.f),ImGuiCond_FirstUseEver);
         if (ImGui::Begin("JungleRuins load"))
@@ -102,9 +120,11 @@ namespace nau::sample
             {
                 ImGui::PushID(static_cast<int>(category));
                 bool active = m_enabled[category];
-                if (ImGui::Checkbox(names[category], &active)) toggle(category);
+                if (m_automated) ImGui::Text("%s: %s", names[category], active ? "ON" : "OFF");
+                else if (ImGui::Checkbox(names[category], &active)) toggle(category);
                 ImGui::PopID();
             }
+            if (m_automated) ImGui::TextUnformatted("Automated run: extra shadows locked OFF.");
             ImGui::TextWrapped("Independent loads spawn in front of the camera. Disable removes the added objects; shadows restore the original map size.");
         }
         ImGui::End();
@@ -124,6 +144,44 @@ namespace nau::sample
                     if (category == 0 || category == 3)
                         object->setRotation(math::quat::rotationY(m_elapsed+item.phase));
                 }
+        }
+    }
+
+    void JungleLoad::updateAutomation()
+    {
+        m_enabled[3] = false;
+        auto& properties = getServiceProvider().get<GlobalProperties>();
+        const auto now = std::chrono::steady_clock::now();
+        if (!m_automationReady)
+        {
+            for (size_t i=0; i<3; ++i)
+                if (m_enabled[i] && (!m_groups[i] || m_groups[i]->getActivationState() != scene::ActivationState::Active)) return;
+            m_automationReady = true;
+            m_automationStart = now;
+        }
+        const float elapsed = std::chrono::duration<float>(now - m_automationStart).count();
+        const uint32_t phase = elapsed < m_warmupSeconds ? 1u : elapsed < m_warmupSeconds + m_measureSeconds ? 2u : 3u;
+        if (phase != m_automationPhase)
+        {
+            m_automationPhase = phase;
+            properties.setValue("sample/automation/phase", phase).ignore();
+            NAU_LOG_INFO("AUTORUN: phase={}, extraShadows=false", phase);
+        }
+        if (phase == 3)
+        {
+            getApplication().stop();
+            return;
+        }
+        const float t = phase == 2 ? elapsed - m_warmupSeconds : elapsed;
+        m_elapsed = t;
+        const uint32_t mask = m_pulseLoads && phase == 2 && (static_cast<uint32_t>(t / 3.f) & 1u) ? 0u : m_automationMask;
+        for (size_t i=0; i<3; ++i)
+            if (m_enabled[i] != ((mask & (1u << i)) != 0)) toggle(i);
+        properties.setValue("sample/automation/activeLoadMask", mask).ignore();
+        if (auto* camera = m_camera.get())
+        {
+            camera->setTranslation(m_cameraStart.getTranslation() + (m_cameraMotion ? math::vec3(0.8f*std::sin(t*0.6f),0.15f*std::sin(t*0.4f),0.3f*std::sin(t*0.3f)) : math::vec3(0,0,0)));
+            camera->setRotation(m_cameraStart.getRotation() * math::quat::rotationY(m_cameraMotion ? 0.12f*std::sin(t*0.6f) : 0.f));
         }
     }
 }

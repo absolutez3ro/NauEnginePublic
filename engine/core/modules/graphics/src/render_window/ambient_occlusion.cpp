@@ -127,6 +127,7 @@ namespace nau::render
         {
             d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &timing.begin, nullptr, nullptr);
             d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &timing.end, nullptr, nullptr);
+            d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &timing.overlapStart, nullptr, nullptr);
         }
         if (m_randomTexture)
         {
@@ -136,11 +137,13 @@ namespace nau::render
 
     void AmbientOcclusion::resetSecondary()
     {
+        m_pendingCompletions.clear();
         // Drain foreign queues before destroying any endpoint they may still reference.
         d3d::mgpu::destroySsaoProducer(m_secondary);
         m_secondary = nullptr;
         m_resolveSource = nullptr;
         m_asyncValid = false;
+        m_asyncFrame = 0;
         m_drawRaw = m_drawDepth = m_drawNormals = nullptr;
         for (BaseTexture** texture : {&m_normalsSnapshot, &m_depthSnapshot, &m_receiving, &m_filtered, &m_horizontal, &m_fullOutput, &m_asyncRaw, &m_asyncDepth, &m_asyncNormals})
         {
@@ -165,7 +168,20 @@ namespace nau::render
     {
         const auto& old = m_settings.pipeline;
         const auto& next = settings.pipeline;
+        m_measureTimings = readSetting<bool>("render/measurements/enabled", false);
         pollWaitTimings();
+        if (m_measureTimings)
+        {
+            m_measurements.gpu1Timing = d3d::mgpu::pollSsaoTiming(m_secondary);
+            while (!m_pendingCompletions.empty() && d3d::mgpu::is_primary_transfer_complete(m_pendingCompletions.front().point))
+            {
+                const auto& completed = m_pendingCompletions.front();
+                m_measurements.chainFrame = completed.frame;
+                // This is an observed upper bound, sampled once per render frame, not a GPU copy duration.
+                m_measurements.chainObservedMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - completed.submitted).count();
+                m_pendingCompletions.pop_front();
+            }
+        }
         const bool asyncChanged = old.waitForSecondary != next.waitForSecondary ||
             ((!old.waitForSecondary || !next.waitForSecondary) &&
              (old != next || m_settings.execution != settings.execution));
@@ -199,6 +215,15 @@ namespace nau::render
 
     void AmbientOcclusion::prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, BaseTexture* normals, BaseTexture* depth)
     {
+        m_measurements.frame = ++m_frameIndex;
+        if (m_measureTimings)
+        {
+            m_measurements.phase = readSetting<uint32_t>("sample/automation/phase", 0);
+            m_measurements.loadMask = readSetting<uint32_t>("sample/automation/activeLoadMask", 0);
+        }
+        m_measurements.gpu1 = m_measurements.aoValid = false;
+        m_measurements.aoFrame = 0;
+        m_currentTiming = nullptr;
         m_normals = normals;
         m_depth = depth;
         if (m_settings.pipeline.waitForSecondary) m_secondaryReady = {};
@@ -247,28 +272,35 @@ namespace nau::render
             {
                 // Keep all input/output endpoints untouched while GPU 1 is still using them.
                 m_usingSecondary = true;
+                beginOverlapTiming();
                 logSettings();
                 return;
             }
             m_asyncValid = m_asyncRaw->update(m_receiving) && m_asyncDepth->update(m_depthSnapshot) && m_asyncNormals->update(m_normalsSnapshot);
             m_asyncConstants = m_submittedConstants;
+            m_asyncFrame = m_submittedFrame;
             m_secondaryReady = {};
         }
         downsampleInputs();
         if (m_settings.execution == AmbientOcclusionExecution::multiGpu && (p.waitForSecondary || async) && prepareSecondary())
         {
             // Queue both input copies, GPU 1 AO, and its return copy now. GPU 0 keeps drawing.
-            m_secondaryReady = d3d::mgpu::submitSsao(m_secondary, m_constants, m_normalsSnapshot, m_depthSnapshot, m_receiving);
+            m_secondaryReady = d3d::mgpu::submitSsao(m_secondary, m_constants, m_normalsSnapshot, m_depthSnapshot, m_receiving, m_frameIndex);
             m_usingSecondary = m_secondaryReady.nativeFence != nullptr;
             m_submittedConstants = m_constants;
+            m_submittedFrame = m_frameIndex;
+            if (m_usingSecondary && m_measureTimings && m_pendingCompletions.size() < 128)
+                m_pendingCompletions.push_back({m_secondaryReady, m_frameIndex, std::chrono::steady_clock::now()});
             if (!m_usingSecondary)
             {
+                m_pendingCompletions.clear();
                 // Drain partial transfers before the primary fallback writes the same raw target.
                 d3d::mgpu::destroySsaoProducer(m_secondary);
                 m_secondary = nullptr;
                 m_logSettings = true;
             }
         }
+        if (m_usingSecondary) beginOverlapTiming();
         logSettings();
     }
 
@@ -285,6 +317,14 @@ namespace nau::render
         }
         if (m_usingSecondary)
         {
+            m_measurements.gpu1 = true;
+            if (!m_settings.pipeline.waitForSecondary && m_currentTiming)
+            {
+                m_currentTiming->readyAtConsumer = d3d::mgpu::is_primary_transfer_complete(m_secondaryReady) ? 1 : 0;
+                m_currentTiming->waited = false;
+                d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &m_currentTiming->begin, nullptr, nullptr);
+                d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &m_currentTiming->end, nullptr, nullptr);
+            }
             // This wait is recorded after G-buffer/CSM, immediately before consuming this frame's AO.
             if (m_settings.pipeline.waitForSecondary)
                 waitForSecondary();
@@ -294,6 +334,7 @@ namespace nau::render
                 m_drawDepth = m_asyncDepth;
                 m_drawNormals = m_asyncNormals;
                 m_constants = m_asyncConstants;
+                m_measurements.aoFrame = m_asyncFrame;
             }
             else
             {
@@ -310,6 +351,8 @@ namespace nau::render
             // Match GPU 1's selected input size, shader and half-size R8 output.
             draw(m_receiving, *m_rawMaterial, "default");
         }
+        if (!m_measurements.aoFrame) m_measurements.aoFrame = m_frameIndex;
+        m_measurements.aoValid = true;
         filter(output);
     }
 
@@ -372,6 +415,7 @@ namespace nau::render
             desc.reconstructNormals = m_settings.pipeline.normals == AmbientOcclusionNormals::reconstructed;
             desc.packedNormals = m_settings.pipeline.packedNormals;
             desc.linearDepth16 = m_settings.pipeline.linearDepth16;
+            desc.measureTimings = m_measureTimings;
             const Shader* filter = m_filterShader->getShader();
             desc.filterBytecode = filter->bytecode.data();
             desc.filterBytecodeSize = filter->bytecode.size();
@@ -512,28 +556,58 @@ namespace nau::render
         d3d::driver_command(D3V3D_COMMAND_TIMESTAMPFREQ, &frequency, nullptr, nullptr);
         for (auto& timing : m_waitTimings)
         {
-            uint64_t begin = 0, end = 0;
+            uint64_t begin = 0, end = 0, overlap = 0;
             if (timing.pending && d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, timing.begin, &begin, nullptr) &&
-                d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, timing.end, &end, nullptr))
+                d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, timing.end, &end, nullptr) &&
+                (!m_measureTimings || !timing.overlapStart || d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, timing.overlapStart, &overlap, nullptr)))
             {
                 if (timing.generation == m_timingGeneration && timing.sequence > m_lastWaitSequence && frequency && end >= begin)
                 {
-                    m_waitMilliseconds = static_cast<float>(1000.0 * static_cast<double>(end - begin) / frequency);
+                    if (timing.waited) m_waitMilliseconds = static_cast<float>(1000.0 * static_cast<double>(end - begin) / frequency);
                     m_lastWaitSequence = timing.sequence;
+                    m_measurements.timingFrame = timing.frame;
+                    m_measurements.waitMs = timing.waited ? static_cast<float>(1000.0 * static_cast<double>(end - begin) / frequency) : -1.f;
+                    m_measurements.overlapMs = timing.overlapStart && begin >= overlap ? static_cast<float>(1000.0 * static_cast<double>(begin - overlap) / frequency) : -1.f;
+                    m_measurements.readyAtConsumer = timing.readyAtConsumer;
                 }
                 timing.pending = false;
             }
         }
     }
 
+    void AmbientOcclusion::beginOverlapTiming()
+    {
+        if (!m_measureTimings) return;
+        for (auto& timing : m_waitTimings)
+        {
+            if (timing.pending) continue;
+            m_currentTiming = &timing;
+            timing.pending = true;
+            timing.frame = m_frameIndex;
+            timing.waited = m_settings.pipeline.waitForSecondary;
+            timing.readyAtConsumer = -1;
+            timing.generation = m_timingGeneration;
+            timing.sequence = ++m_nextWaitSequence;
+            d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing.overlapStart, nullptr, nullptr);
+            break;
+        }
+    }
+
     void AmbientOcclusion::waitForSecondary()
     {
-        WaitTiming* sample = nullptr;
-        for (auto& timing : m_waitTimings)
-            if (!timing.pending) { sample = &timing; break; }
+        WaitTiming* sample = m_currentTiming;
+        if (!sample)
+            for (auto& timing : m_waitTimings)
+                if (!timing.pending) { sample = &timing; break; }
         // Timestamp queries run on GPU 0 on either side of the graphics-queue Wait.
         // CPU-side duration of queue submission would not measure GPU idle time.
-        if (sample) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &sample->begin, nullptr, nullptr);
+        if (sample)
+        {
+            sample->readyAtConsumer = d3d::mgpu::is_primary_transfer_complete(m_secondaryReady) ? 1 : 0;
+            sample->frame = m_frameIndex;
+            sample->waited = true;
+            d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &sample->begin, nullptr, nullptr);
+        }
         d3d::mgpu::wait_for_primary_transfer(m_secondaryReady);
         if (sample)
         {
