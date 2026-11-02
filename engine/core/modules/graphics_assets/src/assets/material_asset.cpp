@@ -1388,7 +1388,7 @@ namespace nau
                         if (!samplers.contains(bind.name))
                         {
                             d3d::SamplerInfo sampInfo;
-                            samplers[pipelineName.data()] = {
+                            samplers[bind.name] = {
                                 .handle = create_sampler(sampInfo),
                                 .slot = bind.bindPoint};
                         }
@@ -2367,6 +2367,10 @@ namespace nau
                     d3d::set_cs_constbuffer_size(regCount);
                 }
 
+                // Register-backed globals must replace an explicit buffer left by a
+                // previous material (for example, single-GPU SSAO at pixel b0).
+                // DX12 skips register uploads while that explicit buffer is bound.
+                d3d::set_const_buffer(getStage(shaderTarget), bind.bindPoint, nullptr);
                 d3d::set_const(getStage(shaderTarget), bind.bindPoint, buffer.data(), regCount);
             }
         }
