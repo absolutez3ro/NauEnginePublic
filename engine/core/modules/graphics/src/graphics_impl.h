@@ -115,6 +115,7 @@ namespace nau
         async::TaskSource<> m_renderStopedSignal;
 
         bool m_isInitialized = false;
+        bool m_serializeRenderJobs = false;
     };
 
 }  // namespace nau

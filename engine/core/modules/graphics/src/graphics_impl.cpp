@@ -12,6 +12,7 @@
 #include "graphics_assets/shader_asset.h"
 #include "graphics_assets/texture_asset.h"
 #include "nau/app/core_window_manager.h"
+#include "nau/app/global_properties.h"
 #include "nau/app/platform_window.h"
 #include "nau/app/window_manager.h"
 #include "nau/assets/asset_manager.h"
@@ -174,6 +175,8 @@ namespace nau
 
         co_await rendWindow->createRenderGraph();
 
+        m_serializeRenderJobs = getServiceProvider().get<GlobalProperties>().getValue<bool>("graphics/serializeRenderJobs").value_or(false);
+        NAU_LOG_INFO("Graphics: serializeRenderJobs={}", m_serializeRenderJobs);
         m_isInitialized = true;
 
         co_return;
@@ -301,7 +304,18 @@ namespace nau
             task.detach();
         }
 
+        // Snapshot once so a UI change during the coroutine cannot enable only one of the two drains.
+        const bool serialize = getServiceProvider().get<GlobalProperties>().getValue<bool>("graphics/serializeRenderJobs").value_or(false);
+        if (serialize != m_serializeRenderJobs)
+        {
+            m_serializeRenderJobs = serialize;
+            NAU_LOG_INFO("Graphics: serializeRenderJobs={}", serialize);
+        }
+        if (serialize) d3d::finish_render_commands();
+
         co_await executeRenderJobs();
+
+        if (serialize) d3d::finish_render_commands();
 
         renderMainScene();
 

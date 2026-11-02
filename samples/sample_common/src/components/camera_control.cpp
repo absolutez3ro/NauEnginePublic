@@ -6,6 +6,7 @@
 #include <imgui.h>
 
 #include "nau/input.h"
+#include "nau/app/global_properties.h"
 #include "nau/3d/dag_drv3d_multi_gpu.h"
 #include "nau/graphics/core_graphics.h"
 #include "nau/render/render_window.h"
@@ -28,6 +29,12 @@ namespace nau::sample
             if (ImGui::Begin("SSAO"))
             {
                 ImGui::Text("%.1f FPS", window->getFrameRate());
+                auto& properties = getServiceProvider().get<GlobalProperties>();
+                bool serialize = properties.getValue<bool>("graphics/serializeRenderJobs").value_or(false);
+                if (ImGui::Checkbox("CPU waits for GPU (legacy)", &serialize))
+                    properties.setValue("graphics/serializeRenderJobs", serialize).ignore();
+                ImGui::TextWrapped(serialize ? "CPU/GPU frame overlap OFF. Independent of the GPU1 AO wait." :
+                                              "CPU/GPU frame overlap ON. Independent of the GPU1 AO wait.");
                 auto combo = []<typename T>(const char* label, T& value, const char* items)
                 {
                     int selected = static_cast<int>(value);
