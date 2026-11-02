@@ -29,10 +29,6 @@ namespace nau::render
 
     void RenderWindowImpl::updateFrameStatistics()
     {
-        if (!m_showFrameStatistics)
-        {
-            return;
-        }
         const auto now = std::chrono::steady_clock::now();
         if (m_frameStatisticsStart == std::chrono::steady_clock::time_point{})
         {
@@ -46,12 +42,13 @@ namespace nau::render
             return;
         }
         // Count render frames, including presentation pacing; these are not GPU pass timings.
+        m_frameRate.store(static_cast<float>(1000.0 * m_frameStatisticsCount / milliseconds), std::memory_order_relaxed);
         char title[256] = {};
         std::snprintf(title, sizeof(title), "NAU | %.1f FPS | %.2f ms/frame | %s | %s | F8 GPU / F9 variant",
                       1000.0 * m_frameStatisticsCount / milliseconds, milliseconds / m_frameStatisticsCount,
                       m_ambientOcclusion ? m_ambientOcclusion->getExecutionLabel() : "AO disabled",
                       m_ambientOcclusion ? m_ambientOcclusion->getVariantLabel() : "");
-        setWindowTitle(m_windowHandle, title).detach();
+        if (m_showFrameStatistics) setWindowTitle(m_windowHandle, title).detach();
         m_frameStatisticsCount = 0;
         m_frameStatisticsStart = now;
     }
@@ -164,7 +161,28 @@ namespace nau::render
 
     void RenderWindowImpl::setAmbientOcclusionVariant(AmbientOcclusionVariant variant)
     {
+        AmbientOcclusionPipeline pipeline;
+        if (variant == AmbientOcclusionVariant::bogdanov)
+        {
+            pipeline.inputs = AmbientOcclusionInputs::full;
+            pipeline.algorithm = variant;
+            pipeline.blur = AmbientOcclusionBlur::gaussian;
+            pipeline.upsample = AmbientOcclusionUpsample::bilinear;
+        }
+        setAmbientOcclusionPipeline(pipeline);
         m_ambientOcclusionVariant.store(variant, std::memory_order_relaxed);
+    }
+
+    AmbientOcclusionPipeline RenderWindowImpl::getAmbientOcclusionPipeline() const
+    {
+        std::lock_guard lock(m_ambientOcclusionMutex);
+        return m_ambientOcclusionPipeline;
+    }
+
+    void RenderWindowImpl::setAmbientOcclusionPipeline(const AmbientOcclusionPipeline& pipeline)
+    {
+        std::lock_guard lock(m_ambientOcclusionMutex);
+        m_ambientOcclusionPipeline = pipeline;
     }
 
     void RenderWindowImpl::render()
@@ -229,6 +247,11 @@ namespace nau::render
             {
                 m_resizeFrameCounter--;
             }
+        }
+        if (m_ambientOcclusion)
+        {
+            const AmbientOcclusion::Settings settings{getAmbientOcclusionMode(), getAmbientOcclusionExecution(), getAmbientOcclusionPipeline()};
+            m_ambientOcclusion->beginFrame(m_gBuffer->getWidth(), m_gBuffer->getHeight(), settings);
         }
     }
 

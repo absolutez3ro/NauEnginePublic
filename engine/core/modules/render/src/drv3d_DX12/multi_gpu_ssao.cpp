@@ -21,6 +21,7 @@ namespace d3d::mgpu
         TransferChannelHandle normals = nullptr;
         TransferChannelHandle depth = nullptr;
         TransferChannelHandle output = nullptr;
+        bool reconstructNormals = false;
 
         ~SsaoProducer()
         {
@@ -55,6 +56,10 @@ namespace d3d::mgpu
             pass.inputHeight = desc.inputHeight;
             pass.vertexShader = {desc.vertexBytecode, desc.vertexBytecodeSize};
             pass.rawShader = {desc.rawBytecode, desc.rawBytecodeSize};
+            pass.filterShader = {desc.filterBytecode, desc.filterBytecodeSize};
+            pass.reconstructNormals = producer->reconstructNormals = desc.reconstructNormals;
+            pass.packedNormals = desc.packedNormals;
+            pass.linearDepth16 = desc.linearDepth16;
             result = producer->pass.init(pass);
         }
         if (SUCCEEDED(result))
@@ -64,10 +69,10 @@ namespace d3d::mgpu
             channel.height = desc.inputHeight ? desc.inputHeight : desc.height;
             channel.slotCount = 3;
             channel.direction = TransferDirection::primaryToSecondary;
-            channel.format = TEXFMT_G16R16F;
+            channel.format = desc.packedNormals ? TEXFMT_R8G8 : TEXFMT_G16R16F;
             channel.name = "SSAO prepass normals GPU 0 -> GPU 1";
-            producer->normals = create_transfer_channel(channel);
-            channel.format = TEXFMT_R32F;
+            if (!desc.reconstructNormals) producer->normals = create_transfer_channel(channel);
+            channel.format = desc.linearDepth16 ? TEXFMT_R16F : TEXFMT_R32F;
             channel.name = "SSAO depth GPU 0 -> GPU 1";
             producer->depth = create_transfer_channel(channel);
             channel.width = desc.width;
@@ -76,7 +81,7 @@ namespace d3d::mgpu
             channel.format = TEXFMT_R8;
             channel.name = "SSAO result GPU 1 -> GPU 0";
             producer->output = create_transfer_channel(channel);
-            result = producer->normals && producer->depth && producer->output ? S_OK : E_FAIL;
+            result = (desc.reconstructNormals || producer->normals) && producer->depth && producer->output ? S_OK : E_FAIL;
         }
         if (FAILED(result))
         {
@@ -92,7 +97,7 @@ namespace d3d::mgpu
         {
             return {};
         }
-        const PrimarySend normalSent = send_from_primary_deferred(producer->normals, normals);
+        const PrimarySend normalSent = producer->reconstructNormals ? PrimarySend{} : send_from_primary_deferred(producer->normals, normals);
         const PrimarySend depthSent = send_from_primary_deferred(producer->depth, depth);
         const drv3d_dx12::CrossAdapterSyncPoint free = producer->pass.getReadyPoint();
         const SecondarySyncPoint destinationFree = {free.fence, free.value};
@@ -103,7 +108,7 @@ namespace d3d::mgpu
         const SecondarySyncPoint depthReady = depthSent.ticket
                                                   ? receive_on_secondary(producer->depth, depthSent.ticket, producer->pass.getDepth(), destinationFree)
                                                   : SecondarySyncPoint{};
-        HRESULT result = normalReady.nativeFence && depthReady.nativeFence ? S_OK : E_FAIL;
+        HRESULT result = (producer->reconstructNormals || normalReady.nativeFence) && depthReady.nativeFence ? S_OK : E_FAIL;
         if (SUCCEEDED(result))
         {
             result = producer->pass.execute(constants,

@@ -6,12 +6,70 @@
 #include <imgui.h>
 
 #include "nau/input.h"
+#include "nau/3d/dag_drv3d_multi_gpu.h"
+#include "nau/graphics/core_graphics.h"
+#include "nau/render/render_window.h"
 #include "nau/scene/camera/camera_manager.h"
 #include "nau/scene/components/camera_component.h"
 #include "nau/scene/scene.h"
 
 namespace nau::sample
 {
+    namespace
+    {
+        void drawSsaoControls()
+        {
+            auto* graphics = getServiceProvider().find<ICoreGraphics>();
+            auto window = graphics ? graphics->getDefaultRenderWindow().lock() : nullptr;
+            if (!window) return;
+            using namespace render;
+            ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x > 760.f ? 280.f : 10.f, 40), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(460, 560), ImGuiCond_FirstUseEver);
+            if (ImGui::Begin("SSAO"))
+            {
+                ImGui::Text("%.1f FPS", window->getFrameRate());
+                auto combo = []<typename T>(const char* label, T& value, const char* items)
+                {
+                    int selected = static_cast<int>(value);
+                    if (!ImGui::Combo(label, &selected, items)) return false;
+                    value = static_cast<T>(selected);
+                    return true;
+                };
+                auto mode = window->getAmbientOcclusionMode();
+                if (combo("Display (F7)", mode, "Off\0Lighting\0AO debug\0")) window->setAmbientOcclusionMode(mode);
+                auto execution = window->getAmbientOcclusionExecution();
+                if (combo("Execution (F8)", execution, "Single GPU\0MGPU\0")) window->setAmbientOcclusionExecution(execution);
+                if (execution == AmbientOcclusionExecution::multiGpu && !d3d::is_multi_gpu_available())
+                    ImGui::TextWrapped("Second GPU unavailable; running all stages on GPU 0.");
+                if (ImGui::Button("Nau preset")) window->setAmbientOcclusionVariant(AmbientOcclusionVariant::current);
+                ImGui::SameLine();
+                if (ImGui::Button("Bogdanov preset (F9)")) window->setAmbientOcclusionVariant(AmbientOcclusionVariant::bogdanov);
+                auto p = window->getAmbientOcclusionPipeline();
+                bool changed = false;
+                changed |= combo("Inputs", p.inputs, "Downsample to AO size\0Full resolution\0");
+                changed |= combo("AO algorithm + noise", p.algorithm, "Nau\0Bogdanov\0");
+                changed |= combo("Normals", p.normals, "Transfer prepass normals\0Reconstruct from depth\0");
+                changed |= combo("Blur", p.blur, "Off\0Box 4x4\0Box 4x4 GatherRed\0Bogdanov Gaussian\0Bilateral 4x4 + upsample\0");
+                changed |= combo("Blur execution", p.blurExecution, "GPU 0\0GPU 1 (with MGPU)\0");
+                changed |= combo("Upsample", p.upsample, "Separate pass\0Inside deferred resolve\0Bilinear in resolve\0");
+                if (p.blur == AmbientOcclusionBlur::bilateralUpsample)
+                    ImGui::TextWrapped("Bilateral blur runs during reconstruction on GPU 0. Separate/resolve selects its location.");
+                ImGui::Separator();
+                changed |= ImGui::Checkbox("Octahedral normals RG8", &p.packedNormals);
+                changed |= ImGui::Checkbox("Linear depth R16F", &p.linearDepth16);
+                changed |= ImGui::Checkbox("8 AO samples (default: 14)", &p.eightSamples);
+                changed |= ImGui::Checkbox("Depth-weighted bilinear upsample", &p.weightedUpsample);
+                changed |= ImGui::Checkbox("Reject samples outside screen", &p.rejectOutside);
+                changed |= ImGui::Checkbox("Quarter-resolution AO", &p.quarterResolution);
+                changed |= ImGui::Checkbox("GatherRed upsample", &p.gatherUpsample);
+                if (p.inputs == AmbientOcclusionInputs::full && (p.gatherUpsample || p.blur == AmbientOcclusionBlur::gather))
+                    ImGui::TextWrapped("Full inputs use mapped depth reads; GatherRed requires matching AO/depth grids.");
+                if (changed) window->setAmbientOcclusionPipeline(p);
+            }
+            ImGui::End();
+        }
+    }
+
     NAU_IMPLEMENT_DYNAMIC_OBJECT(CameraControl)
 
     CameraControl::~CameraControl()
@@ -62,6 +120,7 @@ namespace nau::sample
     void CameraControl::updateComponent(float dt)
     {
         using namespace nau::input;
+        drawSsaoControls();
 
         ImGui::Begin("Component Window");
         ImGui::SetWindowSize(ImVec2(200, 100), ImGuiCond_Once);
@@ -107,7 +166,7 @@ namespace nau::sample
             setCamControlKind(newControlKind);
         }
 
-        if (isMouseButtonHold(0, MouseKey::Button0))
+        if (!ImGui::GetIO().WantCaptureMouse && isMouseButtonHold(0, MouseKey::Button0))
         {
             if (const float xr = getMouseAxisDelta(0, MouseKey::AxisX); xr != 0.f)
             {

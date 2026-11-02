@@ -95,7 +95,31 @@
                 ],
                 "aoNormals": "file:/content/textures/white_8x8.png",
                 "aoDepth": "file:/content/textures/white_8x8.png",
-                "aoInput": "file:/content/textures/white_8x8.png"
+                "aoInput": "file:/content/textures/white_8x8.png",
+                "aoOptions": [
+                    0,
+                    0,
+                    0,
+                    14
+                ],
+                "aoPipeline": [
+                    1,
+                    0,
+                    0,
+                    0
+                ],
+                "aoSizes": [
+                    1,
+                    1,
+                    1,
+                    1
+                ],
+                "aoReconstruction": [
+                    0,
+                    0,
+                    2,
+                    0.2
+                ]
             },
             "shaders": [
                 "file:/res/shaders/cache/shader_cache.nsbc+[ssao.vs.vsmain]",
@@ -200,7 +224,31 @@
                 "aoNormals": "file:/content/textures/white_8x8.png",
                 "aoDepth": "file:/content/textures/white_8x8.png",
                 "aoInput": "file:/content/textures/white_8x8.png",
-                "aoRandomMap": "file:/content/textures/white_8x8.png"
+                "aoRandomMap": "file:/content/textures/white_8x8.png",
+                "aoOptions": [
+                    0,
+                    0,
+                    0,
+                    14
+                ],
+                "aoPipeline": [
+                    1,
+                    0,
+                    0,
+                    0
+                ],
+                "aoSizes": [
+                    1,
+                    1,
+                    1,
+                    1
+                ],
+                "aoReconstruction": [
+                    0,
+                    0,
+                    2,
+                    0.2
+                ]
             },
             "shaders": [
                 "file:/res/shaders/cache/shader_cache.nsbc+[ssao.vs.vsmain]",

@@ -22,6 +22,11 @@ namespace d3d::mgpu
         size_t vertexBytecodeSize = 0;
         const void* rawBytecode = nullptr;
         size_t rawBytecodeSize = 0;
+        const void* filterBytecode = nullptr;
+        size_t filterBytecodeSize = 0;
+        bool reconstructNormals = false;
+        bool packedNormals = false;
+        bool linearDepth16 = false;
     };
 
     struct SsaoProducer;

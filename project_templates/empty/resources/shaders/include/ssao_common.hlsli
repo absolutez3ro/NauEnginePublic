@@ -9,7 +9,11 @@ cbuffer AmbientOcclusionConstants : register(b0)
     float4x4 aoInverseProjection;
     float4x4 aoView;
     float4 aoParameters; // Radius, fade start, fade end, surface epsilon, in scene units.
-    float4 aoFilter;     // Horizontal pixel step, vertical pixel step, depth threshold, enabled.
+    float4 aoFilter;     // Output size, depth threshold, execution flags.
+    float4 aoOptions;    // Reconstruct normals, octahedral RG8, linear R16F depth, sample count.
+    float4 aoPipeline;   // Blur method, blur direction, reject screen edges, AO algorithm.
+    float4 aoSizes;      // AO width/height, input width/height.
+    float4 aoReconstruction; // Reconstruction method, GatherRed, screen divisor, depth threshold.
 };
 
 Texture2D<float2> aoNormals : register(t0); // Sphere-map view normals from z-prepass.
@@ -31,19 +35,82 @@ float3 reconstructViewPosition(float2 uv, float depth)
     return position.xyz / position.w;
 }
 
+float rawDepth(float stored)
+{
+    if (aoOptions.z == 0.0 || stored <= 0.0) return stored;
+    float4 clip = mul(aoProjection, float4(0, 0, -stored, 1));
+    return clip.z / clip.w;
+}
+
+float depthAtPixel(int2 pixel)
+{
+    return rawDepth(aoDepth.Load(int3(clamp(pixel, int2(0, 0), int2(aoSizes.zw) - 1), 0)));
+}
+
+float depthAtUv(float2 uv)
+{
+    return rawDepth(aoDepth.SampleLevel(aoLinearClamp, uv, 0));
+}
+
+float viewDepth(float stored)
+{
+    if (stored <= 0.0) return 65504.0;
+    return aoOptions.z != 0.0 ? stored : abs(aoProjection[2][3] / (stored * aoProjection[3][2] - aoProjection[2][2]));
+}
+
+float2 octWrap(float2 v) { return (1.0 - abs(v.yx)) * float2(v.x >= 0 ? 1 : -1, v.y >= 0 ? 1 : -1); }
+float2 encodeOct(float3 n)
+{
+    n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1e-6);
+    return (n.z < 0.0 ? octWrap(n.xy) : n.xy) * 0.5 + 0.5;
+}
+float3 decodeOct(float2 e)
+{
+    float2 f = e * 2.0 - 1.0;
+    float3 n = float3(f, 1.0 - abs(f.x) - abs(f.y));
+    if (n.z < 0.0) n.xy = octWrap(n.xy);
+    return normalize(n);
+}
+float3 decodeSphere(float2 e)
+{
+    float2 f = e * 2.0 - 1.0;
+    return normalize(float3(2.0 * f * sqrt(max(0.0, 1.0 - dot(f, f))), 1.0 - 2.0 * dot(f, f)));
+}
+
+float3 reconstructNormal(int2 pixel)
+{
+    int2 size = int2(aoSizes.zw);
+    int2 c = clamp(pixel, int2(0, 0), size - 1);
+    int2 l = max(c - int2(1,0), 0), r = min(c + int2(1,0), size - 1);
+    int2 t = max(c - int2(0,1), 0), b = min(c + int2(0,1), size - 1);
+    float3 pc = reconstructViewPosition((c + 0.5) / size, depthAtPixel(c));
+    float3 pl = reconstructViewPosition((l + 0.5) / size, depthAtPixel(l));
+    float3 pr = reconstructViewPosition((r + 0.5) / size, depthAtPixel(r));
+    float3 pt = reconstructViewPosition((t + 0.5) / size, depthAtPixel(t));
+    float3 pb = reconstructViewPosition((b + 0.5) / size, depthAtPixel(b));
+    float3 dx = c.x == 0 ? pr - pc : (c.x == size.x - 1 || abs(pl.z-pc.z) < abs(pr.z-pc.z) ? pc-pl : pr-pc);
+    float3 dy = c.y == 0 ? pb - pc : (c.y == size.y - 1 || abs(pt.z-pc.z) < abs(pb.z-pc.z) ? pc-pt : pb-pc);
+    float3 n = cross(dy, dx);
+    n = dot(n,n) > 1e-12 ? normalize(n) : float3(0,0,1);
+    return dot(n, -pc) >= 0.0 ? n : -n;
+}
+
 float3 readViewNormal(int2 pixel)
 {
-    // Matches the sphere-map encoding written by zprepassNormalsPSMain.
-    float2 encoded = aoNormals.Load(int3(pixel, 0)).xy * 2.0 - 1.0;
-    float lengthSquared = dot(encoded, encoded);
-    return normalize(float3(2.0 * encoded * sqrt(max(0.0, 1.0 - lengthSquared)), 1.0 - 2.0 * lengthSquared));
+    float3 normal = float3(0,0,1);
+    if (aoOptions.x != 0.0) normal = reconstructNormal(pixel);
+    else
+    {
+        float2 e = aoNormals.Load(int3(pixel, 0));
+        normal = decodeSphere(e);
+        if (aoOptions.y != 0.0) normal = decodeOct(e);
+    }
+    return normal;
 }
 
 float3 readViewNormalAtUv(float2 uv)
 {
-    uint width, height;
-    aoNormals.GetDimensions(width, height);
-    return readViewNormal(clamp(int2(uv * float2(width, height)), int2(0, 0), int2(width, height) - 1));
+    return readViewNormal(clamp(int2(uv * aoSizes.zw), int2(0, 0), int2(aoSizes.zw) - 1));
 }
 
 uint aoHash(uint value)

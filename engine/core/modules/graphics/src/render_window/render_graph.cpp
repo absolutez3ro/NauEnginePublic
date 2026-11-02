@@ -41,7 +41,8 @@ namespace nau::render
             const AmbientOcclusion::Settings settings = AmbientOcclusion::getInitialSettings();
             setAmbientOcclusionMode(settings.mode);
             setAmbientOcclusionExecution(settings.execution);
-            setAmbientOcclusionVariant(settings.variant);
+            setAmbientOcclusionVariant(settings.pipeline.algorithm);
+            setAmbientOcclusionPipeline(settings.pipeline);
             loadAmbientOcclusion = m_ambientOcclusion->loadAssets();
         }
 
@@ -87,6 +88,11 @@ namespace nau::render
         {
             const math::Vector4 disabled(0.0f);
             shader_globals::addVariable("ssaoControl", sizeof(disabled), &disabled);
+        }
+        if (!shader_globals::containsName("ssaoReconstruction"))
+        {
+            const math::Vector4 defaults(2.f, 0.2f, 0.f, 0.f);
+            shader_globals::addVariable("ssaoReconstruction", sizeof(defaults), &defaults);
         }
         matPPResolve->enableAutoSetTextures(false);
         if (m_ambientOcclusion)

@@ -12,7 +12,7 @@ namespace drv3d_dx12
 {
     namespace
     {
-        constexpr UINT CONSTANT_BYTES = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+        constexpr UINT CONSTANT_BYTES = (sizeof(d3d::mgpu::SsaoConstants) + 255u) & ~255u;
 
         bool validShader(const D3D12_SHADER_BYTECODE& shader)
         {
@@ -79,6 +79,10 @@ namespace drv3d_dx12
         DeviceResource m_normals;
         DeviceResource m_depth;
         DeviceResource m_output;
+        DeviceResource m_raw;
+        DeviceResource m_horizontal;
+        DXGI_FORMAT m_normalFormat = DXGI_FORMAT_R16G16_FLOAT;
+        DXGI_FORMAT m_depthFormat = DXGI_FORMAT_R32_FLOAT;
         DeviceResource m_random;
         DeviceResource m_randomUpload;
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_randomFootprint = {};
@@ -92,6 +96,8 @@ namespace drv3d_dx12
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
         Microsoft::WRL::ComPtr<ID3D12RootSignature> m_root;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> m_rawPso;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> m_filterPso;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> m_horizontalPso;
         HANDLE m_event = nullptr;
         UINT m_width = 0;
         UINT m_height = 0;
@@ -210,6 +216,8 @@ namespace drv3d_dx12
         m_allocator = desc.allocator;
         m_width = desc.width;
         m_height = desc.height;
+        m_normalFormat = desc.packedNormals ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_FLOAT;
+        m_depthFormat = desc.linearDepth16 ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_R32_FLOAT;
         D3D12_COMMAND_QUEUE_DESC queueDesc = {};
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         HRESULT result = m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_queue));
@@ -228,17 +236,21 @@ namespace drv3d_dx12
         if (SUCCEEDED(result))
         {
             result = m_normals.createTexture(m_allocator.get(), desc.inputWidth ? desc.inputWidth : m_width,
-                                              desc.inputHeight ? desc.inputHeight : m_height, DXGI_FORMAT_R16G16_FLOAT);
+                                              desc.inputHeight ? desc.inputHeight : m_height, m_normalFormat);
         }
         if (SUCCEEDED(result))
         {
             result = m_depth.createTexture(m_allocator.get(), desc.inputWidth ? desc.inputWidth : m_width,
-                                            desc.inputHeight ? desc.inputHeight : m_height, DXGI_FORMAT_R32_FLOAT);
+                                            desc.inputHeight ? desc.inputHeight : m_height, m_depthFormat);
         }
         if (SUCCEEDED(result))
         {
             result = m_output.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         }
+        if (SUCCEEDED(result))
+            result = m_raw.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        if (SUCCEEDED(result))
+            result = m_horizontal.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         if (SUCCEEDED(result))
         {
             result = createRandomTexture();
@@ -293,10 +305,10 @@ namespace drv3d_dx12
     {
         D3D12_DESCRIPTOR_HEAP_DESC desc = {};
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        desc.NumDescriptors = 1;
+        desc.NumDescriptors = 3;
         HRESULT result = m_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&m_rtvHeap));
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        desc.NumDescriptors = 5;
+        desc.NumDescriptors = 15;
         desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (SUCCEEDED(result))
         {
@@ -308,18 +320,28 @@ namespace drv3d_dx12
         }
         m_srvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         m_rtvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        m_device->CreateRenderTargetView(m_output.getResource(), nullptr, m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-        ID3D12Resource* inputs[] = {m_normals.getResource(), m_depth.getResource(), m_depth.getResource(), m_depth.getResource(), m_random.getResource()};
-        for (UINT input = 0; input < 5; ++input)
+        ID3D12Resource* targets[] = {m_output.getResource(), m_raw.getResource(), m_horizontal.getResource()};
+        for (UINT i = 0; i < 3; ++i)
         {
-            D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-            srv.Format = input == 4 ? DXGI_FORMAT_R8G8B8A8_UNORM : (input == 0 ? DXGI_FORMAT_R16G16_FLOAT : DXGI_FORMAT_R32_FLOAT);
-            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srv.Texture2D.MipLevels = 1;
-            D3D12_CPU_DESCRIPTOR_HANDLE handle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
-            handle.ptr += input * m_srvStride;
-            m_device->CreateShaderResourceView(inputs[input], &srv, handle);
+            auto handle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+            handle.ptr += i * m_rtvStride;
+            m_device->CreateRenderTargetView(targets[i], nullptr, handle);
+        }
+        for (UINT table = 0; table < 3; ++table)
+        {
+            ID3D12Resource* inputs[] = {m_normals.getResource(), m_depth.getResource(),
+                table == 2 ? m_horizontal.getResource() : m_raw.getResource(), m_depth.getResource(), m_random.getResource()};
+            for (UINT input = 0; input < 5; ++input)
+            {
+                D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+                srv.Format = inputs[input]->GetDesc().Format;
+                srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                srv.Texture2D.MipLevels = 1;
+                auto handle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+                handle.ptr += (table * 5 + input) * m_srvStride;
+                m_device->CreateShaderResourceView(inputs[input], &srv, handle);
+            }
         }
         return S_OK;
     }
@@ -390,6 +412,13 @@ namespace drv3d_dx12
         pso.RTVFormats[0] = DXGI_FORMAT_R8_UNORM;
         pso.SampleDesc.Count = 1;
         result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_rawPso));
+        if (SUCCEEDED(result) && validShader(desc.filterShader))
+        {
+            pso.PS = desc.filterShader;
+            result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_filterPso));
+            pso.RTVFormats[0] = DXGI_FORMAT_R16_FLOAT;
+            if (SUCCEEDED(result)) result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_horizontalPso));
+        }
         return result;
     }
 
@@ -455,7 +484,7 @@ namespace drv3d_dx12
         }
         if (SUCCEEDED(result))
         {
-            result = next->constants.createBuffer(m_allocator.get(), CONSTANT_BYTES, D3D12_HEAP_TYPE_UPLOAD);
+            result = next->constants.createBuffer(m_allocator.get(), CONSTANT_BYTES * 3, D3D12_HEAP_TYPE_UPLOAD);
         }
         if (SUCCEEDED(result))
         {
@@ -556,16 +585,41 @@ namespace drv3d_dx12
         m_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         barrier(m_depth.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         barrier(m_normals.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        std::memcpy(recording->mapped, &data, sizeof(data));
-        m_list->SetGraphicsRootConstantBufferView(0, recording->constants.getResource()->GetGPUVirtualAddress());
-        m_list->SetGraphicsRootDescriptorTable(1, m_srvHeap->GetGPUDescriptorHandleForHeapStart());
-        ID3D12Resource* target = m_output.getResource();
-        barrier(target, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        m_list->DiscardResource(target, nullptr);
-        const D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
-        m_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-        m_list->DrawInstanced(3, 1, 0, 0);
-        barrier(target, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COMMON);
+        const bool filtered = data.filter[3] > 1.f && data.pipeline[0] >= 1.f && data.pipeline[0] <= 3.f && m_filterPso;
+        const bool gaussian = data.pipeline[0] == 3.f;
+        const auto draw = [&](ID3D12Resource* target, UINT rtvIndex, UINT table, UINT constantIndex,
+                              ID3D12PipelineState* pso, const d3d::mgpu::SsaoConstants& constants)
+        {
+            std::memcpy(recording->mapped + constantIndex * CONSTANT_BYTES, &constants, sizeof(constants));
+            m_list->SetGraphicsRootConstantBufferView(0, recording->constants.getResource()->GetGPUVirtualAddress() + constantIndex * CONSTANT_BYTES);
+            auto srv = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
+            srv.ptr += table * 5 * m_srvStride;
+            m_list->SetGraphicsRootDescriptorTable(1, srv);
+            m_list->SetPipelineState(pso);
+            barrier(target, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            auto rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+            rtv.ptr += rtvIndex * m_rtvStride;
+            m_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+            m_list->DrawInstanced(3, 1, 0, 0);
+            barrier(target, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COMMON);
+        };
+        draw(filtered ? m_raw.getResource() : m_output.getResource(), filtered ? 1 : 0, 0, 0, m_rawPso.Get(), data);
+        if (filtered)
+        {
+            barrier(m_raw.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            auto constants = data;
+            constants.pipeline[1] = 0.f;
+            draw(gaussian ? m_horizontal.getResource() : m_output.getResource(), gaussian ? 2 : 0, 1, 1,
+                 gaussian ? m_horizontalPso.Get() : m_filterPso.Get(), constants);
+            if (gaussian)
+            {
+                barrier(m_horizontal.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                constants.pipeline[1] = 1.f;
+                draw(m_output.getResource(), 0, 2, 2, m_filterPso.Get(), constants);
+                barrier(m_horizontal.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+            }
+            barrier(m_raw.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+        }
         barrier(m_normals.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         barrier(m_depth.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
 

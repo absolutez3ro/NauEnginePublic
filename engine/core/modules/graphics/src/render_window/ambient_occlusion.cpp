@@ -10,6 +10,7 @@
 #include "nau/3d/ssao_random_texture.h"
 #include "nau/diag/logging.h"
 #include "nau/service/service_provider.h"
+#include "nau/shaders/shader_globals.h"
 
 namespace nau::render
 {
@@ -40,7 +41,27 @@ namespace nau::render
         settings.execution = readSetting<bool>("render/ssao/useSecondary", false)
                                  ? AmbientOcclusionExecution::multiGpu
                                  : AmbientOcclusionExecution::singleGpu;
-        settings.variant = static_cast<AmbientOcclusionVariant>(eastl::min(readSetting<uint32_t>("render/ssao/variant", 0), 1u));
+        if (readSetting<uint32_t>("render/ssao/variant", 0) == 1)
+        {
+            settings.pipeline.inputs = AmbientOcclusionInputs::full;
+            settings.pipeline.algorithm = AmbientOcclusionVariant::bogdanov;
+            settings.pipeline.blur = AmbientOcclusionBlur::gaussian;
+            settings.pipeline.upsample = AmbientOcclusionUpsample::bilinear;
+        }
+        auto& p = settings.pipeline;
+        p.inputs = static_cast<AmbientOcclusionInputs>(eastl::min(readSetting<uint32_t>("render/ssao/inputs", static_cast<uint32_t>(p.inputs)), 1u));
+        p.algorithm = static_cast<AmbientOcclusionVariant>(eastl::min(readSetting<uint32_t>("render/ssao/algorithm", static_cast<uint32_t>(p.algorithm)), 1u));
+        p.normals = static_cast<AmbientOcclusionNormals>(eastl::min(readSetting<uint32_t>("render/ssao/normals", 0), 1u));
+        p.blur = static_cast<AmbientOcclusionBlur>(eastl::min(readSetting<uint32_t>("render/ssao/blurMethod", readSetting<bool>("render/ssao/blur", true) ? static_cast<uint32_t>(p.blur) : 0u), 4u));
+        p.blurExecution = readSetting<bool>("render/ssao/blurOnSecondary", false) ? AmbientOcclusionExecution::multiGpu : AmbientOcclusionExecution::singleGpu;
+        p.upsample = static_cast<AmbientOcclusionUpsample>(eastl::min(readSetting<uint32_t>("render/ssao/upsample", static_cast<uint32_t>(p.upsample)), 2u));
+        p.packedNormals = readSetting<bool>("render/ssao/packedNormals", false);
+        p.linearDepth16 = readSetting<bool>("render/ssao/linearDepth16", false);
+        p.eightSamples = readSetting<bool>("render/ssao/eightSamples", false);
+        p.weightedUpsample = readSetting<bool>("render/ssao/weightedUpsample", false);
+        p.rejectOutside = readSetting<bool>("render/ssao/rejectOutside", false);
+        p.quarterResolution = readSetting<bool>("render/ssao/quarterResolution", false);
+        p.gatherUpsample = readSetting<bool>("render/ssao/gatherUpsample", false);
         return settings;
     }
 
@@ -66,10 +87,14 @@ namespace nau::render
         m_linearWrap = d3d::create_sampler(sampler);
         sampler.address_mode_u = sampler.address_mode_v = sampler.address_mode_w = d3d::AddressMode::Clamp;
         m_linearClamp = d3d::create_sampler(sampler);
-        m_rawMaterial->setSampler("bogdanov", "aoLinearClamp", m_linearClamp, 0);
-        m_rawMaterial->setSampler("bogdanov", "aoLinearWrap", m_linearWrap, 1);
-        m_blurMaterial->setSampler("bogdanov", "aoLinearClamp", m_linearClamp, 0);
-        m_blurMaterial->setSampler("debugBilinear", "aoLinearClamp", m_linearClamp, 0);
+        for (MaterialAssetView* material : {m_rawMaterial.get(), m_blurMaterial.get()})
+        {
+            for (const auto& pipeline : material->getPipelineNames())
+            {
+                material->setSampler(pipeline, "aoLinearClamp", m_linearClamp, 0);
+                material->setSampler(pipeline, "aoLinearWrap", m_linearWrap, 1);
+            }
+        }
 
         const float radius = readFiniteSetting("render/ssao/radius", 0.5f, 0.0f, 10.0f);
         const float fadeStart = readFiniteSetting("render/ssao/fadeStart", 0.2f, 0.0f, 10.0f);
@@ -77,17 +102,16 @@ namespace nau::render
         const float epsilon = readFiniteSetting("render/ssao/surfaceEpsilon", 0.05f, 0.0001f, fadeEnd);
         m_parameters = math::Vector4(radius, fadeStart, fadeEnd, epsilon);
         m_blurDepthThreshold = readFiniteSetting("render/ssao/blurDepthThreshold", 0.2f, 0.0f, 10.0f);
-        m_blur = readSetting<bool>("render/ssao/blur", true);
         // Load secondary shaders even when starting on GPU 0, so F8 can enable MGPU later.
         if (d3d::is_multi_gpu_available())
         {
             ShaderAssetRef vertex{"file:/res/shaders/cache/shader_cache.nsbc+[ssao.vs.vsmain]"};
             ShaderAssetRef rawShader{"file:/res/shaders/cache/shader_cache.nsbc+[ssao.ps.psmain]"};
-            ShaderAssetRef bogdanovShader{"file:/res/shaders/cache/shader_cache.nsbc+[ssao.ps.psbogdanov]"};
+            ShaderAssetRef filterShader{"file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.pshalfblur]"};
             m_vertexShader = co_await vertex.getAssetViewTyped<ShaderAssetView>();
             m_rawShader = co_await rawShader.getAssetViewTyped<ShaderAssetView>();
-            m_bogdanovShader = co_await bogdanovShader.getAssetViewTyped<ShaderAssetView>();
-            if (!m_vertexShader || !m_rawShader || !m_bogdanovShader)
+            m_filterShader = co_await filterShader.getAssetViewTyped<ShaderAssetView>();
+            if (!m_vertexShader || !m_rawShader || !m_filterShader)
             {
                 NAU_LOG_ERROR("SSAO: secondary shaders unavailable, using GPU 0");
             }
@@ -108,7 +132,8 @@ namespace nau::render
         // Drain foreign queues before destroying any endpoint they may still reference.
         d3d::mgpu::destroySsaoProducer(m_secondary);
         m_secondary = nullptr;
-        for (BaseTexture** texture : {&m_normalsSnapshot, &m_depthSnapshot, &m_receiving, &m_filtered, &m_horizontal})
+        m_resolveSource = nullptr;
+        for (BaseTexture** texture : {&m_normalsSnapshot, &m_depthSnapshot, &m_receiving, &m_filtered, &m_horizontal, &m_fullOutput})
         {
             if (*texture)
             {
@@ -127,44 +152,64 @@ namespace nau::render
         m_secondaryHeight = 0;
     }
 
-    void AmbientOcclusion::prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, const Settings& settings, BaseTexture* normals, BaseTexture* depth)
+    void AmbientOcclusion::beginFrame(uint32_t width, uint32_t height, const Settings& settings)
     {
-        if (m_settings.mode != settings.mode || m_settings.variant != settings.variant)
-        {
-            // Mode changes retire both GPUs' work before any shared endpoint is reused.
-            resetSecondary();
-        }
-        // F8 reuses the same endpoints. Keep the producer alive; each frame chooses which GPU writes AO.
-        m_logSettings |= m_settings.mode != settings.mode || m_settings.execution != settings.execution || m_settings.variant != settings.variant;
+        const auto& old = m_settings.pipeline;
+        const auto& next = settings.pipeline;
+        const bool layoutChanged = old.inputs != next.inputs || old.normals != next.normals ||
+            old.packedNormals != next.packedNormals || old.linearDepth16 != next.linearDepth16 ||
+            old.quarterResolution != next.quarterResolution;
+        m_logSettings |= old != next || m_settings.execution != settings.execution || m_settings.mode != settings.mode;
+        if (layoutChanged) resetSecondary();
         m_settings = settings;
+        prepareTargets(width, height);
+        // A full-size AO allocation exists only for a separate reconstruction pass.
+        if (next.upsample != AmbientOcclusionUpsample::separate && m_fullOutput)
+        {
+            m_fullOutput->destroy();
+            m_fullOutput = nullptr;
+        }
+        if (next.upsample == AmbientOcclusionUpsample::separate && !m_fullOutput && m_receiving)
+            m_fullOutput = d3d::create_tex(nullptr, width, height, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_full_output");
+    }
+
+    void AmbientOcclusion::prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, BaseTexture* normals, BaseTexture* depth)
+    {
         m_normals = normals;
         m_depth = depth;
         m_secondaryReady = {};
         m_usingSecondary = false;
         const math::Matrix4 inverseProjection = inverse(projection);
-        for (const char* pipeline : {"default", "bogdanov"})
-        {
-            m_rawMaterial->setProperty(pipeline, "aoProjection", projection);
-            m_rawMaterial->setProperty(pipeline, "aoParameters", m_parameters);
-            m_rawMaterial->setProperty(pipeline, "aoInverseProjection", inverseProjection);
-            m_rawMaterial->setProperty(pipeline, "aoView", view);
-        }
         static_assert(sizeof(projection) == sizeof(m_constants.projection));
         std::memcpy(m_constants.projection, &projection, sizeof(projection));
         std::memcpy(m_constants.inverseProjection, &inverseProjection, sizeof(inverseProjection));
         std::memcpy(m_constants.view, &view, sizeof(view));
         std::memcpy(m_constants.parameters, &m_parameters, sizeof(m_parameters));
         m_constants.filter[2] = m_blurDepthThreshold;
-        if (m_settings.mode == AmbientOcclusionMode::off || !prepareTargets(depth))
+        if (m_settings.mode == AmbientOcclusionMode::off || !m_receiving)
         {
             logSettings();
             return;
         }
-        const math::Vector4 depthParameters(projection.getElem(3, 2), projection.getElem(2, 3), projection.getElem(2, 2), m_blurDepthThreshold);
-        for (const char* pipeline : {"halfBlur", "bogdanov", "upsample"})
-        {
-            m_blurMaterial->setProperty(pipeline, "aoDepthParameters", depthParameters);
-        }
+        const auto& p = m_settings.pipeline;
+        m_constants.options[0] = p.normals == AmbientOcclusionNormals::reconstructed ? 1.f : 0.f;
+        m_constants.options[1] = p.packedNormals ? 1.f : 0.f;
+        m_constants.options[2] = p.linearDepth16 ? 1.f : 0.f;
+        m_constants.options[3] = p.eightSamples ? 8.f : 14.f;
+        m_constants.pipeline[0] = static_cast<float>(p.blur);
+        m_constants.pipeline[1] = 0.f;
+        m_constants.pipeline[2] = p.rejectOutside ? 1.f : 0.f;
+        m_constants.pipeline[3] = static_cast<float>(p.algorithm);
+        m_constants.filter[3] = p.blurExecution == AmbientOcclusionExecution::multiGpu ? 2.f : 1.f;
+        m_constants.sizes[0] = static_cast<float>(m_secondaryWidth);
+        m_constants.sizes[1] = static_cast<float>(m_secondaryHeight);
+        m_constants.sizes[2] = static_cast<float>(m_inputWidth);
+        m_constants.sizes[3] = static_cast<float>(m_inputHeight);
+        m_constants.reconstruction[0] = p.blur == AmbientOcclusionBlur::bilateralUpsample ? 2.f :
+            (p.weightedUpsample ? 3.f : (p.upsample == AmbientOcclusionUpsample::bilinear ? 1.f : 0.f));
+        m_constants.reconstruction[1] = p.gatherUpsample ? 1.f : 0.f;
+        m_constants.reconstruction[2] = p.quarterResolution ? 4.f : 2.f;
+        m_constants.reconstruction[3] = m_blurDepthThreshold;
         downsampleInputs();
         m_constants.filter[0] = static_cast<float>(m_secondaryWidth);
         m_constants.filter[1] = static_cast<float>(m_secondaryHeight);
@@ -203,17 +248,16 @@ namespace nau::render
         else
         {
             // Match GPU 1's selected input size, shader and half-size R8 output.
-            const char* pipeline = m_settings.variant == AmbientOcclusionVariant::bogdanov ? "bogdanov" : "default";
-            m_rawMaterial->setProperty(pipeline, "aoFilter", math::Vector4(static_cast<float>(m_secondaryWidth), static_cast<float>(m_secondaryHeight), m_blurDepthThreshold, 1.0f));
-            draw(m_receiving, *m_rawMaterial, pipeline);
+            draw(m_receiving, *m_rawMaterial, "default");
         }
         filter(output);
     }
 
-    bool AmbientOcclusion::prepareTargets(BaseTexture* depth)
+    bool AmbientOcclusion::prepareTargets(uint32_t width, uint32_t height)
     {
-        TextureInfo info;
-        depth->getinfo(info);
+        TextureInfo info{};
+        info.w = width;
+        info.h = height;
         if (m_normalsSnapshot && m_primaryWidth == info.w && m_primaryHeight == info.h)
         {
             return true;
@@ -221,16 +265,17 @@ namespace nau::render
         resetSecondary();
         m_primaryWidth = info.w;
         m_primaryHeight = info.h;
-        m_secondaryWidth = (info.w + 1) / 2;
-        m_secondaryHeight = (info.h + 1) / 2;
-        m_inputWidth = m_settings.variant == AmbientOcclusionVariant::bogdanov ? info.w : m_secondaryWidth;
-        m_inputHeight = m_settings.variant == AmbientOcclusionVariant::bogdanov ? info.h : m_secondaryHeight;
+        const uint32_t divisor = m_settings.pipeline.quarterResolution ? 4 : 2;
+        m_secondaryWidth = (info.w + divisor - 1) / divisor;
+        m_secondaryHeight = (info.h + divisor - 1) / divisor;
+        m_inputWidth = m_settings.pipeline.inputs == AmbientOcclusionInputs::full ? info.w : m_secondaryWidth;
+        m_inputHeight = m_settings.pipeline.inputs == AmbientOcclusionInputs::full ? info.h : m_secondaryHeight;
         if (!createRandomTexture())
         {
             return false;
         }
-        m_normalsSnapshot = d3d::create_tex(nullptr, m_inputWidth, m_inputHeight, TEXFMT_G16R16F | TEXCF_RTARGET, 1, u8"ssao_input_normals");
-        m_depthSnapshot = d3d::create_tex(nullptr, m_inputWidth, m_inputHeight, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ssao_input_depth");
+        m_normalsSnapshot = d3d::create_tex(nullptr, m_inputWidth, m_inputHeight, (m_settings.pipeline.packedNormals ? TEXFMT_R8G8 : TEXFMT_G16R16F) | TEXCF_RTARGET, 1, u8"ssao_input_normals");
+        m_depthSnapshot = d3d::create_tex(nullptr, m_inputWidth, m_inputHeight, (m_settings.pipeline.linearDepth16 ? TEXFMT_R16F : TEXFMT_R32F) | TEXCF_RTARGET, 1, u8"ssao_input_depth");
         m_receiving = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_half_raw");
         m_filtered = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_half_filtered");
         m_horizontal = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R16F | TEXCF_RTARGET, 1, u8"ssao_bogdanov_horizontal");
@@ -246,7 +291,7 @@ namespace nau::render
 
     bool AmbientOcclusion::prepareSecondary()
     {
-        if (!d3d::is_multi_gpu_available() || !m_vertexShader || !m_rawShader || !m_bogdanovShader)
+        if (!d3d::is_multi_gpu_available() || !m_vertexShader || !m_rawShader || !m_filterShader)
         {
             return false;
         }
@@ -254,7 +299,7 @@ namespace nau::render
         {
             m_secondaryAttempted = true;
             const Shader* vertex = m_vertexShader->getShader();
-            const Shader* raw = (m_settings.variant == AmbientOcclusionVariant::bogdanov ? m_bogdanovShader : m_rawShader)->getShader();
+            const Shader* raw = m_rawShader->getShader();
             d3d::mgpu::SsaoProducerDesc desc;
             desc.width = m_secondaryWidth;
             desc.height = m_secondaryHeight;
@@ -264,6 +309,12 @@ namespace nau::render
             desc.vertexBytecodeSize = vertex->bytecode.size();
             desc.rawBytecode = raw->bytecode.data();
             desc.rawBytecodeSize = raw->bytecode.size();
+            desc.reconstructNormals = m_settings.pipeline.normals == AmbientOcclusionNormals::reconstructed;
+            desc.packedNormals = m_settings.pipeline.packedNormals;
+            desc.linearDepth16 = m_settings.pipeline.linearDepth16;
+            const Shader* filter = m_filterShader->getShader();
+            desc.filterBytecode = filter->bytecode.data();
+            desc.filterBytecodeSize = filter->bytecode.size();
             m_secondary = d3d::mgpu::createSsaoProducer(desc);
             if (!m_secondary)
             {
@@ -290,7 +341,8 @@ namespace nau::render
         d3d::set_srgb_backbuffer_write(false);
         d3d::settex(0, m_normals);
         d3d::settex(1, m_depth);
-        m_blurMaterial->bindPipeline(m_settings.variant == AmbientOcclusionVariant::bogdanov ? "fullInputs" : "downsample");
+        setConstants(*m_blurMaterial, "downsample");
+        m_blurMaterial->bindPipeline("downsample");
         d3d::setvsrc(0, nullptr, 0);
         d3d::setind(nullptr);
         d3d::draw(PRIM_TRILIST, 0, 1);
@@ -301,35 +353,44 @@ namespace nau::render
 
     void AmbientOcclusion::filter(BaseTexture* output)
     {
-        if (m_settings.variant == AmbientOcclusionVariant::bogdanov && m_blur)
+        const auto& p = m_settings.pipeline;
+        const bool blurOnSecondary = m_usingSecondary && p.blurExecution == AmbientOcclusionExecution::multiGpu;
+        m_resolveSource = m_receiving;
+        if (!blurOnSecondary && p.blur != AmbientOcclusionBlur::off && p.blur != AmbientOcclusionBlur::bilateralUpsample)
         {
-            m_blurMaterial->setProperty("bogdanov", "aoHalfControl", math::Vector4(1.0f, 1.0f, 0.0f, 0.0f));
-            draw(m_horizontal, *m_blurMaterial, "bogdanov", m_receiving);
-            m_blurMaterial->setProperty("bogdanov", "aoHalfControl", math::Vector4(1.0f, 0.0f, 1.0f, 0.0f));
-            draw(m_filtered, *m_blurMaterial, "bogdanov", m_horizontal);
+            m_constants.pipeline[1] = 0.f;
+            draw(p.blur == AmbientOcclusionBlur::gaussian ? m_horizontal : m_filtered, *m_blurMaterial, "halfBlur", m_receiving);
+            if (p.blur == AmbientOcclusionBlur::gaussian)
+            {
+                m_constants.pipeline[1] = 1.f;
+                draw(m_filtered, *m_blurMaterial, "halfBlur", m_horizontal);
+            }
+            m_resolveSource = m_filtered;
         }
-        else
-        {
-            m_blurMaterial->setProperty("halfBlur", "aoHalfControl", math::Vector4(m_blur ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f));
-            draw(m_filtered, *m_blurMaterial, "halfBlur", m_receiving);
-        }
-        if (m_settings.variant == AmbientOcclusionVariant::bogdanov)
-        {
-            // Lighting reads this half-size texture directly with a bilinear sampler.
-            d3d::resource_barrier({m_filtered, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
-            // Initialize the declared framegraph output; this variant bypasses it at resolve/debug.
-            d3d::set_render_target(output, 0);
-            TextureInfo info;
-            output->getinfo(info);
-            d3d::setview(0, 0, info.w, info.h, 0.0f, 1.0f);
-            d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
-            d3d::set_render_target();
-        }
-        else
+        if (m_fullOutput)
         {
             d3d::resource_barrier({m_depth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
-            draw(output, *m_blurMaterial, "upsample", m_filtered);
+            draw(m_fullOutput, *m_blurMaterial, "upsample", m_resolveSource);
         }
+        // Only a small graph token is needed when resolve consumes the low-resolution AO.
+        d3d::set_render_target(output, 0);
+        d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
+        d3d::set_render_target();
+    }
+
+    void AmbientOcclusion::setConstants(MaterialAssetView& material, const char* pipeline)
+    {
+        const auto matrix = [](const float* values) { math::Matrix4 m; std::memcpy(&m, values, sizeof(m)); return m; };
+        const auto vector = [](const float* v) { return math::Vector4(v[0], v[1], v[2], v[3]); };
+        material.setProperty(pipeline, "aoProjection", matrix(m_constants.projection));
+        material.setProperty(pipeline, "aoInverseProjection", matrix(m_constants.inverseProjection));
+        material.setProperty(pipeline, "aoView", matrix(m_constants.view));
+        material.setProperty(pipeline, "aoParameters", vector(m_constants.parameters));
+        material.setProperty(pipeline, "aoFilter", vector(m_constants.filter));
+        material.setProperty(pipeline, "aoOptions", vector(m_constants.options));
+        material.setProperty(pipeline, "aoPipeline", vector(m_constants.pipeline));
+        material.setProperty(pipeline, "aoSizes", vector(m_constants.sizes));
+        material.setProperty(pipeline, "aoReconstruction", vector(m_constants.reconstruction));
     }
 
     void AmbientOcclusion::draw(BaseTexture* target, MaterialAssetView& material, const char* pipeline, BaseTexture* source)
@@ -348,8 +409,9 @@ namespace nau::render
         d3d::settex(0, m_normalsSnapshot);
         d3d::settex(1, m_depthSnapshot);
         d3d::settex(2, source);
-        d3d::settex(3, std::strcmp(pipeline, "upsample") == 0 ? m_depth : nullptr);
+        d3d::settex(3, m_depth);
         d3d::settex(4, m_randomTexture);
+        setConstants(material, pipeline);
         material.bindPipeline(pipeline);
         d3d::setvsrc(0, nullptr, 0);
         d3d::setind(nullptr);
@@ -361,23 +423,17 @@ namespace nau::render
         d3d::set_render_target();
     }
 
-    void AmbientOcclusion::drawDebug(BaseTexture* target, BaseTexture* source)
+    void AmbientOcclusion::drawDebug(BaseTexture* target, BaseTexture*)
     {
-        d3d::set_render_target(target, 0);
         d3d::set_depth(nullptr, DepthAccess::RW);
-        d3d::set_srgb_backbuffer_write(false);
-        TextureInfo info;
-        target->getinfo(info);
-        d3d::setview(0, 0, info.w, info.h, 0.0f, 1.0f);
-        d3d::resource_barrier({m_depth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
-        d3d::settex(2, getResolveTexture(source));
-        d3d::settex(3, m_depth);
-        m_blurMaterial->bindPipeline(m_settings.variant == AmbientOcclusionVariant::bogdanov ? "debugBilinear" : "debug");
-        d3d::setvsrc(0, nullptr, 0);
-        d3d::setind(nullptr);
-        d3d::draw(PRIM_TRILIST, 0, 1);
-        d3d::settex(2, nullptr);
-        d3d::settex(3, nullptr);
+        if (!m_resolveSource)
+        {
+            d3d::set_render_target(target, 0);
+            d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
+            return;
+        }
+        // The same reconstruction is used in debug and lighting for every combination.
+        draw(target, *m_blurMaterial, "debugBilinear", m_resolveSource);
     }
 
     bool AmbientOcclusion::isDebugView() const
@@ -387,7 +443,7 @@ namespace nau::render
 
     math::Vector4 AmbientOcclusion::getResolveControl() const
     {
-        return math::Vector4(m_settings.mode != AmbientOcclusionMode::off ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+        return math::Vector4(m_settings.mode != AmbientOcclusionMode::off && m_resolveSource ? 1.f : 0.f, m_fullOutput ? -1.f : m_constants.reconstruction[0], m_settings.pipeline.linearDepth16 ? 1.f : 0.f, m_settings.pipeline.gatherUpsample ? 1.f : 0.f);
     }
 
     const char* AmbientOcclusion::getExecutionLabel() const
@@ -398,40 +454,44 @@ namespace nau::render
         }
         if (m_usingSecondary)
         {
-            return "MGPU, half AO";
+            return m_settings.pipeline.quarterResolution ? "MGPU, quarter AO" : "MGPU, half AO";
         }
         return m_settings.execution == AmbientOcclusionExecution::multiGpu
-                   ? "single GPU, half AO (MGPU unavailable)"
-                   : "single GPU, half AO";
+                   ? (m_settings.pipeline.quarterResolution ? "single GPU, quarter AO (MGPU unavailable)" : "single GPU, half AO (MGPU unavailable)")
+                   : (m_settings.pipeline.quarterResolution ? "single GPU, quarter AO" : "single GPU, half AO");
     }
 
     const char* AmbientOcclusion::getVariantLabel() const
     {
-        if (!m_blur)
-        {
-            return m_settings.variant == AmbientOcclusionVariant::bogdanov
-                       ? "Bogdanov: full inputs / no blur / bilinear"
-                       : "Nau: half inputs / no blur / depth upsample";
-        }
-        return m_settings.variant == AmbientOcclusionVariant::bogdanov ? "Bogdanov: full inputs / Gaussian / bilinear" : "Nau: half inputs / box 4x4 / depth upsample";
+        return m_settings.pipeline.algorithm == AmbientOcclusionVariant::bogdanov ? "Bogdanov AO / independent stages" : "Nau AO / independent stages";
     }
 
     void AmbientOcclusion::logSettings()
     {
-        if (!m_logSettings)
-        {
-            return;
-        }
-        NAU_LOG_INFO("SSAO comparison: {}, {}x{}, {}, inputs={}x{}, noise={}, fade={}, display={}", getExecutionLabel(), m_secondaryWidth, m_secondaryHeight,
-                     getVariantLabel(), m_inputWidth, m_inputHeight,
-                     m_settings.variant == AmbientOcclusionVariant::bogdanov ? "random texture 256x256" : "tile 4x4",
-                     m_settings.variant == AmbientOcclusionVariant::bogdanov ? "view depth" : "surface distance", static_cast<uint32_t>(m_settings.mode));
+        if (!m_logSettings) return;
+        const auto& p = m_settings.pipeline;
+        NAU_LOG_INFO("SSAO pipeline: {}, AO={}x{}, inputs={}x{}, algorithm={}, normals={}, blur={}, blurGPU={}, upsample={}, RG8={}, R16F={}, samples={}, weighted={}, reject={}, gatherUp={}, mode={}",
+            getExecutionLabel(), m_secondaryWidth, m_secondaryHeight, m_inputWidth, m_inputHeight,
+            static_cast<uint32_t>(p.algorithm), static_cast<uint32_t>(p.normals), static_cast<uint32_t>(p.blur),
+            static_cast<uint32_t>(p.blurExecution), static_cast<uint32_t>(p.upsample), p.packedNormals, p.linearDepth16,
+            p.eightSamples ? 8 : 14, p.weightedUpsample, p.rejectOutside, p.gatherUpsample, static_cast<uint32_t>(m_settings.mode));
         m_logSettings = false;
     }
 
-    BaseTexture* AmbientOcclusion::getResolveTexture(BaseTexture* fullSize) const
+    BaseTexture* AmbientOcclusion::getResolveTexture(BaseTexture* fallback) const
     {
-        return m_settings.variant == AmbientOcclusionVariant::bogdanov && m_filtered ? m_filtered : fullSize;
+        return m_fullOutput ? m_fullOutput : (m_resolveSource ? m_resolveSource : fallback);
+    }
+
+    void AmbientOcclusion::bindResolveInputs()
+    {
+        if (BaseTexture* source = getResolveTexture(nullptr))
+            d3d::resource_barrier({source, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+        d3d::resource_barrier({m_depthSnapshot, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+        d3d::settex(7, m_depthSnapshot);
+        const math::Vector4 reconstruction(m_constants.reconstruction[2], m_blurDepthThreshold,
+            m_constants.projection[14], m_constants.projection[10]);
+        shader_globals::setVariable("ssaoReconstruction", &reconstruction);
     }
 
     void AmbientOcclusion::configureResolveSampler(MaterialAssetView& material) const

@@ -9,10 +9,11 @@ static const float3 SAMPLE_DIRECTIONS[14] = {
     float3(0, 0, -1), float3(0, 0, 1)
 };
 
-float PSMain(float4 position : SV_Position) : SV_Target
+float PSNau(float4 position : SV_Position) : SV_Target
 {
-    int2 pixel = int2(position.xy);
-    float depth = aoDepth.Load(int3(pixel, 0));
+    float2 centerUv = position.xy / aoSizes.xy;
+    int2 pixel = min(int2(centerUv * aoSizes.zw), int2(aoSizes.zw)-1);
+    float depth = depthAtPixel(pixel);
     if (depth <= 0.0 || aoFilter.w == 0.0 || aoParameters.x <= 0.0)
     {
         return 1.0;
@@ -20,13 +21,14 @@ float PSMain(float4 position : SV_Position) : SV_Target
     uint width, height;
     aoDepth.GetDimensions(width, height);
     float2 size = float2(width, height);
-    float3 center = reconstructViewPosition(position.xy / size, depth);
+    float3 center = reconstructViewPosition(centerUv, depth);
     float3 normal = readViewNormal(pixel);
     float3 random = randomDirection(uint2(pixel));
     float occlusion = 0.0;
     [unroll]
     for (uint index = 0; index < 14; ++index)
     {
+        if (index >= uint(aoOptions.w)) break;
         float sampleLength = 0.25 + 0.75 * float(aoHash(index + 17u) & 65535u) / 65535.0;
         float3 offset = reflect(normalize(SAMPLE_DIRECTIONS[index]), random) * sampleLength;
         offset *= dot(offset, normal) >= 0.0 ? 1.0 : -1.0;
@@ -43,7 +45,7 @@ float PSMain(float4 position : SV_Position) : SV_Target
             continue;
         }
         int2 neighbor = int2(uv * size);
-        float neighborDepth = aoDepth.Load(int3(neighbor, 0));
+        float neighborDepth = depthAtPixel(neighbor);
         if (neighborDepth <= 0.0)
         {
             continue;
@@ -62,7 +64,7 @@ float PSMain(float4 position : SV_Position) : SV_Target
             occlusion += surfaceDistance / distance * fade;
         }
     }
-    return pow(saturate(1.0 - occlusion / 14.0), 6.0);
+    return pow(saturate(1.0 - occlusion / aoOptions.w), 6.0);
 }
 
 // Bogdanov's complete raw AO path: full-size inputs, point normal, bilinear depth,
@@ -71,7 +73,7 @@ float PSMain(float4 position : SV_Position) : SV_Target
 float PSBogdanov(float4 position : SV_Position) : SV_Target
 {
     float2 uv = position.xy / aoFilter.xy;
-    float depth = aoDepth.SampleLevel(aoLinearClamp, uv, 0);
+    float depth = depthAtUv(uv);
     if (depth <= 0.0 || aoFilter.w == 0.0 || aoParameters.x <= 0.0)
     {
         return 1.0;
@@ -83,6 +85,7 @@ float PSBogdanov(float4 position : SV_Position) : SV_Target
     [unroll]
     for (uint index = 0; index < 14; ++index)
     {
+        if (index >= uint(aoOptions.w)) break;
         float sampleLength = 0.25 + 0.75 * float(aoHash(index + 17u) & 65535u) / 65535.0;
         float3 offset = reflect(normalize(SAMPLE_DIRECTIONS[index]) * sampleLength, random);
         float3 samplePoint = center + sign(dot(offset, normal)) * aoParameters.x * offset;
@@ -92,7 +95,8 @@ float PSBogdanov(float4 position : SV_Position) : SV_Target
             continue;
         }
         float2 sampleUv = projected.xy / projected.w * float2(0.5, -0.5) + 0.5;
-        float neighborDepth = aoDepth.SampleLevel(aoLinearClamp, sampleUv, 0);
+        if (aoPipeline.z != 0.0 && (any(sampleUv < 0.0) || any(sampleUv >= 1.0))) continue;
+        float neighborDepth = depthAtUv(sampleUv);
         if (neighborDepth <= 0.0)
         {
             continue;
@@ -110,5 +114,10 @@ float PSBogdanov(float4 position : SV_Position) : SV_Target
             occlusion += facing * fade;
         }
     }
-    return saturate(pow(1.0 - occlusion / 14.0, 6.0));
+    return saturate(pow(1.0 - occlusion / aoOptions.w, 6.0));
+}
+
+float PSMain(float4 position : SV_Position) : SV_Target
+{
+    return aoPipeline.w != 0.0 ? PSBogdanov(position) : PSNau(position);
 }

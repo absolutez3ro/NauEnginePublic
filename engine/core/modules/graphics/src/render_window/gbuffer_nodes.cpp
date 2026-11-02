@@ -214,6 +214,7 @@ namespace nau::render
                     // Bind an existing G-buffer SRV when SSAO is absent; the shader bypasses it.
                     BaseTexture* aoTexture = ambientOcclusion ? const_cast<BaseTexture*>(ambientOcclusion->get()) : m_gBuffer->getRt(0);
                     d3d::settex(6, m_ambientOcclusion ? m_ambientOcclusion->getResolveTexture(aoTexture) : aoTexture);
+                    if (m_ambientOcclusion) m_ambientOcclusion->bindResolveInputs();
                     m_csm->setCascadesToShader(m_gBuffer->getResolveShading()->getMaterial());
                     m_gBuffer->resolve(resolveTarget.get(),
                                        m_environmentRenderer->getIrradianceMap(),
@@ -231,6 +232,7 @@ namespace nau::render
 
                     m_gBuffer->flushResolve();
                     d3d::settex(6, nullptr);
+                    d3d::settex(7, nullptr);
                 }
             };
         }));
@@ -331,9 +333,7 @@ namespace nau::render
                 {
                     const CameraNode& camera = m_graphicsScene->getMainCamera();
                     d3d::setview(0, 0, m_gBuffer->getWidth(), m_gBuffer->getHeight(), 0.0f, 1.0f);
-                    const AmbientOcclusion::Settings settings{
-                        getAmbientOcclusionMode(), getAmbientOcclusionExecution(), getAmbientOcclusionVariant()};
-                    m_ambientOcclusion->prepareFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), settings, const_cast<BaseTexture*>(normals.get()), m_gBuffer->getDepth());
+                    m_ambientOcclusion->prepareFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), const_cast<BaseTexture*>(normals.get()), m_gBuffer->getDepth());
                 }
             };
         }));
@@ -346,7 +346,7 @@ namespace nau::render
             const auto createTarget = [this, &registry](const char* name, uint32_t format)
             {
                 return registry.createTexture2d(nau::utils::format("{}_{}", name, m_swapchain).c_str(), dabfg::History::No,
-                                                dabfg::Texture2dCreateInfo{format | TEXCF_RTARGET, registry.getResolution(m_resolutionName.c_str())})
+                                                dabfg::Texture2dCreateInfo{format | TEXCF_RTARGET, math::IVector2(1, 1)})
                     .atStage(dabfg::Stage::POST_RASTER)
                     .useAs(dabfg::Usage::COLOR_ATTACHMENT)
                     .handle();

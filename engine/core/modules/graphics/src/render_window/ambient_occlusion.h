@@ -17,7 +17,7 @@ namespace nau::render
         {
             AmbientOcclusionMode mode = AmbientOcclusionMode::lighting;
             AmbientOcclusionExecution execution = AmbientOcclusionExecution::singleGpu;
-            AmbientOcclusionVariant variant = AmbientOcclusionVariant::current;
+            AmbientOcclusionPipeline pipeline;
         };
 
         AmbientOcclusion() = default;
@@ -30,7 +30,8 @@ namespace nau::render
         static bool isRequested();
         static Settings getInitialSettings();
         async::Task<> loadAssets();
-        void prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, const Settings& settings, BaseTexture* normals, BaseTexture* depth);
+        void beginFrame(uint32_t width, uint32_t height, const Settings& settings);
+        void prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, BaseTexture* normals, BaseTexture* depth);
         void render(BaseTexture* output);
         void drawDebug(BaseTexture* target, BaseTexture* source);
         bool isDebugView() const;
@@ -39,14 +40,16 @@ namespace nau::render
         const char* getVariantLabel() const;
         BaseTexture* getResolveTexture(BaseTexture* fullSize) const;
         void configureResolveSampler(MaterialAssetView& material) const;
+        void bindResolveInputs();
 
     private:
         void draw(BaseTexture* target, MaterialAssetView& material, const char* pipeline, BaseTexture* source = nullptr);
         void filter(BaseTexture* output);
         void resetSecondary();
         void downsampleInputs();
-        bool prepareTargets(BaseTexture* depth);
+        bool prepareTargets(uint32_t width, uint32_t height);
         bool prepareSecondary();
+        void setConstants(MaterialAssetView& material, const char* pipeline);
         void logSettings();
         bool createRandomTexture();
 
@@ -54,7 +57,7 @@ namespace nau::render
         MaterialAssetView::Ptr m_blurMaterial;
         ShaderAssetView::Ptr m_vertexShader;
         ShaderAssetView::Ptr m_rawShader;
-        ShaderAssetView::Ptr m_bogdanovShader;
+        ShaderAssetView::Ptr m_filterShader;
         Texture* m_randomTexture = nullptr;
         d3d::SamplerHandle m_linearClamp = {};
         d3d::SamplerHandle m_linearWrap = {};
@@ -66,6 +69,8 @@ namespace nau::render
         BaseTexture* m_receiving = nullptr;
         BaseTexture* m_filtered = nullptr;
         BaseTexture* m_horizontal = nullptr;
+        BaseTexture* m_fullOutput = nullptr;
+        BaseTexture* m_resolveSource = nullptr;
         uint32_t m_secondaryWidth = 0;
         uint32_t m_secondaryHeight = 0;
         uint32_t m_primaryWidth = 0;
@@ -80,6 +85,5 @@ namespace nau::render
         math::Vector4 m_parameters = math::Vector4(0.5f, 0.2f, 1.0f, 0.05f);
         float m_blurDepthThreshold = 0.2f;
         Settings m_settings;
-        bool m_blur = true;
     };
 }  // namespace nau::render

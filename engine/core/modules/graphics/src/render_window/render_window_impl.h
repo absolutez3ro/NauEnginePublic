@@ -5,6 +5,7 @@
 #pragma once
 
 #include <chrono>
+#include <mutex>
 
 #include "ambient_occlusion.h"
 #include "graphics_nodes.h"
@@ -63,6 +64,9 @@ namespace nau::render
         void setAmbientOcclusionExecution(AmbientOcclusionExecution execution) override;
         AmbientOcclusionVariant getAmbientOcclusionVariant() const override;
         void setAmbientOcclusionVariant(AmbientOcclusionVariant variant) override;
+        AmbientOcclusionPipeline getAmbientOcclusionPipeline() const override;
+        void setAmbientOcclusionPipeline(const AmbientOcclusionPipeline& pipeline) override;
+        float getFrameRate() const override { return m_frameRate.load(std::memory_order_relaxed); }
 
         async::Task<> createRenderGraph();
 
@@ -134,6 +138,8 @@ namespace nau::render
         std::atomic<AmbientOcclusionMode> m_ambientOcclusionMode = AmbientOcclusionMode::lighting;
         std::atomic<AmbientOcclusionExecution> m_ambientOcclusionExecution = AmbientOcclusionExecution::singleGpu;
         std::atomic<AmbientOcclusionVariant> m_ambientOcclusionVariant = AmbientOcclusionVariant::current;
+        mutable std::mutex m_ambientOcclusionMutex;
+        AmbientOcclusionPipeline m_ambientOcclusionPipeline;
         eastl::unique_ptr<render::PostFxRenderer> m_postFXRenderer;
         eastl::unique_ptr<render::EnvironmentRenderer> m_environmentRenderer;
 
@@ -146,6 +152,7 @@ namespace nau::render
         bool m_showFrameStatistics = false;
         std::chrono::steady_clock::time_point m_frameStatisticsStart;
         uint32_t m_frameStatisticsCount = 0;
+        std::atomic<float> m_frameRate = 0.f;
         WeakPtr<async::Executor> m_preRenderWorkQueueRef;
 
         eastl::unique_ptr<render::DeferredRenderTarget> m_gBuffer;

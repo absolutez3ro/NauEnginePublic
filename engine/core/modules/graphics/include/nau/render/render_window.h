@@ -47,6 +47,30 @@ namespace nau::render
         bogdanov = 1
     };
 
+    enum class AmbientOcclusionInputs : uint32_t { downsampled, full };
+    enum class AmbientOcclusionNormals : uint32_t { prepass, reconstructed };
+    enum class AmbientOcclusionBlur : uint32_t { off, box, gather, gaussian, bilateralUpsample };
+    enum class AmbientOcclusionUpsample : uint32_t { separate, resolve, bilinear };
+
+    struct AmbientOcclusionPipeline
+    {
+        AmbientOcclusionInputs inputs = AmbientOcclusionInputs::downsampled;
+        AmbientOcclusionVariant algorithm = AmbientOcclusionVariant::current;
+        AmbientOcclusionNormals normals = AmbientOcclusionNormals::prepass;
+        AmbientOcclusionBlur blur = AmbientOcclusionBlur::box;
+        AmbientOcclusionExecution blurExecution = AmbientOcclusionExecution::singleGpu;
+        AmbientOcclusionUpsample upsample = AmbientOcclusionUpsample::separate;
+        bool packedNormals = false;
+        bool linearDepth16 = false;
+        bool eightSamples = false;
+        bool weightedUpsample = false;
+        bool rejectOutside = false;
+        bool quarterResolution = false;
+        bool gatherUpsample = false;
+
+        bool operator==(const AmbientOcclusionPipeline&) const = default;
+    };
+
     struct NAU_ABSTRACT_TYPE IRenderWindow : public virtual IRefCounted
     {
         NAU_INTERFACE(nau::render::IRenderWindow, IRefCounted)
@@ -90,6 +114,10 @@ namespace nau::render
          * @param variant The complete SSAO implementation to compare.
          */
         virtual void setAmbientOcclusionVariant(AmbientOcclusionVariant variant) = 0;
+        /** @brief Thread-safe snapshot/request of independent SSAO stages, applied at the next frame boundary. */
+        virtual AmbientOcclusionPipeline getAmbientOcclusionPipeline() const = 0;
+        virtual void setAmbientOcclusionPipeline(const AmbientOcclusionPipeline& pipeline) = 0;
+        virtual float getFrameRate() const = 0;
 
         virtual async::Task<> requestViewportResize(int32_t width, int32_t height) = 0;
         virtual async::Task<> requestViewportResizeImmediate(int32_t width, int32_t height) = 0;

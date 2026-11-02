@@ -22,6 +22,10 @@ namespace drv3d_dx12
         UINT inputHeight = 0;
         D3D12_SHADER_BYTECODE vertexShader = {};
         D3D12_SHADER_BYTECODE rawShader = {};
+        D3D12_SHADER_BYTECODE filterShader = {};
+        bool reconstructNormals = false;
+        bool packedNormals = false;
+        bool linearDepth16 = false;
     };
 
     /**
