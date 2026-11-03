@@ -12,6 +12,19 @@ class BaseTexture;
 
 namespace d3d::mgpu
 {
+    struct ForeignQueueMeasurements
+    {
+        bool submitOnly = true;
+        uint32_t releases = 0, waits = 0, frameFlushes = 0, slotWaits = 0;
+        double cpuMilliseconds = 0, slotWaitMilliseconds = 0;
+        uint32_t frameSlotWaits = 0;
+        double frameSlotWaitMilliseconds = 0;
+    };
+
+    // Call once per render frame. The compatibility path retires a frontend slot at every handoff.
+    NAU_RENDER_EXPORT void begin_foreign_queue_frame(bool submitOnly, bool measure);
+    NAU_RENDER_EXPORT ForeignQueueMeasurements get_foreign_queue_measurements();
+
     /**
      * @brief Direction in which a transfer channel moves data.
      */

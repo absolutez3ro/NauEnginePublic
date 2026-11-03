@@ -684,6 +684,13 @@ DX12_BEGIN_CONTEXT_COMMAND(FlushWithFence)
 #endif
 DX12_END_CONTEXT_COMMAND
 
+DX12_BEGIN_CONTEXT_COMMAND(SubmitForForeignQueue)
+#if DX12_CONTEXT_COMMAND_IMPLEMENTATION
+  // Submit a command-list batch, retaining frame-owned memory and the frontend progress fence until the real flush.
+  ctx.flush(false, 0, OutputMode::PRESENT, false);
+#endif
+DX12_END_CONTEXT_COMMAND
+
 DX12_BEGIN_CONTEXT_COMMAND(TransitionTextureForForeignQueue)
   DX12_CONTEXT_COMMAND_PARAM(Image *, image)
 

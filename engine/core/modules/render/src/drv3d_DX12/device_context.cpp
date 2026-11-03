@@ -209,7 +209,20 @@ void DeviceContext::manageLatchedState()
   {
     if (nextWait)
     {
+      const bool measure = front.measureForeignQueues;
+      const auto start = measure ? ref_time_ticks() : 0;
       wait_for_frame_progress_with_event(device.queues, nextWait->progress, front.frameWaitEvent.get(), "manageLatchedState");
+      if (measure)
+      {
+        const double milliseconds = ref_time_delta_to_usec(ref_time_ticks() - start) / 1000.0;
+        ++front.foreignQueueMeasurements.frameSlotWaits;
+        front.foreignQueueMeasurements.frameSlotWaitMilliseconds += milliseconds;
+        if (front.inForeignQueueHandoff)
+        {
+          ++front.foreignQueueMeasurements.slotWaits;
+          front.foreignQueueMeasurements.slotWaitMilliseconds += milliseconds;
+        }
+      }
     }
     for (auto &&frame : front.latchedFrameSet)
     {
@@ -1275,9 +1288,42 @@ void DeviceContext::flushDraws()
   frontFlush();
 }
 
+void DeviceContext::beginForeignQueueFrame(bool submitOnly, bool measure)
+{
+  DX12_LOCK_FRONT();
+  front.foreignQueueMeasurements = {};
+  front.foreignQueueMeasurements.submitOnly = submitOnly;
+  front.measureForeignQueues = measure;
+}
+
+d3d::mgpu::ForeignQueueMeasurements DeviceContext::getForeignQueueMeasurements()
+{
+  DX12_LOCK_FRONT();
+  return front.foreignQueueMeasurements;
+}
+
+void DeviceContext::submitForForeignQueue()
+{
+  if (front.foreignQueueMeasurements.submitOnly)
+  {
+    commandStream.pushBack(make_command<CmdSubmitForForeignQueue>());
+    immediateModeExecute();
+  }
+  else
+  {
+    commandStream.pushBack(make_command<CmdFlushWithFence>(front.recordingWorkItemProgress));
+    immediateModeExecute();
+    ++front.foreignQueueMeasurements.frameFlushes;
+    frontFlush();
+  }
+}
+
 void DeviceContext::releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint64_t value)
 {
   DX12_LOCK_FRONT();
+  const auto start = front.measureForeignQueues ? ref_time_ticks() : 0;
+  front.inForeignQueueHandoff = true;
+  ++front.foreignQueueMeasurements.releases;
 
   if (image)
   {
@@ -1285,25 +1331,30 @@ void DeviceContext::releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint
   }
   // The signal must follow the submit of everything recorded so far: a foreign queue waiting for it must never depend on
   // a command list that is still open here.
-  commandStream.pushBack(make_command<CmdFlushWithFence>(front.recordingWorkItemProgress));
-  immediateModeExecute();
-  frontFlush();
+  submitForForeignQueue();
 
   commandStream.pushBack(make_command<CmdSignalForeignFence>(fence, value));
   immediateModeExecute();
+  front.inForeignQueueHandoff = false;
+  if (front.measureForeignQueues)
+    front.foreignQueueMeasurements.cpuMilliseconds += ref_time_delta_to_usec(ref_time_ticks() - start) / 1000.0;
 }
 
 void DeviceContext::waitForForeignQueue(ID3D12Fence* fence, uint64_t value)
 {
     DX12_LOCK_FRONT();
+    const auto start = front.measureForeignQueues ? ref_time_ticks() : 0;
+    front.inForeignQueueHandoff = true;
+    ++front.foreignQueueMeasurements.waits;
 
     // Submit independent graphics work before enqueueing the foreign wait on its queue.
-    commandStream.pushBack(make_command<CmdFlushWithFence>(front.recordingWorkItemProgress));
-    immediateModeExecute();
-    frontFlush();
+    submitForForeignQueue();
 
     commandStream.pushBack(make_command<CmdWaitForeignFence>(fence, value));
     immediateModeExecute();
+    front.inForeignQueueHandoff = false;
+    if (front.measureForeignQueues)
+      front.foreignQueueMeasurements.cpuMilliseconds += ref_time_delta_to_usec(ref_time_ticks() - start) / 1000.0;
 }
 
 bool DeviceContext::flushDrawWhenNoQueries()
@@ -3374,8 +3425,9 @@ void DeviceContext::ExecutionContext::writeToDebug(StringIndexRef::RangeType inf
   contextState.resourceStates.marker(info);
 }
 
-int64_t DeviceContext::ExecutionContext::flush(bool present, uint64_t progress, OutputMode mode)
+int64_t DeviceContext::ExecutionContext::flush(bool present, uint64_t progress, OutputMode mode, bool retireWorkItem)
 {
+  NAU_ASSERT(retireWorkItem || !present);
   int64_t swapDur = 0;
   FrameInfo &frame = contextState.getFrameData();
 
@@ -3528,21 +3580,29 @@ int64_t DeviceContext::ExecutionContext::flush(bool present, uint64_t progress, 
     ID3D12CommandList *submit = cmdList.get();
     device.queues[DeviceQueueType::READ_BACK].enqueueCommands(1, &submit);
 
-    device.queues.updateFrameProgress(progress);
+    if (retireWorkItem)
+      device.queues.updateFrameProgress(progress);
+    else
+      // Mid-frame readbacks must finish before later graphics reuses their sources, without retiring frame storage.
+      device.queues.synchronizeGraphicsWithReadBack();
   }
-  else
+  else if (retireWorkItem)
   {
     device.queues.updateFrameProgressOnGraphics(progress);
   }
 
       // we have to wait for previous frame to avoid overlapping previous frame read back and current frame graphics
-  device.queues.synchronizeWithPreviousFrame();
+  if (retireWorkItem)
+    device.queues.synchronizeWithPreviousFrame();
 
 
 
-  for (os_event_t &event : self.back.frameCompleteEvents)
-    device.queues.waitForFrameProgress(progress, event);
-  self.back.frameCompleteEvents.clear();
+  if (retireWorkItem)
+  {
+    for (os_event_t &event : self.back.frameCompleteEvents)
+      device.queues.waitForFrameProgress(progress, event);
+    self.back.frameCompleteEvents.clear();
+  }
 
   auto &resourceUsageDebugger = static_cast<ResourceUsageHistoryDataSetDebugger &>(self);
   contextState.resourceStates.addTo(resourceUsageDebugger);
@@ -3552,10 +3612,13 @@ int64_t DeviceContext::ExecutionContext::flush(bool present, uint64_t progress, 
   }
   contextState.resourceStates.onFlush(contextState.initialResourceStateSet);
   contextState.resourceActivationTracker.reset();
-  contextState.bufferAccessTracker.advance();
   contextState.onFlush();
 
-  ++self.back.frameProgress;
+  if (retireWorkItem)
+  {
+    contextState.bufferAccessTracker.advance();
+    ++self.back.frameProgress;
+  }
   return swapDur;
 }
 

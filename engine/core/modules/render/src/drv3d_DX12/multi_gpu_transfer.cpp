@@ -17,6 +17,16 @@ using drv3d_dx12::FormatStore;
 using drv3d_dx12::getbasetex;
 using drv3d_dx12::Image;
 
+void d3d::mgpu::begin_foreign_queue_frame(bool submitOnly, bool measure)
+{
+    drv3d_dx12::get_device().getContext().beginForeignQueueFrame(submitOnly, measure);
+}
+
+d3d::mgpu::ForeignQueueMeasurements d3d::mgpu::get_foreign_queue_measurements()
+{
+    return drv3d_dx12::get_device().getContext().getForeignQueueMeasurements();
+}
+
 struct d3d::mgpu::TransferChannel
 {
     CrossAdapterChannel channel;

@@ -118,6 +118,10 @@ bool DeviceQueueGroup::init(ID3D12Device *device, bool give_names)
   {
     return false;
   }
+  if (!readBackProgress.reset(device, give_names ? L"ReadBackProgress" : nullptr))
+  {
+    return false;
+  }
   if (!frameProgress.reset(device, give_names ? L"FrameProgress" : nullptr))
   {
     return false;
@@ -145,6 +149,7 @@ void DeviceQueueGroup::shutdown()
     q = DeviceQueue{};
   uploadProgress.reset();
   graphicsProgress.reset();
+  readBackProgress.reset();
   frameProgress.reset();
 }
 

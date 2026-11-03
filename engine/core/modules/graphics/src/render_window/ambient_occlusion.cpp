@@ -169,6 +169,7 @@ namespace nau::render
         const auto& old = m_settings.pipeline;
         const auto& next = settings.pipeline;
         m_measureTimings = readSetting<bool>("render/measurements/enabled", false);
+        d3d::mgpu::begin_foreign_queue_frame(readSetting<bool>("render/ssao/submitOnlyHandoffs", true), m_measureTimings);
         pollWaitTimings();
         if (m_measureTimings)
         {

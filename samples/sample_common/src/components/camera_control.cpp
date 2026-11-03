@@ -33,6 +33,9 @@ namespace nau::sample
                 bool serialize = properties.getValue<bool>("graphics/serializeRenderJobs").value_or(false);
                 if (ImGui::Checkbox("CPU waits for GPU (legacy)", &serialize))
                     properties.setValue("graphics/serializeRenderJobs", serialize).ignore();
+                bool submitOnly = properties.getValue<bool>("render/ssao/submitOnlyHandoffs").value_or(true);
+                if (ImGui::Checkbox("Submit handoffs without frame flush", &submitOnly))
+                    properties.setValue("render/ssao/submitOnlyHandoffs", submitOnly).ignore();
                 ImGui::TextWrapped(serialize ? "CPU/GPU frame overlap OFF. Independent of the GPU1 AO wait." :
                                               "CPU/GPU frame overlap ON. Independent of the GPU1 AO wait.");
                 auto combo = []<typename T>(const char* label, T& value, const char* items)
