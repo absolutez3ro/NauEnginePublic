@@ -1320,14 +1320,20 @@ void DeviceContext::submitForForeignQueue()
 
 void DeviceContext::releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint64_t value)
 {
+  Image *images[] = {image};
+  releaseToForeignQueue(images, image ? 1u : 0u, fence, value);
+}
+
+void DeviceContext::releaseToForeignQueue(Image *const *images, uint32_t count, ID3D12Fence *fence, uint64_t value)
+{
   DX12_LOCK_FRONT();
   const auto start = front.measureForeignQueues ? ref_time_ticks() : 0;
   front.inForeignQueueHandoff = true;
   ++front.foreignQueueMeasurements.releases;
 
-  if (image)
+  for (uint32_t index = 0; index < count; ++index)
   {
-    commandStream.pushBack(make_command<CmdTransitionTextureForForeignQueue>(image));
+    commandStream.pushBack(make_command<CmdTransitionTextureForForeignQueue>(images[index]));
   }
   // The signal must follow the submit of everything recorded so far: a foreign queue waiting for it must never depend on
   // a command list that is still open here.

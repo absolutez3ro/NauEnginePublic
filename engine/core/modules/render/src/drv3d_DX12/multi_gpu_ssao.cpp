@@ -22,13 +22,15 @@ namespace d3d::mgpu
         TransferChannelHandle depth = nullptr;
         TransferChannelHandle output = nullptr;
         bool reconstructNormals = false;
+        uint32_t nextResource = 0;
 
         ~SsaoProducer()
         {
             // Endpoints owned by the technique remain alive until all copy queues drain.
-            destroy_transfer_channel(output);
             destroy_transfer_channel(normals);
             destroy_transfer_channel(depth);
+            // output owns the shared primary release fence; keep it until the input queues drain.
+            destroy_transfer_channel(output);
             const HRESULT result = pass.reset();
             if (FAILED(result))
             {
@@ -103,35 +105,44 @@ namespace d3d::mgpu
         {
             return {};
         }
-        const PrimarySend normalSent = producer->reconstructNormals ? PrimarySend{} : send_from_primary_deferred(producer->normals, normals);
-        const PrimarySend depthSent = send_from_primary_deferred(producer->depth, depth);
-        const drv3d_dx12::CrossAdapterSyncPoint free = producer->pass.getReadyPoint();
+        BaseTexture* endpoints[] = {depth, destination, normals};
+        const PrimarySyncPoint released = release_primary_resources(producer->output, endpoints, producer->reconstructNormals ? 2 : 3);
+        if (!released.nativeFence)
+        {
+            report_secondary_gpu_failure(static_cast<uint32_t>(E_FAIL));
+            return {};
+        }
+        const uint32_t resourceIndex = producer->nextResource;
+        const PrimarySend normalSent = producer->reconstructNormals ? PrimarySend{} : send_from_primary_deferred(producer->normals, normals, released);
+        const PrimarySend depthSent = send_from_primary_deferred(producer->depth, depth, released);
+        const drv3d_dx12::CrossAdapterSyncPoint free = producer->pass.getReadyPoint(resourceIndex);
         const SecondarySyncPoint destinationFree = {free.fence, free.value};
         // Consume partial sends as well, so failure recovery can drain every issued copy.
         const SecondarySyncPoint normalReady = normalSent.ticket
-                                                   ? receive_on_secondary(producer->normals, normalSent.ticket, producer->pass.getNormals(), destinationFree)
+                                                   ? receive_on_secondary(producer->normals, normalSent.ticket, producer->pass.getNormals(resourceIndex), destinationFree)
                                                    : SecondarySyncPoint{};
         const SecondarySyncPoint depthReady = depthSent.ticket
-                                                  ? receive_on_secondary(producer->depth, depthSent.ticket, producer->pass.getDepth(), destinationFree)
+                                                  ? receive_on_secondary(producer->depth, depthSent.ticket, producer->pass.getDepth(resourceIndex), destinationFree)
                                                   : SecondarySyncPoint{};
         HRESULT result = (producer->reconstructNormals || normalReady.nativeFence) && depthReady.nativeFence ? S_OK : E_FAIL;
         if (SUCCEEDED(result))
         {
             result = producer->pass.execute(constants,
                                             {static_cast<ID3D12Fence*>(normalReady.nativeFence), normalReady.value},
-                                            {static_cast<ID3D12Fence*>(depthReady.nativeFence), depthReady.value}, frame);
+                                            {static_cast<ID3D12Fence*>(depthReady.nativeFence), depthReady.value}, frame, resourceIndex);
         }
         if (SUCCEEDED(result))
         {
-            const drv3d_dx12::CrossAdapterSyncPoint rendered = producer->pass.getReadyPoint();
-            const SecondarySend sent = send_from_secondary(producer->output, producer->pass.getResult(), {rendered.fence, rendered.value});
-            result = sent.ticket ? producer->pass.releaseOutput({static_cast<ID3D12Fence*>(sent.sourceReleased.nativeFence), sent.sourceReleased.value}) : E_FAIL;
+            const drv3d_dx12::CrossAdapterSyncPoint rendered = producer->pass.getReadyPoint(resourceIndex);
+            const SecondarySend sent = send_from_secondary(producer->output, producer->pass.getResult(resourceIndex), {rendered.fence, rendered.value});
+            result = sent.ticket ? producer->pass.releaseOutput({static_cast<ID3D12Fence*>(sent.sourceReleased.nativeFence), sent.sourceReleased.value}, resourceIndex) : E_FAIL;
             if (SUCCEEDED(result))
             {
                 // The copy queue waits for AO on GPU 1. Graphics waits only later, at ssao_receive.
-                const PrimarySyncPoint receiving = begin_receive_on_primary(producer->output, sent.ticket, destination);
+                const PrimarySyncPoint receiving = begin_receive_on_primary(producer->output, sent.ticket, destination, released);
                 if (receiving.nativeFence)
                 {
+                    producer->nextResource = (resourceIndex + 1) % drv3d_dx12::DeviceSsaoPass::RESOURCE_COUNT;
                     return receiving;
                 }
                 result = E_FAIL;

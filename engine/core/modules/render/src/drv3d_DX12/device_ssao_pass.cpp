@@ -39,7 +39,8 @@ namespace drv3d_dx12
         }
 
         HRESULT init(const DeviceSsaoPassDesc& desc);
-        HRESULT execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame);
+        HRESULT execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex);
+        HRESULT releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex);
         void pollTiming();
         HRESULT wait(DWORD timeoutMs);
         HRESULT waitOn(CrossAdapterSyncPoint point, UINT index);
@@ -83,11 +84,18 @@ namespace drv3d_dx12
         // Declaration order keeps the device and allocator alive until the resources are destroyed.
         Microsoft::WRL::ComPtr<ID3D12Device> m_device;
         eastl::shared_ptr<IDeviceResourceAllocator> m_allocator;
-        DeviceResource m_normals;
-        DeviceResource m_depth;
-        DeviceResource m_output;
-        DeviceResource m_raw;
-        DeviceResource m_horizontal;
+        struct Resources
+        {
+            DeviceResource normals;
+            DeviceResource depth;
+            DeviceResource output;
+            DeviceResource raw;
+            DeviceResource horizontal;
+            uint64_t rendered = 0;
+            Microsoft::WRL::ComPtr<ID3D12Fence> outputReleased;
+            uint64_t outputReleasedValue = 0;
+        };
+        Resources m_resources[RESOURCE_COUNT];
         DXGI_FORMAT m_normalFormat = DXGI_FORMAT_R16G16_FLOAT;
         DXGI_FORMAT m_depthFormat = DXGI_FORMAT_R32_FLOAT;
         DeviceResource m_random;
@@ -98,7 +106,7 @@ namespace drv3d_dx12
         eastl::vector<eastl::unique_ptr<Recording>> m_recordings;
         ID3D12GraphicsCommandList* m_list = nullptr;
         Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
-        Microsoft::WRL::ComPtr<ID3D12Fence> m_dependencies[3];
+        Microsoft::WRL::ComPtr<ID3D12Fence> m_dependencies[2 + RESOURCE_COUNT];
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvHeap;
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
         Microsoft::WRL::ComPtr<ID3D12RootSignature> m_root;
@@ -190,10 +198,10 @@ namespace drv3d_dx12
         return pending;
     }
 
-    HRESULT DeviceSsaoPass::execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame)
+    HRESULT DeviceSsaoPass::execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex)
     {
         collectRetiredResources();
-        return m_state ? m_state->execute(constants, normalsReady, depthReady, frame) : DXGI_ERROR_INVALID_CALL;
+        return m_state && resourceIndex < RESOURCE_COUNT ? m_state->execute(constants, normalsReady, depthReady, frame, resourceIndex) : DXGI_ERROR_INVALID_CALL;
     }
 
     d3d::mgpu::SsaoGpuTiming DeviceSsaoPass::pollTiming()
@@ -203,27 +211,29 @@ namespace drv3d_dx12
         return m_state->m_timing;
     }
 
-    HRESULT DeviceSsaoPass::releaseOutput(CrossAdapterSyncPoint released)
+    HRESULT DeviceSsaoPass::releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex)
     {
-        return m_state ? m_state->waitOn(released, 2) : DXGI_ERROR_INVALID_CALL;
+        return m_state && resourceIndex < RESOURCE_COUNT ? m_state->releaseOutput(released, resourceIndex) : DXGI_ERROR_INVALID_CALL;
     }
 
-    CrossAdapterSyncPoint DeviceSsaoPass::getReadyPoint() const
+    CrossAdapterSyncPoint DeviceSsaoPass::getReadyPoint(uint32_t resourceIndex) const
     {
-        return m_state ? CrossAdapterSyncPoint{m_state->m_fence.Get(), m_state->m_serial} : CrossAdapterSyncPoint{};
+        return m_state && resourceIndex < RESOURCE_COUNT && m_state->m_resources[resourceIndex].rendered
+                   ? CrossAdapterSyncPoint{m_state->m_fence.Get(), m_state->m_resources[resourceIndex].rendered}
+                   : CrossAdapterSyncPoint{};
     }
 
-    ID3D12Resource* DeviceSsaoPass::getNormals() const
+    ID3D12Resource* DeviceSsaoPass::getNormals(uint32_t resourceIndex) const
     {
-        return m_state ? m_state->m_normals.getResource() : nullptr;
+        return m_state && resourceIndex < RESOURCE_COUNT ? m_state->m_resources[resourceIndex].normals.getResource() : nullptr;
     }
-    ID3D12Resource* DeviceSsaoPass::getDepth() const
+    ID3D12Resource* DeviceSsaoPass::getDepth(uint32_t resourceIndex) const
     {
-        return m_state ? m_state->m_depth.getResource() : nullptr;
+        return m_state && resourceIndex < RESOURCE_COUNT ? m_state->m_resources[resourceIndex].depth.getResource() : nullptr;
     }
-    ID3D12Resource* DeviceSsaoPass::getResult() const
+    ID3D12Resource* DeviceSsaoPass::getResult(uint32_t resourceIndex) const
     {
-        return m_state ? m_state->m_output.getResource() : nullptr;
+        return m_state && resourceIndex < RESOURCE_COUNT ? m_state->m_resources[resourceIndex].output.getResource() : nullptr;
     }
 
     HRESULT DeviceSsaoPass::State::init(const DeviceSsaoPassDesc& desc)
@@ -251,24 +261,21 @@ namespace drv3d_dx12
                 result = HRESULT_FROM_WIN32(GetLastError());
             }
         }
-        if (SUCCEEDED(result))
+        for (auto& resources : m_resources)
         {
-            result = m_normals.createTexture(m_allocator.get(), desc.inputWidth ? desc.inputWidth : m_width,
+            if (SUCCEEDED(result))
+                result = resources.normals.createTexture(m_allocator.get(), desc.inputWidth ? desc.inputWidth : m_width,
                                               desc.inputHeight ? desc.inputHeight : m_height, m_normalFormat);
-        }
-        if (SUCCEEDED(result))
-        {
-            result = m_depth.createTexture(m_allocator.get(), desc.inputWidth ? desc.inputWidth : m_width,
+            if (SUCCEEDED(result))
+                result = resources.depth.createTexture(m_allocator.get(), desc.inputWidth ? desc.inputWidth : m_width,
                                             desc.inputHeight ? desc.inputHeight : m_height, m_depthFormat);
+            if (SUCCEEDED(result))
+                result = resources.output.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+            if (SUCCEEDED(result))
+                result = resources.raw.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+            if (SUCCEEDED(result))
+                result = resources.horizontal.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         }
-        if (SUCCEEDED(result))
-        {
-            result = m_output.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-        }
-        if (SUCCEEDED(result))
-            result = m_raw.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-        if (SUCCEEDED(result))
-            result = m_horizontal.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         if (SUCCEEDED(result))
         {
             result = createRandomTexture();
@@ -323,10 +330,10 @@ namespace drv3d_dx12
     {
         D3D12_DESCRIPTOR_HEAP_DESC desc = {};
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        desc.NumDescriptors = 3;
+        desc.NumDescriptors = 3 * RESOURCE_COUNT;
         HRESULT result = m_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&m_rtvHeap));
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        desc.NumDescriptors = 15;
+        desc.NumDescriptors = 15 * RESOURCE_COUNT;
         desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (SUCCEEDED(result))
         {
@@ -338,27 +345,31 @@ namespace drv3d_dx12
         }
         m_srvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         m_rtvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        ID3D12Resource* targets[] = {m_output.getResource(), m_raw.getResource(), m_horizontal.getResource()};
-        for (UINT i = 0; i < 3; ++i)
+        for (UINT resourceIndex = 0; resourceIndex < RESOURCE_COUNT; ++resourceIndex)
         {
-            auto handle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
-            handle.ptr += i * m_rtvStride;
-            m_device->CreateRenderTargetView(targets[i], nullptr, handle);
-        }
-        for (UINT table = 0; table < 3; ++table)
-        {
-            ID3D12Resource* inputs[] = {m_normals.getResource(), m_depth.getResource(),
-                table == 2 ? m_horizontal.getResource() : m_raw.getResource(), m_depth.getResource(), m_random.getResource()};
-            for (UINT input = 0; input < 5; ++input)
+            auto& resources = m_resources[resourceIndex];
+            ID3D12Resource* targets[] = {resources.output.getResource(), resources.raw.getResource(), resources.horizontal.getResource()};
+            for (UINT i = 0; i < 3; ++i)
             {
-                D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-                srv.Format = inputs[input]->GetDesc().Format;
-                srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-                srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                srv.Texture2D.MipLevels = 1;
-                auto handle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
-                handle.ptr += (table * 5 + input) * m_srvStride;
-                m_device->CreateShaderResourceView(inputs[input], &srv, handle);
+                auto handle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+                handle.ptr += (resourceIndex * 3 + i) * m_rtvStride;
+                m_device->CreateRenderTargetView(targets[i], nullptr, handle);
+            }
+            for (UINT table = 0; table < 3; ++table)
+            {
+                ID3D12Resource* inputs[] = {resources.normals.getResource(), resources.depth.getResource(),
+                    table == 2 ? resources.horizontal.getResource() : resources.raw.getResource(), resources.depth.getResource(), m_random.getResource()};
+                for (UINT input = 0; input < 5; ++input)
+                {
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+                    srv.Format = inputs[input]->GetDesc().Format;
+                    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    srv.Texture2D.MipLevels = 1;
+                    auto handle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+                    handle.ptr += (resourceIndex * 15 + table * 5 + input) * m_srvStride;
+                    m_device->CreateShaderResourceView(inputs[input], &srv, handle);
+                }
             }
         }
         return S_OK;
@@ -445,6 +456,23 @@ namespace drv3d_dx12
         const HRESULT result = m_queue->Signal(m_fence.Get(), m_serial);
         m_signalPending = FAILED(result);
         return result;
+    }
+
+    HRESULT DeviceSsaoPass::State::releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex)
+    {
+        if (!released.fence) return released.value == 0 ? S_OK : E_INVALIDARG;
+        if (released.value == UINT64_MAX || m_signalPending) return E_INVALIDARG;
+        Microsoft::WRL::ComPtr<ID3D12Device> owner;
+        if (FAILED(released.fence->GetDevice(IID_PPV_ARGS(&owner))) || owner.Get() != m_device.Get()) return E_INVALIDARG;
+        auto& resources = m_resources[resourceIndex];
+        if (m_dependencies[2 + resourceIndex] && m_dependencies[2 + resourceIndex].Get() != released.fence)
+            return E_INVALIDARG;
+        // Replacing an unconsumed release would lose the dependency on an earlier output reader.
+        if (resources.outputReleased && (resources.outputReleased.Get() != released.fence || released.value < resources.outputReleasedValue))
+            return E_INVALIDARG;
+        resources.outputReleased = released.fence;
+        resources.outputReleasedValue = released.value;
+        return S_OK;
     }
 
     HRESULT DeviceSsaoPass::State::waitOn(CrossAdapterSyncPoint point, UINT index)
@@ -559,6 +587,16 @@ namespace drv3d_dx12
         {
             return S_OK;
         }
+        // reset must include copies still reading either output, even if that set was never reused.
+        for (uint32_t index = 0; index < RESOURCE_COUNT; ++index)
+        {
+            auto& resources = m_resources[index];
+            if (!resources.outputReleased) continue;
+            const HRESULT result = waitOn({resources.outputReleased.Get(), resources.outputReleasedValue}, 2 + index);
+            if (FAILED(result)) return result;
+            resources.outputReleased.Reset();
+            resources.outputReleasedValue = 0;
+        }
         if (m_signalPending)
         {
             const HRESULT result = signal();
@@ -605,8 +643,9 @@ namespace drv3d_dx12
         m_list->ResourceBarrier(1, &transition);
     }
 
-    HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame)
+    HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex)
     {
+        auto& resources = m_resources[resourceIndex];
         Recording* recording = nullptr;
         HRESULT result = acquireRecording(recording);
         if (FAILED(result))
@@ -635,8 +674,8 @@ namespace drv3d_dx12
         m_list->RSSetViewports(1, &viewport);
         m_list->RSSetScissorRects(1, &scissor);
         m_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        barrier(m_depth.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        barrier(m_normals.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        barrier(resources.depth.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        barrier(resources.normals.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         const bool filtered = data.filter[3] > 1.f && data.pipeline[0] >= 1.f && data.pipeline[0] <= 3.f && m_filterPso;
         const bool gaussian = data.pipeline[0] == 3.f;
         const auto draw = [&](ID3D12Resource* target, UINT rtvIndex, UINT table, UINT constantIndex,
@@ -645,37 +684,37 @@ namespace drv3d_dx12
             std::memcpy(recording->mapped + constantIndex * CONSTANT_BYTES, &constants, sizeof(constants));
             m_list->SetGraphicsRootConstantBufferView(0, recording->constants.getResource()->GetGPUVirtualAddress() + constantIndex * CONSTANT_BYTES);
             auto srv = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
-            srv.ptr += table * 5 * m_srvStride;
+            srv.ptr += (resourceIndex * 15 + table * 5) * m_srvStride;
             m_list->SetGraphicsRootDescriptorTable(1, srv);
             m_list->SetPipelineState(pso);
             barrier(target, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
             auto rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
-            rtv.ptr += rtvIndex * m_rtvStride;
+            rtv.ptr += (resourceIndex * 3 + rtvIndex) * m_rtvStride;
             m_list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
             m_list->DrawInstanced(3, 1, 0, 0);
             barrier(target, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COMMON);
         };
         if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
-        draw(filtered ? m_raw.getResource() : m_output.getResource(), filtered ? 1 : 0, 0, 0, m_rawPso.Get(), data);
+        draw(filtered ? resources.raw.getResource() : resources.output.getResource(), filtered ? 1 : 0, 0, 0, m_rawPso.Get(), data);
         if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
         if (filtered)
         {
-            barrier(m_raw.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            barrier(resources.raw.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             auto constants = data;
             constants.pipeline[1] = 0.f;
-            draw(gaussian ? m_horizontal.getResource() : m_output.getResource(), gaussian ? 2 : 0, 1, 1,
+            draw(gaussian ? resources.horizontal.getResource() : resources.output.getResource(), gaussian ? 2 : 0, 1, 1,
                  gaussian ? m_horizontalPso.Get() : m_filterPso.Get(), constants);
             if (gaussian)
             {
-                barrier(m_horizontal.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                barrier(resources.horizontal.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
                 constants.pipeline[1] = 1.f;
-                draw(m_output.getResource(), 0, 2, 2, m_filterPso.Get(), constants);
-                barrier(m_horizontal.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+                draw(resources.output.getResource(), 0, 2, 2, m_filterPso.Get(), constants);
+                barrier(resources.horizontal.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
             }
-            barrier(m_raw.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+            barrier(resources.raw.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         }
-        barrier(m_normals.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
-        barrier(m_depth.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+        barrier(resources.normals.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+        barrier(resources.depth.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         if (recording->timestampHeap)
         {
             m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 2);
@@ -692,6 +731,15 @@ namespace drv3d_dx12
         {
             result = waitOn(depthReady, 1);
         }
+        if (SUCCEEDED(result) && resources.outputReleased)
+        {
+            result = waitOn({resources.outputReleased.Get(), resources.outputReleasedValue}, 2 + resourceIndex);
+            if (SUCCEEDED(result))
+            {
+                resources.outputReleased.Reset();
+                resources.outputReleasedValue = 0;
+            }
+        }
         if (FAILED(result))
         {
             return result;
@@ -701,6 +749,7 @@ namespace drv3d_dx12
         m_randomUploaded = true;
 
         recording->fenceValue = ++m_serial;
+        resources.rendered = recording->fenceValue;
         recording->timingPending = recording->timestampHeap != nullptr;
         return signal();
     }

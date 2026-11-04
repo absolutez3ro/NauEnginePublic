@@ -95,19 +95,29 @@ namespace d3d::mgpu
     };
 
     /**
+     * @brief Transitions all endpoints to COMMON with one graphics submit and signal.
+     * Pass this point to subsequent sends/receives instead of releasing each endpoint again.
+     * The fence belongs to fence_owner; drain all channels using the point before destroying that owner.
+     * A null fence means validation failed and nothing was released.
+     */
+    NAU_RENDER_EXPORT PrimarySyncPoint release_primary_resources(TransferChannelHandle fence_owner, BaseTexture* const* textures, uint32_t count);
+
+    /**
      * @brief Sends a persistent texture without waiting on the primary graphics queue.
      * Keep the source alive until sourceReleased completes, including after a partial job failure.
      * Order later GPU writes after that point or a dependency that includes it. Poll only before CPU reuse.
      * A zero ticket means no copy was submitted.
+     * source_ready may be the point from release_primary_resources() covering this source; otherwise it is released here.
      */
-    NAU_RENDER_EXPORT PrimarySend send_from_primary_deferred(TransferChannelHandle channel, BaseTexture* source);
+    NAU_RENDER_EXPORT PrimarySend send_from_primary_deferred(TransferChannelHandle channel, BaseTexture* source, PrimarySyncPoint source_ready = {});
 
     /**
      * @brief Starts a receive without waiting on the primary graphics queue.
      * Keep destination alive and unused until the returned point completes. A null fence means failure.
      * Record wait_for_primary_transfer() before graphics consumes the destination.
+     * destination_free may be a pre-released batch point covering destination; otherwise it is released here.
      */
-    NAU_RENDER_EXPORT PrimarySyncPoint begin_receive_on_primary(TransferChannelHandle channel, TransferTicket ticket, BaseTexture* destination);
+    NAU_RENDER_EXPORT PrimarySyncPoint begin_receive_on_primary(TransferChannelHandle channel, TransferTicket ticket, BaseTexture* destination, PrimarySyncPoint destination_free = {});
 
     /** @brief Orders the primary graphics queue after a local receive copy, without blocking the CPU. */
     NAU_RENDER_EXPORT void wait_for_primary_transfer(PrimarySyncPoint point);

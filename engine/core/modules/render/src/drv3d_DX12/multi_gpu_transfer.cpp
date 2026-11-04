@@ -35,6 +35,12 @@ struct d3d::mgpu::TransferChannel
     // waits for it. Same device, so an ordinary fence.
     ComPtr<ID3D12Fence> engineFence;
     uint64_t engineFenceValue = 0;
+
+    ~TransferChannel()
+    {
+        // Keep the engine fence alive until this channel's queued waits have drained too.
+        channel.reset();
+    }
 };
 
 namespace
@@ -95,17 +101,20 @@ namespace
         return channel && channel->direction == direction;
     }
 
-    d3d::mgpu::PrimarySend send_engine_resource(d3d::mgpu::TransferChannel* channel, Image* image, ID3D12Resource* resource)
+    d3d::mgpu::PrimarySend send_engine_resource(d3d::mgpu::TransferChannel* channel, Image* image, ID3D12Resource* resource, d3d::mgpu::PrimarySyncPoint released)
     {
         // A late consumer drops the frame; find out before flushing engine work for nothing.
         if (!channel->channel.isNextSlotFree())
         {
             return {};
         }
-        DeviceContext& ctx = drv3d_dx12::get_device().getContext();
-        const uint64_t engineDone = ++channel->engineFenceValue;
-        ctx.releaseToForeignQueue(image, channel->engineFence.Get(), engineDone);
-        const auto sent = channel->channel.send(resource, {channel->engineFence.Get(), engineDone});
+        if (!released.nativeFence)
+        {
+            const uint64_t engineDone = ++channel->engineFenceValue;
+            drv3d_dx12::get_device().getContext().releaseToForeignQueue(image, channel->engineFence.Get(), engineDone);
+            released = {channel->engineFence.Get(), engineDone};
+        }
+        const auto sent = channel->channel.send(resource, {static_cast<ID3D12Fence*>(released.nativeFence), released.value});
         if (sent.ticket == 0)
         {
             return {};
@@ -117,16 +126,19 @@ namespace
         };
     }
 
-    d3d::mgpu::PrimarySyncPoint receive_engine_resource(d3d::mgpu::TransferChannel* channel, d3d::mgpu::TransferTicket ticket, Image* image, ID3D12Resource* resource)
+    d3d::mgpu::PrimarySyncPoint receive_engine_resource(d3d::mgpu::TransferChannel* channel, d3d::mgpu::TransferTicket ticket, Image* image, ID3D12Resource* resource, d3d::mgpu::PrimarySyncPoint released)
     {
         if (!channel->channel.holds(ticket))
         {
             return {};
         }
-        DeviceContext& ctx = drv3d_dx12::get_device().getContext();
-        const uint64_t engineDone = ++channel->engineFenceValue;
-        ctx.releaseToForeignQueue(image, channel->engineFence.Get(), engineDone);
-        const auto ready = channel->channel.receive(ticket, resource, {channel->engineFence.Get(), engineDone});
+        if (!released.nativeFence)
+        {
+            const uint64_t engineDone = ++channel->engineFenceValue;
+            drv3d_dx12::get_device().getContext().releaseToForeignQueue(image, channel->engineFence.Get(), engineDone);
+            released = {channel->engineFence.Get(), engineDone};
+        }
+        const auto ready = channel->channel.receive(ticket, resource, {static_cast<ID3D12Fence*>(released.nativeFence), released.value});
         if (!ready.fence)
         {
             return {};
@@ -208,24 +220,40 @@ bool d3d::mgpu::is_transfer_ready(TransferChannelHandle channel, TransferTicket 
     return channel && channel->channel.isReady(ticket);
 }
 
-d3d::mgpu::PrimarySend d3d::mgpu::send_from_primary_deferred(TransferChannelHandle channel, BaseTexture* source)
+d3d::mgpu::PrimarySyncPoint d3d::mgpu::release_primary_resources(TransferChannelHandle fence_owner, BaseTexture* const* textures, uint32_t count)
+{
+    if (!fence_owner || !textures || !count) return {};
+    eastl::vector<Image*> images;
+    images.reserve(count);
+    for (uint32_t index = 0; index < count; ++index)
+    {
+        Image* image = engine_image(textures[index]);
+        if (!image) return {};
+        images.push_back(image);
+    }
+    const uint64_t value = ++fence_owner->engineFenceValue;
+    drv3d_dx12::get_device().getContext().releaseToForeignQueue(images.data(), count, fence_owner->engineFence.Get(), value);
+    return {fence_owner->engineFence.Get(), value};
+}
+
+d3d::mgpu::PrimarySend d3d::mgpu::send_from_primary_deferred(TransferChannelHandle channel, BaseTexture* source, PrimarySyncPoint source_ready)
 {
     Image* image = engine_image(source);
     if (!accepts(channel, TransferDirection::primaryToSecondary) || !image)
     {
         return {};
     }
-    return send_engine_resource(channel, image, image->getHandle());
+    return send_engine_resource(channel, image, image->getHandle(), source_ready);
 }
 
-d3d::mgpu::PrimarySyncPoint d3d::mgpu::begin_receive_on_primary(TransferChannelHandle channel, TransferTicket ticket, BaseTexture* destination)
+d3d::mgpu::PrimarySyncPoint d3d::mgpu::begin_receive_on_primary(TransferChannelHandle channel, TransferTicket ticket, BaseTexture* destination, PrimarySyncPoint destination_free)
 {
     Image* image = engine_image(destination);
     if (!accepts(channel, TransferDirection::secondaryToPrimary) || !image)
     {
         return {};
     }
-    return receive_engine_resource(channel, ticket, image, image->getHandle());
+    return receive_engine_resource(channel, ticket, image, image->getHandle(), destination_free);
 }
 
 void d3d::mgpu::wait_for_primary_transfer(PrimarySyncPoint point)

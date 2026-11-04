@@ -31,12 +31,15 @@ namespace drv3d_dx12
 
     /**
      * @brief Raw half-resolution SSAO on GPU 1. Queue waits order input copies and output reuse.
-     * Inputs and output are COMMON between submissions. Command/constant storage grows when all
-     * recordings are in flight; resource recycling never skips a frame or waits on the CPU.
+     * Two resource sets share one graphics queue and immutable pipelines. Input copies and output
+     * reuse wait only for the selected set. Inputs and output are COMMON between submissions.
+     * Command/constant storage grows when all recordings are in flight; resource recycling never
+     * skips a frame or waits on the CPU.
      */
     class DeviceSsaoPass final
     {
     public:
+        static constexpr uint32_t RESOURCE_COUNT = 2;
         DeviceSsaoPass();
         DeviceSsaoPass(const DeviceSsaoPass&) = delete;
         DeviceSsaoPass(DeviceSsaoPass&&) = delete;
@@ -46,13 +49,14 @@ namespace drv3d_dx12
 
         HRESULT init(const DeviceSsaoPassDesc& desc);
         HRESULT reset(DWORD timeoutMs = 10000);
-        HRESULT execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {}, uint64_t frame = 0);
+        HRESULT execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {}, uint64_t frame = 0, uint32_t resourceIndex = 0);
         d3d::mgpu::SsaoGpuTiming pollTiming();
-        HRESULT releaseOutput(CrossAdapterSyncPoint released);
-        CrossAdapterSyncPoint getReadyPoint() const;
-        ID3D12Resource* getNormals() const;
-        ID3D12Resource* getDepth() const;
-        ID3D12Resource* getResult() const;
+        // The output-copy dependency is applied only when this set is rendered again or reset.
+        HRESULT releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex = 0);
+        CrossAdapterSyncPoint getReadyPoint(uint32_t resourceIndex = 0) const;
+        ID3D12Resource* getNormals(uint32_t resourceIndex = 0) const;
+        ID3D12Resource* getDepth(uint32_t resourceIndex = 0) const;
+        ID3D12Resource* getResult(uint32_t resourceIndex = 0) const;
         static size_t collectRetiredResources();
 
     private:
