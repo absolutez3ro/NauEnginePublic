@@ -28,10 +28,11 @@ namespace d3d::mgpu
         bool packedNormals = false;
         bool linearDepth16 = false;
         bool measureTimings = false;
+        bool frameworkStyle = false;
     };
 
     struct SsaoProducer;
-    /** @brief Creates a raw half-resolution SSAO producer with three synchronized shared slots. */
+    /** @brief Creates the synchronized producer, or the unsynchronized shared-texture experiment when frameworkStyle is set. */
     NAU_RENDER_EXPORT SsaoProducer* createSsaoProducer(const SsaoProducerDesc& desc);
     /**
      * @brief Queues RG16F/R32F inputs at their declared size, raw R8 AO, and its return copy.
@@ -41,6 +42,14 @@ namespace d3d::mgpu
      * A null fence reports failure; no readiness polling or CPU wait is performed.
      */
     NAU_RENDER_EXPORT PrimarySyncPoint submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, uint64_t frame = 0);
+    /**
+     * @brief Experimental unsynchronized shared-texture exchange, recorded in the primary graphics list.
+     * Always publishes inputs and reads shared AO, irrespective of GPU1 readiness. GPU1 copies/computes/
+     * publishes in one direct list when one of its three command recordings is free. No intermediate
+     * submit, copy queue or cross-adapter fence is used. Concurrent read/write races are intentional.
+     * True means the transport remains usable; submitted reports whether a GPU1 list was queued.
+     */
+    NAU_RENDER_EXPORT bool exchangeFrameworkSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, uint64_t frame, bool& submitted);
     /** @brief Latest completed GPU 1 timestamps, read without waiting; frame zero means unavailable. */
     NAU_RENDER_EXPORT SsaoGpuTiming pollSsaoTiming(SsaoProducer* producer);
     /** @brief Drains transfers and retires native resources before endpoint destruction, resize or driver shutdown. */

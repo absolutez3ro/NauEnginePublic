@@ -1,5 +1,6 @@
 // Copyright 2026 N-GINN LLC. All rights reserved.
 #include "device_ssao_pass.h"
+#include "framework_ssao_resources.h"
 
 #include <d3d12sdklayers.h>
 #include <d3dcompiler.h>
@@ -38,6 +39,8 @@ namespace
     class DoubleBufferedSsao : public testing::Test
     {
     protected:
+        virtual bool frameworkStyle() const { return false; }
+        virtual const char* pixelShader() const { return "cbuffer C:register(b0) { float4 color; }; float PS():SV_Target { return color.x; }"; }
         void SetUp() override
         {
             ComPtr<ID3D12Debug> debug;
@@ -54,18 +57,16 @@ namespace
             ASSERT_HRESULT_SUCCEEDED(device.As(&messages));
             ASSERT_HRESULT_SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate)));
             ASSERT_HRESULT_SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&otherGate)));
-            static constexpr char shader[] =
-                "float4 VS(uint id:SV_VertexID):SV_Position { return float4(id==1?3:-1,id==2?3:-1,0,1); }"
-                "cbuffer C:register(b0) { float4 color; };"
-                "float PS():SV_Target { return color.x; }";
+            static constexpr char vertexShader[] = "float4 VS(uint id:SV_VertexID):SV_Position { return float4(id==1?3:-1,id==2?3:-1,0,1); }";
             ComPtr<ID3DBlob> vertex, pixel, errors;
-            ASSERT_HRESULT_SUCCEEDED(D3DCompile(shader, sizeof(shader), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &vertex, &errors));
-            ASSERT_HRESULT_SUCCEEDED(D3DCompile(shader, sizeof(shader), nullptr, nullptr, nullptr, "PS", "ps_5_0", 0, 0, &pixel, &errors));
+            ASSERT_HRESULT_SUCCEEDED(D3DCompile(vertexShader, sizeof(vertexShader), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &vertex, &errors));
+            ASSERT_HRESULT_SUCCEEDED(D3DCompile(pixelShader(), std::strlen(pixelShader()), nullptr, nullptr, nullptr, "PS", "ps_5_0", 0, 0, &pixel, &errors));
             drv3d_dx12::DeviceSsaoPassDesc desc;
             desc.allocator = eastl::make_shared<Allocator>(device.Get());
             desc.width = desc.height = 4;
             desc.vertexShader = {vertex->GetBufferPointer(), vertex->GetBufferSize()};
             desc.rawShader = {pixel->GetBufferPointer(), pixel->GetBufferSize()};
+            desc.frameworkStyle = frameworkStyle();
             ASSERT_HRESULT_SUCCEEDED(pass.init(desc));
         }
 
@@ -203,5 +204,108 @@ namespace
         EXPECT_HRESULT_SUCCEEDED(pass.reset());
         EXPECT_EQ(pass.getDepth(0), nullptr);
         EXPECT_EQ(pass.getDepth(1), nullptr);
+    }
+
+    class FrameworkSsao : public DoubleBufferedSsao
+    {
+    protected:
+        bool frameworkStyle() const override { return true; }
+        const char* pixelShader() const override
+        {
+            return "Texture2D<float> depth:register(t1); float PS(float4 p:SV_Position):SV_Target { return depth.Load(int3(int2(p.xy),0)); }";
+        }
+        void SetUp() override
+        {
+            DoubleBufferedSsao::SetUp();
+            if (HasFatalFailure()) return;
+            ComPtr<IDXGIFactory4> factory;
+            ComPtr<IDXGIAdapter> warp;
+            ASSERT_HRESULT_SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)));
+            ASSERT_HRESULT_SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp)));
+            ASSERT_HRESULT_SUCCEEDED(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&primary)));
+            drv3d_dx12::DeviceSsaoPassDesc desc;
+            desc.width = desc.height = 4;
+            ASSERT_HRESULT_SUCCEEDED(shared.init(primary.Get(), device.Get(), desc));
+        }
+
+        void writeDepth(float value)
+        {
+            auto* texture = shared.primary().depth;
+            const auto desc = texture->GetDesc();
+            EXPECT_EQ(desc.Layout, D3D12_TEXTURE_LAYOUT_ROW_MAJOR);
+            EXPECT_EQ(desc.Dimension, D3D12_RESOURCE_DIMENSION_TEXTURE2D);
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout = {};
+            UINT64 bytes = 0;
+            primary->GetCopyableFootprints(&desc, 0, 1, 0, &layout, nullptr, nullptr, &bytes);
+            auto allocator = eastl::make_shared<Allocator>(primary.Get());
+            drv3d_dx12::DeviceResource upload;
+            ASSERT_HRESULT_SUCCEEDED(upload.createBuffer(allocator.get(), bytes, D3D12_HEAP_TYPE_UPLOAD));
+            void* mapped = nullptr;
+            ASSERT_HRESULT_SUCCEEDED(upload.getResource()->Map(0, nullptr, &mapped));
+            for (UINT y = 0; y < 4; ++y)
+                for (UINT x = 0; x < 4; ++x)
+                    std::memcpy(static_cast<uint8_t*>(mapped) + layout.Offset + y * layout.Footprint.RowPitch + x * sizeof(float), &value, sizeof(value));
+            upload.getResource()->Unmap(0, nullptr);
+            ComPtr<ID3D12CommandQueue> queue;
+            ComPtr<ID3D12CommandAllocator> commands;
+            ComPtr<ID3D12GraphicsCommandList> list;
+            ComPtr<ID3D12Fence> done;
+            D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+            queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+            ASSERT_HRESULT_SUCCEEDED(primary->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue)));
+            ASSERT_HRESULT_SUCCEEDED(primary->CreateCommandAllocator(queueDesc.Type, IID_PPV_ARGS(&commands)));
+            ASSERT_HRESULT_SUCCEEDED(primary->CreateCommandList(0, queueDesc.Type, commands.Get(), nullptr, IID_PPV_ARGS(&list)));
+            ASSERT_HRESULT_SUCCEEDED(primary->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&done)));
+            D3D12_RESOURCE_BARRIER barrier = {};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition = {texture, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST};
+            list->ResourceBarrier(1, &barrier);
+            D3D12_TEXTURE_COPY_LOCATION source = {}, destination = {};
+            source.pResource = upload.getResource();
+            source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            source.PlacedFootprint = layout;
+            destination.pResource = texture;
+            destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+            list->ResourceBarrier(1, &barrier);
+            ASSERT_HRESULT_SUCCEEDED(list->Close());
+            ID3D12CommandList* lists[] = {list.Get()};
+            queue->ExecuteCommandLists(1, lists);
+            ASSERT_HRESULT_SUCCEEDED(queue->Signal(done.Get(), 1));
+            ASSERT_EQ(wait({done.Get(), 1}), WAIT_OBJECT_0);
+        }
+
+        ComPtr<ID3D12Device> primary;
+        drv3d_dx12::FrameworkSsaoResources shared;
+    };
+
+    TEST_F(FrameworkSsao, ReadsSharedInputAtExecutionRatherThanSubmission)
+    {
+        writeDepth(0.25f);
+        ASSERT_HRESULT_SUCCEEDED(pass.getQueue()->Wait(gate.Get(), 1)); // Local test gate, not part of the transport.
+        d3d::mgpu::SsaoConstants constants;
+        ASSERT_EQ(pass.executeFramework(constants, shared.secondary(), 1), S_OK);
+        writeDepth(0.75f); // Change shared input after the task has already been submitted.
+        ASSERT_HRESULT_SUCCEEDED(gate->Signal(1));
+        checkOutput(0, 191); // The task must consume the newer shared input.
+        EXPECT_EQ(pass.getDepth(1), nullptr);
+        EXPECT_EQ(pass.getResult(1), nullptr);
+        EXPECT_EQ(pass.releaseOutput({otherGate.Get(), 1}), DXGI_ERROR_INVALID_CALL);
+    }
+
+    TEST_F(FrameworkSsao, ThreeCommandRecordingsBoundOnlyGpu1Work)
+    {
+        writeDepth(0.5f);
+        ASSERT_HRESULT_SUCCEEDED(pass.getQueue()->Wait(gate.Get(), 1));
+        d3d::mgpu::SsaoConstants constants;
+        for (uint64_t frame = 1; frame <= 3; ++frame)
+            ASSERT_EQ(pass.executeFramework(constants, shared.secondary(), frame), S_OK);
+        EXPECT_EQ(pass.executeFramework(constants, shared.secondary(), 4), S_FALSE);
+        ASSERT_HRESULT_SUCCEEDED(gate->Signal(1));
+        ASSERT_EQ(wait(pass.getReadyPoint()), WAIT_OBJECT_0);
+        EXPECT_EQ(pass.executeFramework(constants, shared.secondary(), 5), S_OK);
+        checkOutput(0, 128);
     }
 }

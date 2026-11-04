@@ -1324,6 +1324,13 @@ void DeviceContext::releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint
   releaseToForeignQueue(images, image ? 1u : 0u, fence, value);
 }
 
+void DeviceContext::copySharedTexture(Image *image, ID3D12Resource *shared, bool toShared)
+{
+  DX12_LOCK_FRONT();
+  commandStream.pushBack(make_command<CmdCopySharedTexture>(image, shared, toShared));
+  immediateModeExecute();
+}
+
 void DeviceContext::releaseToForeignQueue(Image *const *images, uint32_t count, ID3D12Fence *fence, uint64_t value)
 {
   DX12_LOCK_FRONT();
@@ -5301,6 +5308,33 @@ void DeviceContext::ExecutionContext::transitionTextureForForeignQueue(Image *im
   // COPY_QUEUE_SOURCE is COMMON: the state a copy queue of this device can read from and write to.
   contextState.resourceStates.useTextureAsReadBack(contextState.graphicsCommandListBarrierBatch,
     contextState.graphicsCommandListSplitBarrierTracker, image, SubresourceIndex::make(0));
+  dirtyTextureState(image);
+}
+
+void DeviceContext::ExecutionContext::copySharedTexture(Image *image, ID3D12Resource *shared, bool toShared)
+{
+  if (!readyCommandList()) return;
+  disablePredication();
+  if (toShared)
+    contextState.resourceStates.useTextureAsCopySourceForWholeCopy(contextState.graphicsCommandListBarrierBatch,
+      contextState.graphicsCommandListSplitBarrierTracker, image);
+  else
+    contextState.resourceStates.useTextureAsCopyDestinationForWholeCopy(contextState.graphicsCommandListBarrierBatch,
+      contextState.graphicsCommandListSplitBarrierTracker, image);
+  contextState.graphicsCommandListBarrierBatch.execute(contextState.cmdBuffer);
+  D3D12_RESOURCE_BARRIER barrier = {};
+  barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  // Shared payloads have one mip and one slice. Use index 0 for Nau's barrier validator too.
+  barrier.Transition = {shared, 0, D3D12_RESOURCE_STATE_COMMON,
+    toShared ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_COPY_SOURCE};
+  contextState.cmdBuffer.resourceBarrier(1, &barrier);
+  contextState.cmdBuffer.copyResource(toShared ? shared : image->getHandle(), toShared ? image->getHandle() : shared);
+  eastl::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+  contextState.cmdBuffer.resourceBarrier(1, &barrier);
+  if (!toShared)
+    contextState.resourceStates.finishUseTextureAsCopyDestinationForWholeCopy(contextState.graphicsCommandListBarrierBatch,
+      contextState.graphicsCommandListSplitBarrierTracker, image);
+  image->updateLastFrameAccess(self.back.frameProgress);
   dirtyTextureState(image);
 }
 

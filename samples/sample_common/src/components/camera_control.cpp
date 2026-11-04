@@ -30,6 +30,9 @@ namespace nau::sample
             {
                 ImGui::Text("%.1f FPS", window->getFrameRate());
                 auto& properties = getServiceProvider().get<GlobalProperties>();
+                bool framework = properties.getValue<bool>("render/ssao/frameworkTransport").value_or(true);
+                if (ImGui::Checkbox("Framework shared textures (unsynchronized)", &framework))
+                    properties.setValue("render/ssao/frameworkTransport", framework).ignore();
                 bool serialize = properties.getValue<bool>("graphics/serializeRenderJobs").value_or(false);
                 if (ImGui::Checkbox("CPU waits for GPU (legacy)", &serialize))
                     properties.setValue("graphics/serializeRenderJobs", serialize).ignore();
@@ -56,13 +59,15 @@ namespace nau::sample
                 if (ImGui::Button("Bogdanov preset (F9)")) window->setAmbientOcclusionVariant(AmbientOcclusionVariant::bogdanov);
                 auto p = window->getAmbientOcclusionPipeline();
                 bool changed = false;
-                if (ImGui::Button(p.waitForSecondary ? "Wait for GPU1: ON" : "Wait for GPU1: OFF (async)"))
+                if (framework && p.waitForSecondary) { p.waitForSecondary = false; changed = true; }
+                if (!framework && ImGui::Button(p.waitForSecondary ? "Wait for GPU1: ON" : "Wait for GPU1: OFF (async)"))
                 {
                     p.waitForSecondary = !p.waitForSecondary;
                     changed = true;
                 }
                 const float waitMs = window->getAmbientOcclusionWaitMilliseconds();
-                if (!p.waitForSecondary) ImGui::TextWrapped("GPU 0 uses the latest completed AO; it never waits for this frame's GPU 1 result.");
+                if (framework) ImGui::TextWrapped("GPU 0 copies shared AO unconditionally. Concurrent GPU writes are permitted in this experiment.");
+                else if (!p.waitForSecondary) ImGui::TextWrapped("GPU 0 uses the latest completed AO; it never waits for this frame's GPU 1 result.");
                 else if (waitMs >= 0.f) ImGui::Text("GPU0 queue wait: %.3f ms", waitMs);
                 else ImGui::TextUnformatted("GPU0 queue wait: n/a (no GPU1 result yet)");
                 changed |= combo("Inputs", p.inputs, "Downsample to AO size\0Full resolution\0");

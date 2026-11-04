@@ -1410,6 +1410,7 @@ class DeviceContext : protected ResourceUsageHistoryDataSetDebugger, public debu
     void textureReadBack(Image *image, HostDeviceSharedMemoryRegion cpu_memory, BufferImageCopyListRef::RangeType regions,
       DeviceQueueType queue);
     void transitionTextureForForeignQueue(Image *image);
+    void copySharedTexture(Image *image, ID3D12Resource *shared, bool toShared);
     void signalForeignFence(ID3D12Fence *fence, uint64_t value);
     void waitForeignFence(ID3D12Fence *fence, uint64_t value);
     void bufferReadBack(BufferResourceReferenceAndRange buffer, HostDeviceSharedMemoryRegion cpu_memory, size_t offset);
@@ -1810,6 +1811,7 @@ public:
   // subresource 0 of image to COMMON, submits everything recorded so far and signals fence with value on the graphics
   // queue after it.
   void releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint64_t value);
+  void copySharedTexture(Image *image, ID3D12Resource *shared, bool toShared);
   void releaseToForeignQueue(Image *const *images, uint32_t count, ID3D12Fence *fence, uint64_t value);
   void waitForForeignQueue(ID3D12Fence *fence, uint64_t value);
   void beginForeignQueueFrame(bool submitOnly, bool measure);

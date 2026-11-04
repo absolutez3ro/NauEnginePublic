@@ -39,7 +39,7 @@ namespace drv3d_dx12
         }
 
         HRESULT init(const DeviceSsaoPassDesc& desc);
-        HRESULT execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex);
+        HRESULT execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex, const FrameworkSsaoTextures* shared = nullptr);
         HRESULT releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex);
         void pollTiming();
         HRESULT wait(DWORD timeoutMs);
@@ -102,6 +102,9 @@ namespace drv3d_dx12
         DeviceResource m_randomUpload;
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_randomFootprint = {};
         bool m_randomUploaded = false;
+        bool m_frameworkStyle = false;
+        Microsoft::WRL::ComPtr<ID3D12Heap> m_sharedHeaps[3];
+        Microsoft::WRL::ComPtr<ID3D12Resource> m_sharedTextures[3];
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_queue;
         eastl::vector<eastl::unique_ptr<Recording>> m_recordings;
         ID3D12GraphicsCommandList* m_list = nullptr;
@@ -201,7 +204,27 @@ namespace drv3d_dx12
     HRESULT DeviceSsaoPass::execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex)
     {
         collectRetiredResources();
-        return m_state && resourceIndex < RESOURCE_COUNT ? m_state->execute(constants, normalsReady, depthReady, frame, resourceIndex) : DXGI_ERROR_INVALID_CALL;
+        return m_state && !m_state->m_frameworkStyle && resourceIndex < RESOURCE_COUNT ? m_state->execute(constants, normalsReady, depthReady, frame, resourceIndex) : DXGI_ERROR_INVALID_CALL;
+    }
+
+    HRESULT DeviceSsaoPass::executeFramework(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared, uint64_t frame)
+    {
+        collectRetiredResources();
+        if (!m_state || !m_state->m_frameworkStyle || !shared.normals || !shared.depth || !shared.result) return E_INVALIDARG;
+        ID3D12Resource* textures[] = {shared.normals, shared.depth, shared.result};
+        ID3D12Resource* locals[] = {getNormals(), getDepth(), getResult()};
+        for (UINT index = 0; index < 3; ++index)
+        {
+            const auto a = textures[index]->GetDesc();
+            const auto b = locals[index]->GetDesc();
+            Microsoft::WRL::ComPtr<ID3D12Device> owner;
+            if (FAILED(textures[index]->GetDevice(IID_PPV_ARGS(&owner))) || owner.Get() != m_state->m_device.Get() ||
+                a.Width != b.Width || a.Height != b.Height || a.Format != b.Format ||
+                (m_state->m_sharedTextures[index] && m_state->m_sharedTextures[index].Get() != textures[index])) return E_INVALIDARG;
+            m_state->m_sharedTextures[index] = textures[index];
+            m_state->m_sharedHeaps[index] = shared.heaps[index];
+        }
+        return m_state->execute(constants, {}, {}, frame, 0, &shared);
     }
 
     d3d::mgpu::SsaoGpuTiming DeviceSsaoPass::pollTiming()
@@ -213,7 +236,7 @@ namespace drv3d_dx12
 
     HRESULT DeviceSsaoPass::releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex)
     {
-        return m_state && resourceIndex < RESOURCE_COUNT ? m_state->releaseOutput(released, resourceIndex) : DXGI_ERROR_INVALID_CALL;
+        return m_state && !m_state->m_frameworkStyle && resourceIndex < RESOURCE_COUNT ? m_state->releaseOutput(released, resourceIndex) : DXGI_ERROR_INVALID_CALL;
     }
 
     CrossAdapterSyncPoint DeviceSsaoPass::getReadyPoint(uint32_t resourceIndex) const
@@ -236,10 +259,16 @@ namespace drv3d_dx12
         return m_state && resourceIndex < RESOURCE_COUNT ? m_state->m_resources[resourceIndex].output.getResource() : nullptr;
     }
 
+    ID3D12CommandQueue* DeviceSsaoPass::getQueue() const
+    {
+        return m_state ? m_state->m_queue.Get() : nullptr;
+    }
+
     HRESULT DeviceSsaoPass::State::init(const DeviceSsaoPassDesc& desc)
     {
         m_device = desc.allocator->getDevice();
         m_allocator = desc.allocator;
+        m_frameworkStyle = desc.frameworkStyle;
         m_width = desc.width;
         m_height = desc.height;
         m_normalFormat = desc.packedNormals ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_FLOAT;
@@ -261,8 +290,9 @@ namespace drv3d_dx12
                 result = HRESULT_FROM_WIN32(GetLastError());
             }
         }
-        for (auto& resources : m_resources)
+        for (UINT index = 0; index < (m_frameworkStyle ? 1u : RESOURCE_COUNT); ++index)
         {
+            auto& resources = m_resources[index];
             if (SUCCEEDED(result))
                 result = resources.normals.createTexture(m_allocator.get(), desc.inputWidth ? desc.inputWidth : m_width,
                                               desc.inputHeight ? desc.inputHeight : m_height, m_normalFormat);
@@ -330,10 +360,11 @@ namespace drv3d_dx12
     {
         D3D12_DESCRIPTOR_HEAP_DESC desc = {};
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        desc.NumDescriptors = 3 * RESOURCE_COUNT;
+        const UINT resourceCount = m_frameworkStyle ? 1u : RESOURCE_COUNT;
+        desc.NumDescriptors = 3 * resourceCount;
         HRESULT result = m_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&m_rtvHeap));
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        desc.NumDescriptors = 15 * RESOURCE_COUNT;
+        desc.NumDescriptors = 15 * resourceCount;
         desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (SUCCEEDED(result))
         {
@@ -345,7 +376,7 @@ namespace drv3d_dx12
         }
         m_srvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         m_rtvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        for (UINT resourceIndex = 0; resourceIndex < RESOURCE_COUNT; ++resourceIndex)
+        for (UINT resourceIndex = 0; resourceIndex < resourceCount; ++resourceIndex)
         {
             auto& resources = m_resources[resourceIndex];
             ID3D12Resource* targets[] = {resources.output.getResource(), resources.raw.getResource(), resources.horizontal.getResource()};
@@ -513,7 +544,8 @@ namespace drv3d_dx12
         {
             return DXGI_ERROR_DEVICE_REMOVED;
         }
-        // Completion is used only to recycle allocator memory, never to decide whether to submit AO.
+        // The framework experiment uses exactly three frame recordings, reusing only completed ones.
+        // The synchronized transport keeps its existing growing command-storage pool.
         for (const eastl::unique_ptr<Recording>& candidate : m_recordings)
         {
             if (candidate->fenceValue <= completed)
@@ -523,6 +555,7 @@ namespace drv3d_dx12
                 return SUCCEEDED(result) ? recording->list->Reset(recording->allocator.Get(), m_rawPso.Get()) : result;
             }
         }
+        if (m_frameworkStyle && m_recordings.size() >= 3) return S_FALSE;
         eastl::unique_ptr<Recording> next = eastl::make_unique<Recording>();
         HRESULT result = m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&next->allocator));
         if (SUCCEEDED(result))
@@ -643,16 +676,32 @@ namespace drv3d_dx12
         m_list->ResourceBarrier(1, &transition);
     }
 
-    HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex)
+    HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex, const FrameworkSsaoTextures* shared)
     {
         auto& resources = m_resources[resourceIndex];
         Recording* recording = nullptr;
         HRESULT result = acquireRecording(recording);
-        if (FAILED(result))
+        if (result != S_OK)
         {
             return result;
         }
         m_list = recording->list.Get();
+        const auto copyShared = [&](ID3D12Resource* local, ID3D12Resource* common, bool toShared)
+        {
+            const auto localState = toShared ? D3D12_RESOURCE_STATE_COPY_SOURCE : D3D12_RESOURCE_STATE_COPY_DEST;
+            const auto sharedState = toShared ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_COPY_SOURCE;
+            barrier(local, D3D12_RESOURCE_STATE_COMMON, localState);
+            barrier(common, D3D12_RESOURCE_STATE_COMMON, sharedState);
+            m_list->CopyResource(toShared ? common : local, toShared ? local : common);
+            barrier(common, sharedState, D3D12_RESOURCE_STATE_COMMON);
+            barrier(local, localState, D3D12_RESOURCE_STATE_COMMON);
+        };
+        if (shared)
+        {
+            // Contents are selected when these GPU commands execute, without a cross-adapter wait.
+            copyShared(resources.normals.getResource(), shared->normals, false);
+            copyShared(resources.depth.getResource(), shared->depth, false);
+        }
         if (!m_randomUploaded)
         {
             barrier(m_random.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -721,6 +770,7 @@ namespace drv3d_dx12
             m_list->ResolveQueryData(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 3, recording->timestampReadback.getResource(), 0);
             recording->timingFrame = frame;
         }
+        if (shared) copyShared(resources.output.getResource(), shared->result, true);
 
         result = m_list->Close();
         if (SUCCEEDED(result))

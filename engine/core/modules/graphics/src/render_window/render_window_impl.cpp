@@ -75,7 +75,7 @@ namespace nau::render
             m_measurementsCsv.open(path.c_str(), std::ios::out | std::ios::trunc);
             if (!m_measurementsCsv) { NAU_LOG_ERROR("Measurements: cannot open {}", path); return; }
             m_measurementsCsv.imbue(std::locale::classic());
-            m_measurementsCsv << "frame,elapsed_ms,frame_ms,phase,width,height,requested_gpu,actual_gpu,gpu1_available,wait_enabled,cpu_serialize,ao_valid,ao_source_frame,ao_age_frames,timing_frame,overlap_gpu_ms,wait_interval_ms,ready_at_record_cpu,gpu1_timing_frame,gpu1_raw_ms,gpu1_total_ms,chain_frame,chain_observed_ms,load_mask,submit_only_handoffs,handoff_releases,handoff_waits,handoff_frame_flushes,handoff_cpu_ms,handoff_slot_waits,handoff_slot_wait_ms,frame_slot_waits,frame_slot_wait_ms\n";
+            m_measurementsCsv << "frame,elapsed_ms,frame_ms,phase,width,height,requested_gpu,actual_gpu,gpu1_available,wait_enabled,cpu_serialize,ao_valid,ao_source_frame,ao_age_frames,timing_frame,overlap_gpu_ms,wait_interval_ms,ready_at_record_cpu,gpu1_timing_frame,gpu1_raw_ms,gpu1_total_ms,chain_frame,chain_observed_ms,load_mask,submit_only_handoffs,handoff_releases,handoff_waits,handoff_frame_flushes,handoff_cpu_ms,handoff_slot_waits,handoff_slot_wait_ms,frame_slot_waits,frame_slot_wait_ms,framework_unsynchronized\n";
             m_measurementsCsv << std::fixed << std::setprecision(6);
             NAU_LOG_INFO("Measurements: CSV {} (frame intervals are CPU render/present cadence; chain latency is a frame-polled upper bound)", path);
         }
@@ -85,7 +85,7 @@ namespace nau::render
         if (!m_ambientOcclusion || !m_ambientOcclusion->getMeasurements().frame) return;
         const auto& m = m_ambientOcclusion->getMeasurements();
         const auto handoffs = d3d::mgpu::get_foreign_queue_measurements();
-        const int64_t age = m.aoValid ? static_cast<int64_t>(m.frame - m.aoFrame) : -1;
+        const int64_t age = m.aoValid && m.aoFrame ? static_cast<int64_t>(m.frame - m.aoFrame) : -1;
         m_measurementsCsv << m.frame << ',' << std::chrono::duration<double, std::milli>(now - m_measurementsOrigin).count() << ',' << dt << ','
             << m.phase << ',' << m_gBuffer->getWidth() << ',' << m_gBuffer->getHeight() << ','
             << static_cast<uint32_t>(getAmbientOcclusionExecution()) << ',' << (m.gpu1 ? 1 : 0) << ',' << (d3d::is_multi_gpu_available() ? 1 : 0) << ','
@@ -94,7 +94,7 @@ namespace nau::render
             << m.gpu1Timing.frame << ',' << m.gpu1Timing.rawMilliseconds << ',' << m.gpu1Timing.totalMilliseconds << ',' << m.chainFrame << ',' << m.chainObservedMs << ','
             << m.loadMask << ',' << (handoffs.submitOnly ? 1 : 0) << ',' << handoffs.releases << ',' << handoffs.waits << ','
             << handoffs.frameFlushes << ',' << handoffs.cpuMilliseconds << ',' << handoffs.slotWaits << ',' << handoffs.slotWaitMilliseconds << ','
-            << handoffs.frameSlotWaits << ',' << handoffs.frameSlotWaitMilliseconds << '\n';
+            << handoffs.frameSlotWaits << ',' << handoffs.frameSlotWaitMilliseconds << ',' << (m.frameworkTransport ? 1 : 0) << '\n';
     }
 
     void RenderWindowImpl::setWorld(nau::Uid worldUid)

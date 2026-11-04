@@ -1,0 +1,66 @@
+// Copyright 2026 N-GINN LLC. All rights reserved.
+#pragma once
+
+#include "device_ssao_pass.h"
+
+namespace drv3d_dx12
+{
+    // Experimental framework transport: one physical row-major texture per payload, opened on both
+    // adapters. There are deliberately no copy queues, shared fences, tickets or protected slots.
+    class FrameworkSsaoResources
+    {
+        struct SharedTexture
+        {
+            Microsoft::WRL::ComPtr<ID3D12Heap> heaps[2];
+            Microsoft::WRL::ComPtr<ID3D12Resource> textures[2];
+
+            HRESULT init(ID3D12Device* primary, ID3D12Device* secondary, UINT width, UINT height, DXGI_FORMAT format)
+            {
+                D3D12_RESOURCE_DESC desc = {};
+                desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                desc.Width = width;
+                desc.Height = height;
+                desc.DepthOrArraySize = desc.MipLevels = 1;
+                desc.SampleDesc.Count = 1;
+                desc.Format = format;
+                desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+                const auto a = primary->GetResourceAllocationInfo(0, 1, &desc);
+                const auto b = secondary->GetResourceAllocationInfo(0, 1, &desc);
+                if (a.SizeInBytes == UINT64_MAX || b.SizeInBytes == UINT64_MAX) return DXGI_ERROR_UNSUPPORTED;
+                D3D12_HEAP_DESC heap = {};
+                heap.SizeInBytes = a.SizeInBytes > b.SizeInBytes ? a.SizeInBytes : b.SizeInBytes;
+                heap.Alignment = a.Alignment > b.Alignment ? a.Alignment : b.Alignment;
+                heap.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+                heap.Flags = D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER;
+                HRESULT result = primary->CreateHeap(&heap, IID_PPV_ARGS(&heaps[0]));
+                HANDLE handle = nullptr;
+                if (SUCCEEDED(result)) result = primary->CreateSharedHandle(heaps[0].Get(), nullptr, GENERIC_ALL, nullptr, &handle);
+                if (SUCCEEDED(result))
+                {
+                    result = secondary->OpenSharedHandle(handle, IID_PPV_ARGS(&heaps[1]));
+                    CloseHandle(handle);
+                }
+                if (SUCCEEDED(result)) result = primary->CreatePlacedResource(heaps[0].Get(), 0, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&textures[0]));
+                if (SUCCEEDED(result)) result = secondary->CreatePlacedResource(heaps[1].Get(), 0, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&textures[1]));
+                return result;
+            }
+        };
+        SharedTexture m_normals, m_depth, m_result;
+
+    public:
+        HRESULT init(ID3D12Device* primary, ID3D12Device* secondary, const DeviceSsaoPassDesc& desc)
+        {
+            if (!primary || !secondary || !desc.width || !desc.height) return E_INVALIDARG;
+            const UINT width = desc.inputWidth ? desc.inputWidth : desc.width;
+            const UINT height = desc.inputHeight ? desc.inputHeight : desc.height;
+            HRESULT result = m_normals.init(primary, secondary, width, height, desc.packedNormals ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_FLOAT);
+            if (SUCCEEDED(result)) result = m_depth.init(primary, secondary, width, height, desc.linearDepth16 ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_R32_FLOAT);
+            if (SUCCEEDED(result)) result = m_result.init(primary, secondary, desc.width, desc.height, DXGI_FORMAT_R8_UNORM);
+            return result;
+        }
+
+        FrameworkSsaoTextures primary() const { return {m_normals.textures[0].Get(), m_depth.textures[0].Get(), m_result.textures[0].Get(), {m_normals.heaps[0].Get(), m_depth.heaps[0].Get(), m_result.heaps[0].Get()}}; }
+        FrameworkSsaoTextures secondary() const { return {m_normals.textures[1].Get(), m_depth.textures[1].Get(), m_result.textures[1].Get(), {m_normals.heaps[1].Get(), m_depth.heaps[1].Get(), m_result.heaps[1].Get()}}; }
+    };
+}

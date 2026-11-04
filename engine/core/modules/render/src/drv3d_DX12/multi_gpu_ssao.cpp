@@ -4,6 +4,9 @@
 #include "nau/3d/multi_gpu_ssao.h"
 
 #include "device_ssao_pass.h"
+#include "framework_ssao_resources.h"
+#include "device.h"
+#include "texture.h"
 #include "nau/3d/dag_drv3d_multi_gpu.h"
 #include "nau_device_resource_allocator.h"
 
@@ -18,6 +21,8 @@ namespace d3d::mgpu
         SsaoProducer& operator=(SsaoProducer&&) = delete;
 
         drv3d_dx12::DeviceSsaoPass pass;
+        eastl::unique_ptr<drv3d_dx12::FrameworkSsaoResources> framework;
+        bool frameworkInitialized = false;
         TransferChannelHandle normals = nullptr;
         TransferChannelHandle depth = nullptr;
         TransferChannelHandle output = nullptr;
@@ -26,6 +31,13 @@ namespace d3d::mgpu
 
         ~SsaoProducer()
         {
+            if (framework)
+            {
+                // Only teardown/resize drains the adapters. There is no per-frame handoff.
+                drv3d_dx12::get_device().getContext().wait();
+                const HRESULT result = pass.reset();
+                if (FAILED(result)) NAU_LOG_WARNING("Framework SSAO: GPU1 drain failed, HRESULT {:#x}", static_cast<uint32_t>(result));
+            }
             // Endpoints owned by the technique remain alive until all copy queues drain.
             destroy_transfer_channel(normals);
             destroy_transfer_channel(depth);
@@ -63,9 +75,16 @@ namespace d3d::mgpu
             pass.packedNormals = desc.packedNormals;
             pass.linearDepth16 = desc.linearDepth16;
             pass.measureTimings = desc.measureTimings;
+            pass.frameworkStyle = desc.frameworkStyle;
             result = producer->pass.init(pass);
+            if (SUCCEEDED(result) && desc.frameworkStyle)
+            {
+                producer->framework = eastl::make_unique<drv3d_dx12::FrameworkSsaoResources>();
+                result = producer->framework->init(static_cast<ID3D12Device*>(get_device(PRIMARY_GPU)),
+                    static_cast<ID3D12Device*>(get_device(SECONDARY_GPU)), pass);
+            }
         }
-        if (SUCCEEDED(result))
+        if (SUCCEEDED(result) && !desc.frameworkStyle)
         {
             TransferChannelDesc channel;
             channel.width = desc.inputWidth ? desc.inputWidth : desc.width;
@@ -97,6 +116,32 @@ namespace d3d::mgpu
     SsaoGpuTiming pollSsaoTiming(SsaoProducer* producer)
     {
         return producer ? producer->pass.pollTiming() : SsaoGpuTiming{};
+    }
+
+    bool exchangeFrameworkSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, uint64_t frame, bool& submitted)
+    {
+        submitted = false;
+        if (!producer || !producer->framework || !normals || !depth || !destination || !is_multi_gpu_available()) return false;
+        const auto image = [](BaseTexture* texture) { return drv3d_dx12::getbasetex(texture)->getDeviceImage(); };
+        auto* normalImage = image(normals);
+        auto* depthImage = image(depth);
+        auto* resultImage = image(destination);
+        if (!normalImage || !depthImage || !resultImage) return false;
+        const auto shared = producer->framework->primary();
+        auto& context = drv3d_dx12::get_device().getContext();
+        context.copySharedTexture(depthImage, shared.depth, true);
+        context.copySharedTexture(normalImage, shared.normals, true);
+        if (!producer->frameworkInitialized)
+        {
+            // The caller clears destination to white on first use. Seed shared AO in the same list.
+            context.copySharedTexture(resultImage, shared.result, true);
+            producer->frameworkInitialized = true;
+        }
+        context.copySharedTexture(resultImage, shared.result, false);
+        const HRESULT result = producer->pass.executeFramework(constants, producer->framework->secondary(), frame);
+        submitted = result == S_OK;
+        if (FAILED(result)) report_secondary_gpu_failure(static_cast<uint32_t>(result));
+        return SUCCEEDED(result);
     }
 
     PrimarySyncPoint submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, uint64_t frame)

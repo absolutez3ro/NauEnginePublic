@@ -54,7 +54,7 @@ namespace nau::render
         p.algorithm = static_cast<AmbientOcclusionVariant>(eastl::min(readSetting<uint32_t>("render/ssao/algorithm", static_cast<uint32_t>(p.algorithm)), 1u));
         p.normals = static_cast<AmbientOcclusionNormals>(eastl::min(readSetting<uint32_t>("render/ssao/normals", 0), 1u));
         p.blur = static_cast<AmbientOcclusionBlur>(eastl::min(readSetting<uint32_t>("render/ssao/blurMethod", readSetting<bool>("render/ssao/blur", true) ? static_cast<uint32_t>(p.blur) : 0u), 4u));
-        p.blurExecution = readSetting<bool>("render/ssao/blurOnSecondary", false) ? AmbientOcclusionExecution::multiGpu : AmbientOcclusionExecution::singleGpu;
+        p.blurExecution = readSetting<bool>("render/ssao/blurOnSecondary", readSetting<bool>("render/ssao/frameworkTransport", true)) ? AmbientOcclusionExecution::multiGpu : AmbientOcclusionExecution::singleGpu;
         p.upsample = static_cast<AmbientOcclusionUpsample>(eastl::min(readSetting<uint32_t>("render/ssao/upsample", static_cast<uint32_t>(p.upsample)), 2u));
         p.packedNormals = readSetting<bool>("render/ssao/packedNormals", false);
         p.linearDepth16 = readSetting<bool>("render/ssao/linearDepth16", false);
@@ -63,7 +63,7 @@ namespace nau::render
         p.rejectOutside = readSetting<bool>("render/ssao/rejectOutside", false);
         p.quarterResolution = readSetting<bool>("render/ssao/quarterResolution", false);
         p.gatherUpsample = readSetting<bool>("render/ssao/gatherUpsample", false);
-        p.waitForSecondary = readSetting<bool>("render/ssao/waitForSecondary", true);
+        p.waitForSecondary = !readSetting<bool>("render/ssao/frameworkTransport", true) && readSetting<bool>("render/ssao/waitForSecondary", true);
         return settings;
     }
 
@@ -143,6 +143,7 @@ namespace nau::render
         m_secondary = nullptr;
         m_resolveSource = nullptr;
         m_shown = nullptr;
+        m_frameworkOutputInitialized = false;
         m_drawRaw = m_drawDepth = m_drawNormals = nullptr;
         for (auto& job : m_jobs)
         {
@@ -171,6 +172,14 @@ namespace nau::render
 
     void AmbientOcclusion::beginFrame(uint32_t width, uint32_t height, const Settings& settings)
     {
+        const bool framework = readSetting<bool>("render/ssao/frameworkTransport", true);
+        if (framework != m_frameworkTransport)
+        {
+            resetSecondary();
+            m_frameworkTransport = framework;
+            ++m_timingGeneration;
+            m_waitMilliseconds = -1.f;
+        }
         const auto& old = m_settings.pipeline;
         const auto& next = settings.pipeline;
         m_measureTimings = readSetting<bool>("render/measurements/enabled", false);
@@ -223,6 +232,7 @@ namespace nau::render
             m_measurements.loadMask = readSetting<uint32_t>("sample/automation/activeLoadMask", 0);
         }
         m_measurements.gpu1 = m_measurements.aoValid = false;
+        m_measurements.frameworkTransport = false;
         m_measurements.aoFrame = 0;
         m_currentTiming = nullptr;
         m_normals = normals;
@@ -269,42 +279,73 @@ namespace nau::render
         m_drawConstants = m_constants;
         if (m_settings.execution == AmbientOcclusionExecution::multiGpu && prepareSecondary())
         {
-            AoJob* job = &m_jobs[0];
-            if (!p.waitForSecondary)
+            if (m_frameworkTransport)
             {
-                pollJobs();
-                job = findFreeJob();
-            }
-            m_usingSecondary = true;
-            if (job)
-            {
-                // Snapshot only a free job. Graphics queue order protects its previous readers.
-                downsampleInputs(job->normals, job->depth);
-                job->done = d3d::mgpu::submitSsao(m_secondary, m_constants, job->normals, job->depth, job->result, m_frameIndex);
-                m_usingSecondary = job->done.nativeFence != nullptr;
+                m_measurements.aoFrame = m_measurements.chainFrame = m_measurements.timingFrame = 0;
+                m_measurements.chainObservedMs = m_measurements.overlapMs = m_measurements.waitMs = -1.f;
+                m_measurements.readyAtConsumer = -1;
+                downsampleInputs(m_jobs[0].normals, m_jobs[0].depth);
+                if (!m_frameworkOutputInitialized)
+                {
+                    d3d::set_render_target(m_jobs[0].result, 0);
+                    d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
+                    d3d::set_render_target();
+                    m_frameworkOutputInitialized = true;
+                }
+                bool submitted = false;
+                m_usingSecondary = d3d::mgpu::exchangeFrameworkSsao(m_secondary, m_constants,
+                    m_jobs[0].normals, m_jobs[0].depth, m_jobs[0].result, m_frameIndex, submitted);
                 if (m_usingSecondary)
                 {
-                    job->constants = m_constants;
-                    job->frame = m_frameIndex;
-                    if (!p.waitForSecondary) job->state = AoJob::State::InFlight;
-                    m_secondaryReady = job->done;
-                    if (m_measureTimings && m_pendingCompletions.size() < 128)
-                        m_pendingCompletions.push_back({job->done, m_frameIndex, std::chrono::steady_clock::now()});
+                    // The result is whatever is in shared memory at GPU execution time. Its source
+                    // frame cannot be truthfully identified by a CPU-side fence poll.
+                    m_measurements.aoFrame = 0;
+                    logSettings();
+                    return;
                 }
-                else
+                d3d::mgpu::destroySsaoProducer(m_secondary);
+                m_secondary = nullptr;
+                m_logSettings = true;
+            }
+            else
+            {
+                AoJob* job = &m_jobs[0];
+                if (!p.waitForSecondary)
                 {
-                    m_pendingCompletions.clear();
-                    // Drain partial transfers before the primary fallback reuses any endpoint.
-                    d3d::mgpu::destroySsaoProducer(m_secondary);
-                    m_secondary = nullptr;
-                    m_shown = nullptr;
-                    for (auto& pending : m_jobs)
+                    pollJobs();
+                    job = findFreeJob();
+                }
+                m_usingSecondary = true;
+                if (job)
+                {
+                    // Snapshot only a free job. Graphics queue order protects its previous readers.
+                    downsampleInputs(job->normals, job->depth);
+                    job->done = d3d::mgpu::submitSsao(m_secondary, m_constants, job->normals, job->depth, job->result, m_frameIndex);
+                    m_usingSecondary = job->done.nativeFence != nullptr;
+                    if (m_usingSecondary)
                     {
-                        pending.state = AoJob::State::Free;
-                        pending.done = {};
+                        job->constants = m_constants;
+                        job->frame = m_frameIndex;
+                        if (!p.waitForSecondary) job->state = AoJob::State::InFlight;
+                        m_secondaryReady = job->done;
+                        if (m_measureTimings && m_pendingCompletions.size() < 128)
+                            m_pendingCompletions.push_back({job->done, m_frameIndex, std::chrono::steady_clock::now()});
                     }
-                    m_secondaryReady = {};
-                    m_logSettings = true;
+                    else
+                    {
+                        m_pendingCompletions.clear();
+                        // Drain partial transfers before the primary fallback reuses any endpoint.
+                        d3d::mgpu::destroySsaoProducer(m_secondary);
+                        m_secondary = nullptr;
+                        m_shown = nullptr;
+                        for (auto& pending : m_jobs)
+                        {
+                            pending.state = AoJob::State::Free;
+                            pending.done = {};
+                        }
+                        m_secondaryReady = {};
+                        m_logSettings = true;
+                    }
                 }
             }
         }
@@ -327,7 +368,8 @@ namespace nau::render
         if (m_usingSecondary)
         {
             m_measurements.gpu1 = true;
-            if (!m_settings.pipeline.waitForSecondary && m_currentTiming)
+            m_measurements.frameworkTransport = m_frameworkTransport;
+            if (!m_frameworkTransport && !m_settings.pipeline.waitForSecondary && m_currentTiming)
             {
                 m_currentTiming->readyAtConsumer = d3d::mgpu::is_primary_transfer_complete(m_secondaryReady) ? 1 : 0;
                 m_currentTiming->waited = false;
@@ -335,7 +377,12 @@ namespace nau::render
                 d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &m_currentTiming->end, nullptr, nullptr);
             }
             // This wait is recorded after G-buffer/CSM, immediately before consuming this frame's AO.
-            if (m_settings.pipeline.waitForSecondary)
+            if (m_frameworkTransport)
+            {
+                // Shared AO was copied unconditionally in the primary graphics list.
+                m_drawConstants = m_constants;
+            }
+            else if (m_settings.pipeline.waitForSecondary)
                 waitForSecondary();
             else
             {
@@ -361,7 +408,7 @@ namespace nau::render
             // Match GPU 1's selected input size, shader and half-size R8 output.
             draw(m_drawRaw, *m_rawMaterial, "default");
         }
-        if (!m_measurements.aoFrame) m_measurements.aoFrame = m_frameIndex;
+        if (!m_measurements.aoFrame && !(m_usingSecondary && m_frameworkTransport)) m_measurements.aoFrame = m_frameIndex;
         m_measurements.aoValid = true;
         filter(output);
     }
@@ -427,7 +474,7 @@ namespace nau::render
         {
             return false;
         }
-        const size_t jobCount = m_settings.execution == AmbientOcclusionExecution::multiGpu && !m_settings.pipeline.waitForSecondary ? kJobCount : 1;
+        const size_t jobCount = !m_frameworkTransport && m_settings.execution == AmbientOcclusionExecution::multiGpu && !m_settings.pipeline.waitForSecondary ? kJobCount : 1;
         for (size_t index = 0; index < jobCount; ++index)
         {
             auto& job = m_jobs[index];
@@ -477,6 +524,7 @@ namespace nau::render
             desc.packedNormals = m_settings.pipeline.packedNormals;
             desc.linearDepth16 = m_settings.pipeline.linearDepth16;
             desc.measureTimings = m_measureTimings;
+            desc.frameworkStyle = m_frameworkTransport;
             const Shader* filter = m_filterShader->getShader();
             desc.filterBytecode = filter->bytecode.data();
             desc.filterBytecodeSize = filter->bytecode.size();
@@ -485,7 +533,7 @@ namespace nau::render
             {
                 return false;
             }
-            NAU_LOG_INFO("SSAO: GPU 1 producer, AO {}x{}, three job targets, at most two async jobs in flight", m_secondaryWidth, m_secondaryHeight);
+            NAU_LOG_INFO("SSAO: GPU 1 producer, AO {}x{}, framework unsynchronized={}", m_secondaryWidth, m_secondaryHeight, m_frameworkTransport);
         }
         if (!m_secondary)
         {
@@ -683,6 +731,7 @@ namespace nau::render
     {
         if (m_settings.mode == AmbientOcclusionMode::off) return "n/a (AO off)";
         if (!m_usingSecondary) return "n/a (no GPU1 AO)";
+        if (m_frameworkTransport) return "OFF (framework, unsynchronized)";
         if (!m_settings.pipeline.waitForSecondary) return "OFF (async)";
         return m_waitMilliseconds < 0.f ? "pending" : nullptr;
     }
@@ -695,6 +744,7 @@ namespace nau::render
         }
         if (m_usingSecondary)
         {
+            if (m_frameworkTransport) return "MGPU framework (unsynchronized)";
             return m_settings.pipeline.quarterResolution ? "MGPU, quarter AO" : "MGPU, half AO";
         }
         return m_settings.execution == AmbientOcclusionExecution::multiGpu

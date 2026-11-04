@@ -44,13 +44,14 @@ namespace nau::render
         BaseTexture* getResolveTexture(BaseTexture* fullSize) const;
         void configureResolveSampler(MaterialAssetView& material) const;
         void bindResolveInputs();
-        float getWaitMilliseconds() const { return m_usingSecondary && m_settings.pipeline.waitForSecondary && m_settings.mode != AmbientOcclusionMode::off ? m_waitMilliseconds : -1.f; }
+        float getWaitMilliseconds() const { return m_usingSecondary && !m_frameworkTransport && m_settings.pipeline.waitForSecondary && m_settings.mode != AmbientOcclusionMode::off ? m_waitMilliseconds : -1.f; }
         const char* getWaitLabel() const;
         struct Measurements
         {
             uint64_t frame = 0, aoFrame = 0, timingFrame = 0, chainFrame = 0;
             uint32_t phase = 0, loadMask = 0;
             bool gpu1 = false, aoValid = false;
+            bool frameworkTransport = false;
             int readyAtConsumer = -1;
             float overlapMs = -1.f, waitMs = -1.f, chainObservedMs = -1.f;
             d3d::mgpu::SsaoGpuTiming gpu1Timing;
@@ -128,6 +129,8 @@ namespace nau::render
         float m_waitMilliseconds = -1.f;
         WaitTiming* m_currentTiming = nullptr;
         bool m_measureTimings = false;
+        bool m_frameworkTransport = true;
+        bool m_frameworkOutputInitialized = false;
         uint64_t m_frameIndex = 0;
         Measurements m_measurements;
         struct PendingCompletion

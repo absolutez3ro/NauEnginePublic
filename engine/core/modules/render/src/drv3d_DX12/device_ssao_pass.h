@@ -27,6 +27,15 @@ namespace drv3d_dx12
         bool packedNormals = false;
         bool linearDepth16 = false;
         bool measureTimings = false;
+        bool frameworkStyle = false;
+    };
+
+    struct FrameworkSsaoTextures
+    {
+        ID3D12Resource* normals = nullptr;
+        ID3D12Resource* depth = nullptr;
+        ID3D12Resource* result = nullptr;
+        ID3D12Heap* heaps[3] = {};
     };
 
     /**
@@ -50,6 +59,9 @@ namespace drv3d_dx12
         HRESULT init(const DeviceSsaoPassDesc& desc);
         HRESULT reset(DWORD timeoutMs = 10000);
         HRESULT execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {}, uint64_t frame = 0, uint32_t resourceIndex = 0);
+        // Copies shared inputs, computes AO, and publishes shared output in one direct list.
+        // S_FALSE means all three command/constant recordings are busy; never waits or grows the budget.
+        HRESULT executeFramework(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared, uint64_t frame = 0);
         d3d::mgpu::SsaoGpuTiming pollTiming();
         // The output-copy dependency is applied only when this set is rendered again or reset.
         HRESULT releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex = 0);
@@ -57,6 +69,8 @@ namespace drv3d_dx12
         ID3D12Resource* getNormals(uint32_t resourceIndex = 0) const;
         ID3D12Resource* getDepth(uint32_t resourceIndex = 0) const;
         ID3D12Resource* getResult(uint32_t resourceIndex = 0) const;
+        // Borrowed queue for native integration/profiling; lifetime follows this pass.
+        ID3D12CommandQueue* getQueue() const;
         static size_t collectRetiredResources();
 
     private:
