@@ -142,10 +142,15 @@ namespace nau::render
         d3d::mgpu::destroySsaoProducer(m_secondary);
         m_secondary = nullptr;
         m_resolveSource = nullptr;
-        m_asyncValid = false;
-        m_asyncFrame = 0;
+        m_shown = nullptr;
         m_drawRaw = m_drawDepth = m_drawNormals = nullptr;
-        for (BaseTexture** texture : {&m_normalsSnapshot, &m_depthSnapshot, &m_receiving, &m_filtered, &m_horizontal, &m_fullOutput, &m_asyncRaw, &m_asyncDepth, &m_asyncNormals})
+        for (auto& job : m_jobs)
+        {
+            for (BaseTexture* texture : {job.normals, job.depth, job.result})
+                if (texture) texture->destroy();
+            job = {};
+        }
+        for (BaseTexture** texture : {&m_filtered, &m_horizontal, &m_fullOutput})
         {
             if (*texture)
             {
@@ -169,7 +174,7 @@ namespace nau::render
         const auto& old = m_settings.pipeline;
         const auto& next = settings.pipeline;
         m_measureTimings = readSetting<bool>("render/measurements/enabled", false);
-        d3d::mgpu::begin_foreign_queue_frame(readSetting<bool>("render/ssao/submitOnlyHandoffs", true), m_measureTimings);
+        d3d::mgpu::begin_foreign_queue_frame(readSetting<bool>("render/ssao/submitOnlyHandoffs", false), m_measureTimings);
         pollWaitTimings();
         if (m_measureTimings)
         {
@@ -185,7 +190,8 @@ namespace nau::render
         }
         const bool asyncChanged = old.waitForSecondary != next.waitForSecondary ||
             ((!old.waitForSecondary || !next.waitForSecondary) &&
-             (old != next || m_settings.execution != settings.execution));
+             (old != next || m_settings.execution != settings.execution ||
+              (m_settings.mode == AmbientOcclusionMode::off) != (settings.mode == AmbientOcclusionMode::off)));
         if (old.waitForSecondary != next.waitForSecondary || m_settings.mode != settings.mode || m_settings.execution != settings.execution)
         {
             ++m_timingGeneration;
@@ -198,19 +204,13 @@ namespace nau::render
         if (layoutChanged || asyncChanged) resetSecondary();
         m_settings = settings;
         prepareTargets(width, height);
-        if (!next.waitForSecondary && d3d::is_multi_gpu_available() && !m_asyncRaw && m_receiving)
-        {
-            m_asyncRaw = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_async_ready");
-            m_asyncDepth = d3d::create_tex(nullptr, m_inputWidth, m_inputHeight, (next.linearDepth16 ? TEXFMT_R16F : TEXFMT_R32F) | TEXCF_RTARGET, 1, u8"ssao_async_depth");
-            m_asyncNormals = d3d::create_tex(nullptr, m_inputWidth, m_inputHeight, (next.packedNormals ? TEXFMT_R8G8 : TEXFMT_G16R16F) | TEXCF_RTARGET, 1, u8"ssao_async_normals");
-        }
         // A full-size AO allocation exists only for a separate reconstruction pass.
         if (next.upsample != AmbientOcclusionUpsample::separate && m_fullOutput)
         {
             m_fullOutput->destroy();
             m_fullOutput = nullptr;
         }
-        if (next.upsample == AmbientOcclusionUpsample::separate && !m_fullOutput && m_receiving)
+        if (next.upsample == AmbientOcclusionUpsample::separate && !m_fullOutput && m_jobs[0].result)
             m_fullOutput = d3d::create_tex(nullptr, width, height, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_full_output");
     }
 
@@ -229,9 +229,10 @@ namespace nau::render
         m_depth = depth;
         if (m_settings.pipeline.waitForSecondary) m_secondaryReady = {};
         m_usingSecondary = false;
-        m_drawRaw = m_receiving;
-        m_drawDepth = m_depthSnapshot;
-        m_drawNormals = m_normalsSnapshot;
+        m_resolveSource = nullptr;
+        m_drawRaw = m_jobs[0].result;
+        m_drawDepth = m_jobs[0].depth;
+        m_drawNormals = m_jobs[0].normals;
         const math::Matrix4 inverseProjection = inverse(projection);
         static_assert(sizeof(projection) == sizeof(m_constants.projection));
         std::memcpy(m_constants.projection, &projection, sizeof(projection));
@@ -239,7 +240,7 @@ namespace nau::render
         std::memcpy(m_constants.view, &view, sizeof(view));
         std::memcpy(m_constants.parameters, &m_parameters, sizeof(m_parameters));
         m_constants.filter[2] = m_blurDepthThreshold;
-        if (m_settings.mode == AmbientOcclusionMode::off || !m_receiving)
+        if (m_settings.mode == AmbientOcclusionMode::off || !m_jobs[0].result)
         {
             logSettings();
             return;
@@ -265,42 +266,49 @@ namespace nau::render
         m_constants.reconstruction[3] = m_blurDepthThreshold;
         m_constants.filter[0] = static_cast<float>(m_secondaryWidth);
         m_constants.filter[1] = static_cast<float>(m_secondaryHeight);
-        const bool async = !p.waitForSecondary && m_settings.execution == AmbientOcclusionExecution::multiGpu &&
-            m_asyncRaw && m_asyncDepth && m_asyncNormals && prepareSecondary();
-        if (async && m_secondaryReady.nativeFence)
+        m_drawConstants = m_constants;
+        if (m_settings.execution == AmbientOcclusionExecution::multiGpu && prepareSecondary())
         {
-            if (!d3d::mgpu::is_primary_transfer_complete(m_secondaryReady))
+            AoJob* job = &m_jobs[0];
+            if (!p.waitForSecondary)
             {
-                // Keep all input/output endpoints untouched while GPU 1 is still using them.
-                m_usingSecondary = true;
-                beginOverlapTiming();
-                logSettings();
-                return;
+                pollJobs();
+                job = findFreeJob();
             }
-            m_asyncValid = m_asyncRaw->update(m_receiving) && m_asyncDepth->update(m_depthSnapshot) && m_asyncNormals->update(m_normalsSnapshot);
-            m_asyncConstants = m_submittedConstants;
-            m_asyncFrame = m_submittedFrame;
-            m_secondaryReady = {};
-        }
-        downsampleInputs();
-        if (m_settings.execution == AmbientOcclusionExecution::multiGpu && (p.waitForSecondary || async) && prepareSecondary())
-        {
-            // Queue both input copies, GPU 1 AO, and its return copy now. GPU 0 keeps drawing.
-            m_secondaryReady = d3d::mgpu::submitSsao(m_secondary, m_constants, m_normalsSnapshot, m_depthSnapshot, m_receiving, m_frameIndex);
-            m_usingSecondary = m_secondaryReady.nativeFence != nullptr;
-            m_submittedConstants = m_constants;
-            m_submittedFrame = m_frameIndex;
-            if (m_usingSecondary && m_measureTimings && m_pendingCompletions.size() < 128)
-                m_pendingCompletions.push_back({m_secondaryReady, m_frameIndex, std::chrono::steady_clock::now()});
-            if (!m_usingSecondary)
+            m_usingSecondary = true;
+            if (job)
             {
-                m_pendingCompletions.clear();
-                // Drain partial transfers before the primary fallback writes the same raw target.
-                d3d::mgpu::destroySsaoProducer(m_secondary);
-                m_secondary = nullptr;
-                m_logSettings = true;
+                // Snapshot only a free job. Graphics queue order protects its previous readers.
+                downsampleInputs(job->normals, job->depth);
+                job->done = d3d::mgpu::submitSsao(m_secondary, m_constants, job->normals, job->depth, job->result, m_frameIndex);
+                m_usingSecondary = job->done.nativeFence != nullptr;
+                if (m_usingSecondary)
+                {
+                    job->constants = m_constants;
+                    job->frame = m_frameIndex;
+                    if (!p.waitForSecondary) job->state = AoJob::State::InFlight;
+                    m_secondaryReady = job->done;
+                    if (m_measureTimings && m_pendingCompletions.size() < 128)
+                        m_pendingCompletions.push_back({job->done, m_frameIndex, std::chrono::steady_clock::now()});
+                }
+                else
+                {
+                    m_pendingCompletions.clear();
+                    // Drain partial transfers before the primary fallback reuses any endpoint.
+                    d3d::mgpu::destroySsaoProducer(m_secondary);
+                    m_secondary = nullptr;
+                    m_shown = nullptr;
+                    for (auto& pending : m_jobs)
+                    {
+                        pending.state = AoJob::State::Free;
+                        pending.done = {};
+                    }
+                    m_secondaryReady = {};
+                    m_logSettings = true;
+                }
             }
         }
+        if (!m_usingSecondary) downsampleInputs(m_drawNormals, m_drawDepth);
         if (m_usingSecondary) beginOverlapTiming();
         logSettings();
     }
@@ -309,7 +317,7 @@ namespace nau::render
     {
         d3d::set_render_target();
         d3d::set_depth(nullptr, DepthAccess::RW);
-        if (m_settings.mode == AmbientOcclusionMode::off || !m_receiving)
+        if (m_settings.mode == AmbientOcclusionMode::off || !m_jobs[0].result)
         {
             d3d::set_render_target(output, 0);
             d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
@@ -329,32 +337,73 @@ namespace nau::render
             // This wait is recorded after G-buffer/CSM, immediately before consuming this frame's AO.
             if (m_settings.pipeline.waitForSecondary)
                 waitForSecondary();
-            else if (m_asyncValid)
-            {
-                m_drawRaw = m_asyncRaw;
-                m_drawDepth = m_asyncDepth;
-                m_drawNormals = m_asyncNormals;
-                m_constants = m_asyncConstants;
-                m_measurements.aoFrame = m_asyncFrame;
-            }
             else
             {
-                // No completed result yet: render this frame without AO, without a queue wait.
-                m_resolveSource = nullptr;
-                d3d::set_render_target(output, 0);
-                d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
-                d3d::set_render_target();
-                return;
+                // Catch transfers completed during the independent G-buffer/CSM work too.
+                pollJobs();
+                selectNewestReadyJob();
+                if (!m_shown)
+                {
+                    d3d::set_render_target(output, 0);
+                    d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
+                    d3d::set_render_target();
+                    return;
+                }
+                m_drawRaw = m_shown->result;
+                m_drawDepth = m_shown->depth;
+                m_drawNormals = m_shown->normals;
+                m_drawConstants = m_shown->constants;
+                m_measurements.aoFrame = m_shown->frame;
             }
         }
         else
         {
             // Match GPU 1's selected input size, shader and half-size R8 output.
-            draw(m_receiving, *m_rawMaterial, "default");
+            draw(m_drawRaw, *m_rawMaterial, "default");
         }
         if (!m_measurements.aoFrame) m_measurements.aoFrame = m_frameIndex;
         m_measurements.aoValid = true;
         filter(output);
+    }
+
+    void AmbientOcclusion::pollJobs()
+    {
+        for (auto& job : m_jobs)
+            if (job.state == AoJob::State::InFlight && d3d::mgpu::is_primary_transfer_complete(job.done))
+                job.state = AoJob::State::Ready;
+    }
+
+    AmbientOcclusion::AoJob* AmbientOcclusion::findFreeJob()
+    {
+        size_t inFlight = 0;
+        AoJob* free = nullptr;
+        for (auto& job : m_jobs)
+        {
+            if (job.state == AoJob::State::InFlight) ++inFlight;
+            if (!free && job.state == AoJob::State::Free) free = &job;
+        }
+        return inFlight < kMaxInFlight ? free : nullptr;
+    }
+
+    void AmbientOcclusion::selectNewestReadyJob()
+    {
+        AoJob* newest = nullptr;
+        for (auto& job : m_jobs)
+            if (job.state == AoJob::State::Ready && (!newest || job.frame > newest->frame))
+                newest = &job;
+
+        if (newest && (!m_shown || newest->frame > m_shown->frame))
+        {
+            // Later downsampling is on the same graphics queue as previous snapshot readers.
+            // The result's return copy is ordered after its previous readers by the transfer API.
+            if (m_shown) m_shown->state = AoJob::State::Free;
+            m_shown = newest;
+            m_shown->state = AoJob::State::Shown;
+        }
+        // Ready includes every input read and return copy. Older results can now be reused.
+        for (auto& job : m_jobs)
+            if (job.state == AoJob::State::Ready && m_shown && job.frame <= m_shown->frame)
+                job.state = AoJob::State::Free;
     }
 
     bool AmbientOcclusion::prepareTargets(uint32_t width, uint32_t height)
@@ -362,7 +411,7 @@ namespace nau::render
         TextureInfo info{};
         info.w = width;
         info.h = height;
-        if (m_normalsSnapshot && m_primaryWidth == info.w && m_primaryHeight == info.h)
+        if (m_jobs[0].result && m_primaryWidth == info.w && m_primaryHeight == info.h)
         {
             return true;
         }
@@ -378,12 +427,23 @@ namespace nau::render
         {
             return false;
         }
-        m_normalsSnapshot = d3d::create_tex(nullptr, m_inputWidth, m_inputHeight, (m_settings.pipeline.packedNormals ? TEXFMT_R8G8 : TEXFMT_G16R16F) | TEXCF_RTARGET, 1, u8"ssao_input_normals");
-        m_depthSnapshot = d3d::create_tex(nullptr, m_inputWidth, m_inputHeight, (m_settings.pipeline.linearDepth16 ? TEXFMT_R16F : TEXFMT_R32F) | TEXCF_RTARGET, 1, u8"ssao_input_depth");
-        m_receiving = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_half_raw");
+        const size_t jobCount = m_settings.execution == AmbientOcclusionExecution::multiGpu && !m_settings.pipeline.waitForSecondary ? kJobCount : 1;
+        for (size_t index = 0; index < jobCount; ++index)
+        {
+            auto& job = m_jobs[index];
+            job.normals = d3d::create_tex(nullptr, m_inputWidth, m_inputHeight, (m_settings.pipeline.packedNormals ? TEXFMT_R8G8 : TEXFMT_G16R16F) | TEXCF_RTARGET, 1, u8"ssao_job_normals");
+            job.depth = d3d::create_tex(nullptr, m_inputWidth, m_inputHeight, (m_settings.pipeline.linearDepth16 ? TEXFMT_R16F : TEXFMT_R32F) | TEXCF_RTARGET, 1, u8"ssao_job_depth");
+            job.result = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_job_result");
+            if (!job.normals || !job.depth || !job.result)
+            {
+                NAU_LOG_ERROR("SSAO: could not allocate job targets");
+                resetSecondary();
+                return false;
+            }
+        }
         m_filtered = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_half_filtered");
         m_horizontal = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R16F | TEXCF_RTARGET, 1, u8"ssao_bogdanov_horizontal");
-        if (!m_normalsSnapshot || !m_depthSnapshot || !m_receiving || !m_filtered || !m_horizontal)
+        if (!m_filtered || !m_horizontal)
         {
             NAU_LOG_ERROR("SSAO: could not allocate half-resolution comparison targets");
             resetSecondary();
@@ -425,7 +485,7 @@ namespace nau::render
             {
                 return false;
             }
-            NAU_LOG_INFO("SSAO: same-frame GPU 1, half resolution {}x{}, RG16F normals, GPU 0 blur/upsample", m_secondaryWidth, m_secondaryHeight);
+            NAU_LOG_INFO("SSAO: GPU 1 producer, AO {}x{}, three job targets, at most two async jobs in flight", m_secondaryWidth, m_secondaryHeight);
         }
         if (!m_secondary)
         {
@@ -434,19 +494,19 @@ namespace nau::render
         return true;
     }
 
-    void AmbientOcclusion::downsampleInputs()
+    void AmbientOcclusion::downsampleInputs(BaseTexture* normals, BaseTexture* depth)
     {
         d3d::resource_barrier({m_normals, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         d3d::resource_barrier({m_depth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         d3d::set_render_target();
         d3d::set_depth(nullptr, DepthAccess::RW);
-        d3d::set_render_target(m_normalsSnapshot, 0);
-        d3d::set_render_target(1, m_depthSnapshot, 0);
+        d3d::set_render_target(normals, 0);
+        d3d::set_render_target(1, depth, 0);
         d3d::setview(0, 0, m_inputWidth, m_inputHeight, 0.0f, 1.0f);
         d3d::set_srgb_backbuffer_write(false);
         d3d::settex(0, m_normals);
         d3d::settex(1, m_depth);
-        setConstants(*m_blurMaterial, "downsample");
+        setConstants(*m_blurMaterial, "downsample", m_constants);
         m_blurMaterial->bindPipeline("downsample");
         d3d::setvsrc(0, nullptr, 0);
         d3d::setind(nullptr);
@@ -463,11 +523,11 @@ namespace nau::render
         m_resolveSource = m_drawRaw;
         if (!blurOnSecondary && p.blur != AmbientOcclusionBlur::off && p.blur != AmbientOcclusionBlur::bilateralUpsample)
         {
-            m_constants.pipeline[1] = 0.f;
+            m_drawConstants.pipeline[1] = 0.f;
             draw(p.blur == AmbientOcclusionBlur::gaussian ? m_horizontal : m_filtered, *m_blurMaterial, "halfBlur", m_drawRaw);
             if (p.blur == AmbientOcclusionBlur::gaussian)
             {
-                m_constants.pipeline[1] = 1.f;
+                m_drawConstants.pipeline[1] = 1.f;
                 draw(m_filtered, *m_blurMaterial, "halfBlur", m_horizontal);
             }
             m_resolveSource = m_filtered;
@@ -483,19 +543,19 @@ namespace nau::render
         d3d::set_render_target();
     }
 
-    void AmbientOcclusion::setConstants(MaterialAssetView& material, const char* pipeline)
+    void AmbientOcclusion::setConstants(MaterialAssetView& material, const char* pipeline, const d3d::mgpu::SsaoConstants& constants)
     {
         const auto matrix = [](const float* values) { math::Matrix4 m; std::memcpy(&m, values, sizeof(m)); return m; };
         const auto vector = [](const float* v) { return math::Vector4(v[0], v[1], v[2], v[3]); };
-        material.setProperty(pipeline, "aoProjection", matrix(m_constants.projection));
-        material.setProperty(pipeline, "aoInverseProjection", matrix(m_constants.inverseProjection));
-        material.setProperty(pipeline, "aoView", matrix(m_constants.view));
-        material.setProperty(pipeline, "aoParameters", vector(m_constants.parameters));
-        material.setProperty(pipeline, "aoFilter", vector(m_constants.filter));
-        material.setProperty(pipeline, "aoOptions", vector(m_constants.options));
-        material.setProperty(pipeline, "aoPipeline", vector(m_constants.pipeline));
-        material.setProperty(pipeline, "aoSizes", vector(m_constants.sizes));
-        material.setProperty(pipeline, "aoReconstruction", vector(m_constants.reconstruction));
+        material.setProperty(pipeline, "aoProjection", matrix(constants.projection));
+        material.setProperty(pipeline, "aoInverseProjection", matrix(constants.inverseProjection));
+        material.setProperty(pipeline, "aoView", matrix(constants.view));
+        material.setProperty(pipeline, "aoParameters", vector(constants.parameters));
+        material.setProperty(pipeline, "aoFilter", vector(constants.filter));
+        material.setProperty(pipeline, "aoOptions", vector(constants.options));
+        material.setProperty(pipeline, "aoPipeline", vector(constants.pipeline));
+        material.setProperty(pipeline, "aoSizes", vector(constants.sizes));
+        material.setProperty(pipeline, "aoReconstruction", vector(constants.reconstruction));
     }
 
     void AmbientOcclusion::draw(BaseTexture* target, MaterialAssetView& material, const char* pipeline, BaseTexture* source)
@@ -516,7 +576,7 @@ namespace nau::render
         d3d::settex(2, source);
         d3d::settex(3, m_depth);
         d3d::settex(4, m_randomTexture);
-        setConstants(material, pipeline);
+        setConstants(material, pipeline, m_drawConstants);
         material.bindPipeline(pipeline);
         d3d::setvsrc(0, nullptr, 0);
         d3d::setind(nullptr);
@@ -548,7 +608,7 @@ namespace nau::render
 
     math::Vector4 AmbientOcclusion::getResolveControl() const
     {
-        return math::Vector4(m_settings.mode != AmbientOcclusionMode::off && m_resolveSource ? 1.f : 0.f, m_fullOutput ? -1.f : m_constants.reconstruction[0], m_settings.pipeline.linearDepth16 ? 1.f : 0.f, m_settings.pipeline.gatherUpsample ? 1.f : 0.f);
+        return math::Vector4(m_settings.mode != AmbientOcclusionMode::off && m_resolveSource ? 1.f : 0.f, m_fullOutput ? -1.f : m_drawConstants.reconstruction[0], m_settings.pipeline.linearDepth16 ? 1.f : 0.f, m_settings.pipeline.gatherUpsample ? 1.f : 0.f);
     }
 
     void AmbientOcclusion::pollWaitTimings()
@@ -661,7 +721,7 @@ namespace nau::render
 
     BaseTexture* AmbientOcclusion::getResolveTexture(BaseTexture* fallback) const
     {
-        return m_fullOutput ? m_fullOutput : (m_resolveSource ? m_resolveSource : fallback);
+        return m_resolveSource ? (m_fullOutput ? m_fullOutput : m_resolveSource) : fallback;
     }
 
     void AmbientOcclusion::bindResolveInputs()
@@ -670,8 +730,8 @@ namespace nau::render
             d3d::resource_barrier({source, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         d3d::resource_barrier({m_drawDepth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         d3d::settex(7, m_drawDepth);
-        const math::Vector4 reconstruction(m_constants.reconstruction[2], m_blurDepthThreshold,
-            m_constants.projection[14], m_constants.projection[10]);
+        const math::Vector4 reconstruction(m_drawConstants.reconstruction[2], m_blurDepthThreshold,
+            m_drawConstants.projection[14], m_drawConstants.projection[10]);
         shader_globals::setVariable("ssaoReconstruction", &reconstruction);
     }
 

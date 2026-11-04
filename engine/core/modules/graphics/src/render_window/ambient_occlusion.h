@@ -61,10 +61,24 @@ namespace nau::render
         void draw(BaseTexture* target, MaterialAssetView& material, const char* pipeline, BaseTexture* source = nullptr);
         void filter(BaseTexture* output);
         void resetSecondary();
-        void downsampleInputs();
+        void downsampleInputs(BaseTexture* normals, BaseTexture* depth);
+        struct AoJob
+        {
+            enum class State { Free, InFlight, Ready, Shown };
+            State state = State::Free;
+            BaseTexture* normals = nullptr;
+            BaseTexture* depth = nullptr;
+            BaseTexture* result = nullptr;
+            d3d::mgpu::PrimarySyncPoint done;
+            d3d::mgpu::SsaoConstants constants;
+            uint64_t frame = 0;
+        };
+        void pollJobs();
+        AoJob* findFreeJob();
+        void selectNewestReadyJob();
         bool prepareTargets(uint32_t width, uint32_t height);
         bool prepareSecondary();
-        void setConstants(MaterialAssetView& material, const char* pipeline);
+        void setConstants(MaterialAssetView& material, const char* pipeline, const d3d::mgpu::SsaoConstants& constants);
         void logSettings();
         bool createRandomTexture();
         void pollWaitTimings();
@@ -81,23 +95,20 @@ namespace nau::render
         d3d::SamplerHandle m_linearWrap = {};
         d3d::mgpu::SsaoProducer* m_secondary = nullptr;
         d3d::mgpu::SsaoConstants m_constants;
+        d3d::mgpu::SsaoConstants m_drawConstants;
         d3d::mgpu::PrimarySyncPoint m_secondaryReady;
-        BaseTexture* m_normalsSnapshot = nullptr;
-        BaseTexture* m_depthSnapshot = nullptr;
-        BaseTexture* m_receiving = nullptr;
+        static constexpr size_t kJobCount = 3;
+        static constexpr size_t kMaxInFlight = 2;
+        std::array<AoJob, kJobCount> m_jobs;
+        AoJob* m_shown = nullptr;
+        static_assert(kMaxInFlight < kJobCount);
         BaseTexture* m_filtered = nullptr;
         BaseTexture* m_horizontal = nullptr;
         BaseTexture* m_fullOutput = nullptr;
         BaseTexture* m_resolveSource = nullptr;
-        BaseTexture* m_asyncRaw = nullptr;
-        BaseTexture* m_asyncDepth = nullptr;
-        BaseTexture* m_asyncNormals = nullptr;
         BaseTexture* m_drawRaw = nullptr;
         BaseTexture* m_drawDepth = nullptr;
         BaseTexture* m_drawNormals = nullptr;
-        bool m_asyncValid = false;
-        d3d::mgpu::SsaoConstants m_submittedConstants;
-        d3d::mgpu::SsaoConstants m_asyncConstants;
         struct WaitTiming
         {
             void* begin = nullptr;
@@ -117,7 +128,7 @@ namespace nau::render
         float m_waitMilliseconds = -1.f;
         WaitTiming* m_currentTiming = nullptr;
         bool m_measureTimings = false;
-        uint64_t m_frameIndex = 0, m_submittedFrame = 0, m_asyncFrame = 0;
+        uint64_t m_frameIndex = 0;
         Measurements m_measurements;
         struct PendingCompletion
         {

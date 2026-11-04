@@ -36,7 +36,8 @@ namespace d3d::mgpu
     /**
      * @brief Queues RG16F/R32F inputs at their declared size, raw R8 AO, and its return copy.
      * Keep endpoints alive until destruction or resize drains both devices. The caller records
-     * wait_for_primary_transfer() before filtering destination, after its independent graphics work.
+     * wait_for_primary_transfer() before filtering destination, after its independent graphics work,
+     * or consumes a completed destination after is_primary_transfer_complete() returns true.
      * A null fence reports failure; no readiness polling or CPU wait is performed.
      */
     NAU_RENDER_EXPORT PrimarySyncPoint submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, uint64_t frame = 0);
