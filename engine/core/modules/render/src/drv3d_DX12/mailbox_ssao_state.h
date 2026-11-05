@@ -84,11 +84,24 @@ namespace drv3d_dx12
                 if (completed >= inputs[i].readDone) return static_cast<int>(i);
             return -1;
         }
-        int freeOutput() const
+        int reusableOutput(uint64_t inputValue) const
         {
+            if (!inputValue || inputValue > inputsReady.issuedValue()) return -1;
             for (UINT i = 0; i < MAILBOX_OUT_SLOTS; ++i)
                 if (!outputs[i].frame) return static_cast<int>(i);
-            return -1;
+            // GPU1 already waits for inputValue before executing the new job. That same F0
+            // signal follows the old GPU0 receives, so a retired slot can be reserved now
+            // without waiting for the CPU to observe their completion. Keep the newest
+            // published slot pinned, and prefer the oldest eligible retired payload.
+            int oldest = -1;
+            for (UINT i = 0; i < MAILBOX_OUT_SLOTS; ++i)
+            {
+                const auto& output = outputs[i];
+                if (static_cast<int>(i) != newestSlot && output.freeAfter && output.freeAfter <= inputValue &&
+                    (oldest < 0 || output.frame < outputs[oldest].frame))
+                    oldest = static_cast<int>(i);
+            }
+            return oldest;
         }
         UINT runnableJobs() const
         {

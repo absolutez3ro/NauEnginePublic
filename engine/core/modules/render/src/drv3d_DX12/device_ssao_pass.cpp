@@ -987,7 +987,8 @@ namespace drv3d_dx12
         }
         if (mailbox)
         {
-            // Only GPU1 waits for this frame's inputs. Do not route this through waitOn(), which adds a local signal.
+            // Only GPU1 waits. F0 covers this frame's inputs and old GPU0 readers of a reused
+            // output slot. Do not route this through waitOn(), which adds a local signal.
             result = m_queue->Wait(mailbox->inputsReady.fence, mailbox->inputsReady.value);
             if (FAILED(result)) return result;
         }

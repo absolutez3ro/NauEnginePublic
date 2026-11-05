@@ -7,7 +7,7 @@
 namespace drv3d_dx12
 {
     constexpr uint32_t MAILBOX_IN_SLOTS = 5;
-    // Six slots caused output-pressure skips with Nau's three-frame CPU lead; eight retain readers without stalling.
+    // Outputs cover the pinned latest result and receives already recorded by Nau's CPU frontend.
     constexpr uint32_t MAILBOX_OUT_SLOTS = 8;
 
     // Borrowed resources remain alive until the primary graphics stream has completed.

@@ -273,7 +273,11 @@ namespace d3d::mgpu
         auto* depthImage = image(depth);
         auto* normalImage = producer->reconstructNormals ? nullptr : image(normals);
         if (!depthImage || (!producer->reconstructNormals && !normalImage)) return false;
-        const int input = mailbox.freeInput(), output = mailbox.freeOutput();
+        // Reserve the F0 value before choosing an output: GPU1's input wait also protects
+        // reuse of retired output slots whose old GPU0 readers precede this signal.
+        const uint64_t v0 = mailbox.inputsReady.reserveSignal();
+        if (!v0) return false;
+        const int input = mailbox.freeInput(), output = mailbox.reusableOutput(v0);
         bool issue = true;
         if (input < 0) { ++mailbox.observations.skippedInput; issue = false; }
         else if (output < 0) { ++mailbox.observations.skippedOutput; issue = false; }
@@ -299,8 +303,6 @@ namespace d3d::mgpu
         }
         if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->published, nullptr, nullptr);
         // Even skipped frames submit one progress signal, allowing retired outputs/readbacks to become reusable.
-        const uint64_t v0 = mailbox.inputsReady.reserveSignal();
-        if (!v0) return false;
         context.signalForeignFenceAfterSubmit(mailbox.inputsReady.getFence(drv3d_dx12::CrossAdapterFence::Side::SIGNALER), v0);
         ++mailbox.observations.submitOnlySignals;
         if (!issue) return true;
