@@ -12,6 +12,21 @@ namespace d3d::mgpu
         uint64_t frame = 0;
         float rawMilliseconds = -1.f;
         float totalMilliseconds = -1.f;
+        // GPU1's own queue intervals. totalMilliseconds retains its raw + blur meaning.
+        // Input includes unpack when enabled; these copy intervals are available only for framework transport.
+        float inputMilliseconds = -1.f;
+        float blurMilliseconds = -1.f;
+        float outputMilliseconds = -1.f;
+        float jobMilliseconds = -1.f;
+        uint64_t submittedJobs = 0;
+        uint64_t completedJobs = 0;
+        uint64_t skippedSubmissions = 0;
+        // GPU0 intervals are measured on its queue and must not be summed to infer end-to-end latency.
+        uint64_t primaryFrame = 0;
+        float primaryPublishMilliseconds = -1.f;
+        float primaryReceiveMilliseconds = -1.f;
+        bool packedDepth = false;
+        bool packedNormals = false;
     };
     /**
      * @brief Column-major matrices and parameters matching ssao_common.hlsli.

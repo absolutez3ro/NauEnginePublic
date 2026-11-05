@@ -32,7 +32,7 @@ namespace d3d::mgpu
     };
 
     struct SsaoProducer;
-    /** @brief Creates the synchronized producer, or the unsynchronized shared-texture experiment when frameworkStyle is set. */
+    /** @brief Creates the framework shared-texture producer when frameworkStyle is set, or the protected comparison producer otherwise. */
     NAU_RENDER_EXPORT SsaoProducer* createSsaoProducer(const SsaoProducerDesc& desc);
     /**
      * @brief Queues RG16F/R32F inputs at their declared size, raw R8 AO, and its return copy.

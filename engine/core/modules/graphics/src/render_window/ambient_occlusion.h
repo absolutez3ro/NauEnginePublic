@@ -55,6 +55,9 @@ namespace nau::render
             int readyAtConsumer = -1;
             float overlapMs = -1.f, waitMs = -1.f, chainObservedMs = -1.f;
             d3d::mgpu::SsaoGpuTiming gpu1Timing;
+            uint64_t gpu1Generation = 0, primaryFilterFrame = 0;
+            uint32_t aoWidth = 0, aoHeight = 0, inputWidth = 0, inputHeight = 0;
+            float primaryFilterMs = -1.f;
         };
         const Measurements& getMeasurements() const { return m_measurements; }
 
@@ -85,6 +88,7 @@ namespace nau::render
         void pollWaitTimings();
         void waitForSecondary();
         void beginOverlapTiming();
+        void pollFilterTimings();
 
         MaterialAssetView::Ptr m_rawMaterial;
         MaterialAssetView::Ptr m_blurMaterial;
@@ -123,6 +127,14 @@ namespace nau::render
             uint64_t sequence = 0;
         };
         std::array<WaitTiming, 16> m_waitTimings;
+        struct FilterTiming
+        {
+            void* begin = nullptr;
+            void* end = nullptr;
+            uint64_t frame = 0, generation = 0;
+            bool pending = false;
+        };
+        std::array<FilterTiming, 16> m_filterTimings;
         uint64_t m_timingGeneration = 0;
         uint64_t m_nextWaitSequence = 0;
         uint64_t m_lastWaitSequence = 0;

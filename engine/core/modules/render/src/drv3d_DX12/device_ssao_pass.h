@@ -28,6 +28,8 @@ namespace drv3d_dx12
         bool linearDepth16 = false;
         bool measureTimings = false;
         bool frameworkStyle = false;
+        bool packedFrameworkDepth = false;
+        bool packedFrameworkNormals = false;
     };
 
     struct FrameworkSsaoTextures
@@ -39,11 +41,11 @@ namespace drv3d_dx12
     };
 
     /**
-     * @brief Raw half-resolution SSAO on GPU 1. Queue waits order input copies and output reuse.
-     * Two resource sets share one graphics queue and immutable pipelines. Input copies and output
-     * reuse wait only for the selected set. Inputs and output are COMMON between submissions.
-     * Command/constant storage grows when all recordings are in flight; resource recycling never
-     * skips a frame or waits on the CPU.
+     * @brief Native SSAO on GPU1, with a framework shared-texture path and a protected comparison path.
+     * Framework mode uses one local resource set and three command/constant recordings. It reads
+     * shared inputs at execution, never waits for the other adapter and skips submission if all
+     * three recordings are busy. Protected mode uses two resource sets and queue waits for their
+     * inputs and output readers. Both paths use one direct queue and COMMON between submissions.
      */
     class DeviceSsaoPass final
     {

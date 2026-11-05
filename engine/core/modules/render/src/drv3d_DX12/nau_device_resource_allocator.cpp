@@ -3,6 +3,7 @@
 #include "nau_device_resource_allocator.h"
 
 #include "device.h"
+#include "multi_gpu_device.h"
 
 namespace drv3d_dx12
 {
@@ -80,6 +81,7 @@ namespace drv3d_dx12
         SecondaryHeapPool m_pool;
         eastl::vector<Allocation> m_allocations;
         uint64_t m_nextToken = 1;
+        bool m_cpuCachedSoftware = false;
     };
 
     NauDeviceResourceAllocator::NauDeviceResourceAllocator() = default;
@@ -109,6 +111,13 @@ namespace drv3d_dx12
         m_state = eastl::make_unique<State>();
         m_state->m_device = device;
         m_state->m_adapter = adapter;
+        DXGI_ADAPTER_DESC1 adapterDesc = {};
+        D3D12_FEATURE_DATA_ARCHITECTURE architecture = {};
+        m_state->m_cpuCachedSoftware = SUCCEEDED(adapter->GetDesc1(&adapterDesc)) && is_software_device(adapterDesc) &&
+            SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture))) &&
+            architecture.UMA && architecture.CacheCoherentUMA;
+        if (m_state->m_cpuCachedSoftware)
+            NAU_LOG_INFO("SSAO: software adapter uses CPU WRITE_BACK for its local Nau pool");
         SecondaryHeapPool::SetupInfo setup = {};
         setup.device = device;
         setup.adapter = adapter.Get();
@@ -152,7 +161,11 @@ namespace drv3d_dx12
         {
             return E_INVALIDARG;
         }
-        const auto properties = m_state->m_pool.getProperties(request.description.Flags, memoryClass, info.Alignment);
+        auto properties = m_state->m_pool.getProperties(request.description.Flags, memoryClass, info.Alignment);
+        // WARP executes shader reads on the CPU; write-combined local textures make those reads very expensive.
+        // This changes only the explicit secondary allocator, never shared heaps or physical GPU policies.
+        if (m_state->m_cpuCachedSoftware && request.heapType != D3D12_HEAP_TYPE_READBACK)
+            properties.setBufferWriteBackCPUMemory();
         HRESULT allocationError = E_OUTOFMEMORY;
         const ResourceMemory memory = m_state->m_pool.allocate(m_state->m_adapter.Get(), m_state->m_device.Get(), properties, info, {}, &allocationError);
         if (!memory)

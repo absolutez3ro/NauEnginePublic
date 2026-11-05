@@ -18,6 +18,7 @@ namespace drv3d_dx12
      * GPU 0's manager, never silently creates committed resources and does not share heaps between
      * adapters. All allocated resources must be destroyed after their fences complete and before
      * destroying this allocator. Call shutdown() to check that no live allocations remain.
+     * Cache-coherent software adapters use CPU-cached local heaps; physical GPUs retain Nau's policy.
      */
     class NauDeviceResourceAllocator final : public IDeviceResourceAllocator
     {

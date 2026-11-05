@@ -2,6 +2,7 @@
 //
 // Copyright 2026 N-GINN LLC. All rights reserved.
 #include "device_ssao_pass.h"
+#include "ssao_unpack_depth_bytecode.h"
 #include "nau/3d/ssao_random_texture.h"
 
 #include <EASTL/vector.h>
@@ -13,6 +14,8 @@ namespace drv3d_dx12
     namespace
     {
         constexpr UINT CONSTANT_BYTES = (sizeof(d3d::mgpu::SsaoConstants) + 255u) & ~255u;
+        enum Timestamp : UINT { INPUT_BEGIN, RAW_BEGIN, RAW_END, FILTER_END, OUTPUT_END, TIMESTAMP_COUNT };
+        constexpr UINT SRV_TABLES = 4, SRVS_PER_TABLE = 5, SRVS_PER_SET = SRV_TABLES * SRVS_PER_TABLE;
 
         bool validShader(const D3D12_SHADER_BYTECODE& shader)
         {
@@ -103,6 +106,13 @@ namespace drv3d_dx12
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_randomFootprint = {};
         bool m_randomUploaded = false;
         bool m_frameworkStyle = false;
+        bool m_reconstructNormals = false;
+        bool m_packedFrameworkDepth = false;
+        bool m_packedFrameworkNormals = false;
+        DeviceResource m_packedDepth;
+        DeviceResource m_packedNormals;
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_unpackRtvHeap;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> m_unpackPso;
         Microsoft::WRL::ComPtr<ID3D12Heap> m_sharedHeaps[3];
         Microsoft::WRL::ComPtr<ID3D12Resource> m_sharedTextures[3];
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_queue;
@@ -210,11 +220,17 @@ namespace drv3d_dx12
     HRESULT DeviceSsaoPass::executeFramework(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared, uint64_t frame)
     {
         collectRetiredResources();
-        if (!m_state || !m_state->m_frameworkStyle || !shared.normals || !shared.depth || !shared.result) return E_INVALIDARG;
+        if (!m_state || !m_state->m_frameworkStyle || !shared.depth || !shared.result ||
+            (!m_state->m_reconstructNormals && !shared.normals)) return E_INVALIDARG;
         ID3D12Resource* textures[] = {shared.normals, shared.depth, shared.result};
-        ID3D12Resource* locals[] = {getNormals(), getDepth(), getResult()};
+        ID3D12Resource* locals[] = {m_state->m_packedFrameworkNormals ? m_state->m_packedNormals.getResource() : getNormals(),
+            m_state->m_packedFrameworkDepth ? m_state->m_packedDepth.getResource() : getDepth(), getResult()};
         for (UINT index = 0; index < 3; ++index)
         {
+            if (index == 0 && m_state->m_reconstructNormals) continue;
+            // Resource descriptions are immutable. Validate and retain each borrowed texture only once.
+            if (m_state->m_sharedTextures[index].Get() == textures[index]) continue;
+            if (m_state->m_sharedTextures[index]) return E_INVALIDARG;
             const auto a = textures[index]->GetDesc();
             const auto b = locals[index]->GetDesc();
             Microsoft::WRL::ComPtr<ID3D12Device> owner;
@@ -269,6 +285,11 @@ namespace drv3d_dx12
         m_device = desc.allocator->getDevice();
         m_allocator = desc.allocator;
         m_frameworkStyle = desc.frameworkStyle;
+        m_reconstructNormals = desc.reconstructNormals;
+        m_packedFrameworkDepth = desc.frameworkStyle && desc.packedFrameworkDepth;
+        m_packedFrameworkNormals = m_packedFrameworkDepth && desc.packedFrameworkNormals && !m_reconstructNormals;
+        m_timing.packedDepth = m_packedFrameworkDepth;
+        m_timing.packedNormals = m_packedFrameworkNormals;
         m_width = desc.width;
         m_height = desc.height;
         m_normalFormat = desc.packedNormals ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_FLOAT;
@@ -294,11 +315,13 @@ namespace drv3d_dx12
         {
             auto& resources = m_resources[index];
             if (SUCCEEDED(result))
-                result = resources.normals.createTexture(m_allocator.get(), desc.inputWidth ? desc.inputWidth : m_width,
-                                              desc.inputHeight ? desc.inputHeight : m_height, m_normalFormat);
+                result = resources.normals.createTexture(m_allocator.get(), m_frameworkStyle && m_reconstructNormals ? 1u : (desc.inputWidth ? desc.inputWidth : m_width),
+                                              m_frameworkStyle && m_reconstructNormals ? 1u : (desc.inputHeight ? desc.inputHeight : m_height), m_normalFormat,
+                                              m_packedFrameworkNormals ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE);
             if (SUCCEEDED(result))
                 result = resources.depth.createTexture(m_allocator.get(), desc.inputWidth ? desc.inputWidth : m_width,
-                                            desc.inputHeight ? desc.inputHeight : m_height, m_depthFormat);
+                                            desc.inputHeight ? desc.inputHeight : m_height, m_depthFormat,
+                                            m_packedFrameworkDepth ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE);
             if (SUCCEEDED(result))
                 result = resources.output.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
             if (SUCCEEDED(result))
@@ -306,10 +329,20 @@ namespace drv3d_dx12
             if (SUCCEEDED(result))
                 result = resources.horizontal.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         }
-        if (SUCCEEDED(result))
+        if (SUCCEEDED(result) && m_packedFrameworkDepth)
         {
-            result = createRandomTexture();
+            const UINT inputWidth = desc.inputWidth ? desc.inputWidth : m_width;
+            const UINT pixelsPerWord = desc.linearDepth16 ? 8u : 4u;
+            result = m_packedDepth.createTexture(m_allocator.get(), (inputWidth + pixelsPerWord - 1) / pixelsPerWord,
+                desc.inputHeight ? desc.inputHeight : m_height, DXGI_FORMAT_R32G32B32A32_UINT);
+            if (SUCCEEDED(result) && m_packedFrameworkNormals)
+            {
+                const UINT normalGroup = desc.packedNormals ? 8u : 4u;
+                result = m_packedNormals.createTexture(m_allocator.get(), (inputWidth + normalGroup - 1) / normalGroup,
+                    desc.inputHeight ? desc.inputHeight : m_height, DXGI_FORMAT_R32G32B32A32_UINT);
+            }
         }
+        if (SUCCEEDED(result)) result = createRandomTexture();
         if (SUCCEEDED(result))
         {
             result = createDescriptors();
@@ -364,7 +397,7 @@ namespace drv3d_dx12
         desc.NumDescriptors = 3 * resourceCount;
         HRESULT result = m_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&m_rtvHeap));
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        desc.NumDescriptors = 15 * resourceCount;
+        desc.NumDescriptors = SRVS_PER_SET * resourceCount;
         desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (SUCCEEDED(result))
         {
@@ -376,6 +409,21 @@ namespace drv3d_dx12
         }
         m_srvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         m_rtvStride = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        if (m_packedFrameworkDepth)
+        {
+            D3D12_DESCRIPTOR_HEAP_DESC unpack = {};
+            unpack.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+            unpack.NumDescriptors = m_packedFrameworkNormals ? 2u : 1u;
+            result = m_device->CreateDescriptorHeap(&unpack, IID_PPV_ARGS(&m_unpackRtvHeap));
+            if (FAILED(result)) return result;
+            m_device->CreateRenderTargetView(m_resources[0].depth.getResource(), nullptr, m_unpackRtvHeap->GetCPUDescriptorHandleForHeapStart());
+            if (m_packedFrameworkNormals)
+            {
+                auto handle = m_unpackRtvHeap->GetCPUDescriptorHandleForHeapStart();
+                handle.ptr += m_rtvStride;
+                m_device->CreateRenderTargetView(m_resources[0].normals.getResource(), nullptr, handle);
+            }
+        }
         for (UINT resourceIndex = 0; resourceIndex < resourceCount; ++resourceIndex)
         {
             auto& resources = m_resources[resourceIndex];
@@ -386,10 +434,11 @@ namespace drv3d_dx12
                 handle.ptr += (resourceIndex * 3 + i) * m_rtvStride;
                 m_device->CreateRenderTargetView(targets[i], nullptr, handle);
             }
-            for (UINT table = 0; table < 3; ++table)
+            for (UINT table = 0; table < SRV_TABLES; ++table)
             {
-                ID3D12Resource* inputs[] = {resources.normals.getResource(), resources.depth.getResource(),
-                    table == 2 ? resources.horizontal.getResource() : resources.raw.getResource(), resources.depth.getResource(), m_random.getResource()};
+                ID3D12Resource* inputs[] = {table == 3 && m_packedFrameworkNormals ? m_packedNormals.getResource() : resources.normals.getResource(), resources.depth.getResource(),
+                    table == 2 ? resources.horizontal.getResource() : resources.raw.getResource(),
+                    table == 3 && m_packedFrameworkDepth ? m_packedDepth.getResource() : resources.depth.getResource(), m_random.getResource()};
                 for (UINT input = 0; input < 5; ++input)
                 {
                     D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
@@ -398,7 +447,7 @@ namespace drv3d_dx12
                     srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
                     srv.Texture2D.MipLevels = 1;
                     auto handle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
-                    handle.ptr += (resourceIndex * 15 + table * 5 + input) * m_srvStride;
+                    handle.ptr += (resourceIndex * SRVS_PER_SET + table * SRVS_PER_TABLE + input) * m_srvStride;
                     m_device->CreateShaderResourceView(inputs[input], &srv, handle);
                 }
             }
@@ -479,6 +528,19 @@ namespace drv3d_dx12
             pso.RTVFormats[0] = DXGI_FORMAT_R16_FLOAT;
             if (SUCCEEDED(result)) result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_horizontalPso));
         }
+        if (SUCCEEDED(result) && m_packedFrameworkDepth)
+        {
+            pso.VS = {g_ssaoUnpackDepthVertexBytecode, sizeof(g_ssaoUnpackDepthVertexBytecode)};
+            pso.PS = {g_ssaoUnpackDepthBytecode, sizeof(g_ssaoUnpackDepthBytecode)};
+            if (m_packedFrameworkNormals)
+            {
+                pso.PS = {g_ssaoUnpackDepthNormalsBytecode, sizeof(g_ssaoUnpackDepthNormalsBytecode)};
+                pso.NumRenderTargets = 2;
+                pso.RTVFormats[1] = m_normalFormat;
+            }
+            pso.RTVFormats[0] = m_depthFormat;
+            result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_unpackPso));
+        }
         return result;
     }
 
@@ -555,7 +617,11 @@ namespace drv3d_dx12
                 return SUCCEEDED(result) ? recording->list->Reset(recording->allocator.Get(), m_rawPso.Get()) : result;
             }
         }
-        if (m_frameworkStyle && m_recordings.size() >= 3) return S_FALSE;
+        if (m_frameworkStyle && m_recordings.size() >= 3)
+        {
+            ++m_timing.skippedSubmissions;
+            return S_FALSE;
+        }
         eastl::unique_ptr<Recording> next = eastl::make_unique<Recording>();
         HRESULT result = m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&next->allocator));
         if (SUCCEEDED(result))
@@ -577,12 +643,12 @@ namespace drv3d_dx12
         {
             if (m_timestampFrequency)
             {
-                const D3D12_QUERY_HEAP_DESC desc = {D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 3, 0};
+                const D3D12_QUERY_HEAP_DESC desc = {D3D12_QUERY_HEAP_TYPE_TIMESTAMP, TIMESTAMP_COUNT, 0};
                 result = m_device->CreateQueryHeap(&desc, IID_PPV_ARGS(&next->timestampHeap));
-                if (SUCCEEDED(result)) result = next->timestampReadback.createBuffer(m_allocator.get(), 3 * sizeof(uint64_t), D3D12_HEAP_TYPE_READBACK);
+                if (SUCCEEDED(result)) result = next->timestampReadback.createBuffer(m_allocator.get(), TIMESTAMP_COUNT * sizeof(uint64_t), D3D12_HEAP_TYPE_READBACK);
                 if (SUCCEEDED(result))
                 {
-                    const D3D12_RANGE read = {0, 3 * sizeof(uint64_t)};
+                    const D3D12_RANGE read = {0, TIMESTAMP_COUNT * sizeof(uint64_t)};
                     void* mapped = nullptr;
                     result = next->timestampReadback.getResource()->Map(0, &read, &mapped);
                     next->timestamps = static_cast<uint64_t*>(mapped);
@@ -599,17 +665,32 @@ namespace drv3d_dx12
 
     void DeviceSsaoPass::State::pollTiming()
     {
-        if (!m_timestampFrequency || !m_fence) return;
+        if (!m_fence) return;
         const uint64_t completed = m_fence->GetCompletedValue();
         if (completed == UINT64_MAX) return;
         for (auto& recording : m_recordings)
         {
             if (!recording->timingPending || recording->fenceValue > completed) continue;
+            ++m_timing.completedJobs;
             const auto* t = recording->timestamps;
-            if (recording->timingFrame > m_timing.frame && t[1] >= t[0] && t[2] >= t[1])
-                m_timing = {recording->timingFrame,
-                    static_cast<float>(1000.0 * (t[1] - t[0]) / m_timestampFrequency),
-                    static_cast<float>(1000.0 * (t[2] - t[0]) / m_timestampFrequency)};
+            if (m_timestampFrequency && t && recording->timingFrame > m_timing.frame &&
+                t[RAW_BEGIN] >= t[INPUT_BEGIN] && t[RAW_END] >= t[RAW_BEGIN] &&
+                t[FILTER_END] >= t[RAW_END] && t[OUTPUT_END] >= t[FILTER_END])
+            {
+                const auto ms = [&](Timestamp first, Timestamp last) {
+                    return static_cast<float>(1000.0 * static_cast<double>(t[last] - t[first]) / m_timestampFrequency);
+                };
+                m_timing.frame = recording->timingFrame;
+                m_timing.rawMilliseconds = ms(RAW_BEGIN, RAW_END);
+                m_timing.totalMilliseconds = ms(RAW_BEGIN, FILTER_END);
+                m_timing.blurMilliseconds = ms(RAW_END, FILTER_END);
+                if (m_frameworkStyle)
+                {
+                    m_timing.inputMilliseconds = ms(INPUT_BEGIN, RAW_BEGIN);
+                    m_timing.outputMilliseconds = ms(FILTER_END, OUTPUT_END);
+                    m_timing.jobMilliseconds = ms(INPUT_BEGIN, OUTPUT_END);
+                }
+            }
             recording->timingPending = false;
         }
     }
@@ -696,11 +777,13 @@ namespace drv3d_dx12
             barrier(common, sharedState, D3D12_RESOURCE_STATE_COMMON);
             barrier(local, localState, D3D12_RESOURCE_STATE_COMMON);
         };
+        if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, INPUT_BEGIN);
         if (shared)
         {
             // Contents are selected when these GPU commands execute, without a cross-adapter wait.
-            copyShared(resources.normals.getResource(), shared->normals, false);
-            copyShared(resources.depth.getResource(), shared->depth, false);
+            // Reconstructed normals only sample depth; copying normal pixels wastes cross-adapter bandwidth.
+            if (!m_reconstructNormals) copyShared(m_packedFrameworkNormals ? m_packedNormals.getResource() : resources.normals.getResource(), shared->normals, false);
+            copyShared(m_packedFrameworkDepth ? m_packedDepth.getResource() : resources.depth.getResource(), shared->depth, false);
         }
         if (!m_randomUploaded)
         {
@@ -718,6 +801,41 @@ namespace drv3d_dx12
         ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Get()};
         m_list->SetDescriptorHeaps(1, heaps);
         m_list->SetGraphicsRootSignature(m_root.Get());
+        if (m_packedFrameworkDepth)
+        {
+            // Expand the wide shared-memory view into the original local depth format before SSAO.
+            // GPU0 still writes its ordinary R16F/R32F texture; no packing pass or frame flush is needed there.
+            const auto depthDesc = resources.depth.getResource()->GetDesc();
+            const D3D12_VIEWPORT unpackViewport = {0, 0, static_cast<float>(depthDesc.Width), static_cast<float>(depthDesc.Height), 0, 1};
+            const D3D12_RECT unpackScissor = {0, 0, static_cast<LONG>(depthDesc.Width), static_cast<LONG>(depthDesc.Height)};
+            m_list->RSSetViewports(1, &unpackViewport);
+            m_list->RSSetScissorRects(1, &unpackScissor);
+            m_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            std::memcpy(recording->mapped, &data, sizeof(data));
+            m_list->SetGraphicsRootConstantBufferView(0, recording->constants.getResource()->GetGPUVirtualAddress());
+            auto table = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
+            table.ptr += (resourceIndex * SRVS_PER_SET + 3 * SRVS_PER_TABLE) * m_srvStride;
+            m_list->SetGraphicsRootDescriptorTable(1, table);
+            m_list->SetPipelineState(m_unpackPso.Get());
+            barrier(m_packedDepth.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            barrier(resources.depth.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            D3D12_CPU_DESCRIPTOR_HANDLE targets[] = {m_unpackRtvHeap->GetCPUDescriptorHandleForHeapStart(), m_unpackRtvHeap->GetCPUDescriptorHandleForHeapStart()};
+            targets[1].ptr += m_rtvStride;
+            if (m_packedFrameworkNormals)
+            {
+                barrier(m_packedNormals.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                barrier(resources.normals.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            }
+            m_list->OMSetRenderTargets(m_packedFrameworkNormals ? 2u : 1u, targets, FALSE, nullptr);
+            m_list->DrawInstanced(3, 1, 0, 0);
+            barrier(resources.depth.getResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COMMON);
+            barrier(m_packedDepth.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+            if (m_packedFrameworkNormals)
+            {
+                barrier(resources.normals.getResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COMMON);
+                barrier(m_packedNormals.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+            }
+        }
         const D3D12_VIEWPORT viewport = {0, 0, static_cast<float>(m_width), static_cast<float>(m_height), 0, 1};
         const D3D12_RECT scissor = {0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height)};
         m_list->RSSetViewports(1, &viewport);
@@ -733,7 +851,7 @@ namespace drv3d_dx12
             std::memcpy(recording->mapped + constantIndex * CONSTANT_BYTES, &constants, sizeof(constants));
             m_list->SetGraphicsRootConstantBufferView(0, recording->constants.getResource()->GetGPUVirtualAddress() + constantIndex * CONSTANT_BYTES);
             auto srv = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
-            srv.ptr += (resourceIndex * 15 + table * 5) * m_srvStride;
+            srv.ptr += (resourceIndex * SRVS_PER_SET + table * SRVS_PER_TABLE) * m_srvStride;
             m_list->SetGraphicsRootDescriptorTable(1, srv);
             m_list->SetPipelineState(pso);
             barrier(target, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -743,9 +861,9 @@ namespace drv3d_dx12
             m_list->DrawInstanced(3, 1, 0, 0);
             barrier(target, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COMMON);
         };
-        if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
+        if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, RAW_BEGIN);
         draw(filtered ? resources.raw.getResource() : resources.output.getResource(), filtered ? 1 : 0, 0, 0, m_rawPso.Get(), data);
-        if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
+        if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, RAW_END);
         if (filtered)
         {
             barrier(resources.raw.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -766,11 +884,15 @@ namespace drv3d_dx12
         barrier(resources.depth.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         if (recording->timestampHeap)
         {
-            m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 2);
-            m_list->ResolveQueryData(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 3, recording->timestampReadback.getResource(), 0);
+            m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, FILTER_END);
             recording->timingFrame = frame;
         }
         if (shared) copyShared(resources.output.getResource(), shared->result, true);
+        if (recording->timestampHeap)
+        {
+            m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, OUTPUT_END);
+            m_list->ResolveQueryData(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, TIMESTAMP_COUNT, recording->timestampReadback.getResource(), 0);
+        }
 
         result = m_list->Close();
         if (SUCCEEDED(result))
@@ -800,7 +922,8 @@ namespace drv3d_dx12
 
         recording->fenceValue = ++m_serial;
         resources.rendered = recording->fenceValue;
-        recording->timingPending = recording->timestampHeap != nullptr;
+        recording->timingPending = true;
+        ++m_timing.submittedJobs;
         return signal();
     }
 }  // namespace drv3d_dx12

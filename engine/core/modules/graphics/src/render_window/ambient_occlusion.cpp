@@ -129,6 +129,11 @@ namespace nau::render
             d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &timing.end, nullptr, nullptr);
             d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &timing.overlapStart, nullptr, nullptr);
         }
+        for (auto& timing : m_filterTimings)
+        {
+            d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &timing.begin, nullptr, nullptr);
+            d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &timing.end, nullptr, nullptr);
+        }
         if (m_randomTexture)
         {
             m_randomTexture->destroy();
@@ -137,6 +142,10 @@ namespace nau::render
 
     void AmbientOcclusion::resetSecondary()
     {
+        ++m_timingGeneration;
+        m_measurements.gpu1Timing = {};
+        m_measurements.primaryFilterFrame = 0;
+        m_measurements.primaryFilterMs = -1.f;
         m_pendingCompletions.clear();
         // Drain foreign queues before destroying any endpoint they may still reference.
         d3d::mgpu::destroySsaoProducer(m_secondary);
@@ -185,6 +194,7 @@ namespace nau::render
         m_measureTimings = readSetting<bool>("render/measurements/enabled", false);
         d3d::mgpu::begin_foreign_queue_frame(readSetting<bool>("render/ssao/submitOnlyHandoffs", false), m_measureTimings);
         pollWaitTimings();
+        pollFilterTimings();
         if (m_measureTimings)
         {
             m_measurements.gpu1Timing = d3d::mgpu::pollSsaoTiming(m_secondary);
@@ -226,6 +236,10 @@ namespace nau::render
     void AmbientOcclusion::prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, BaseTexture* normals, BaseTexture* depth)
     {
         m_measurements.frame = ++m_frameIndex;
+        m_measurements.aoWidth = m_secondaryWidth;
+        m_measurements.aoHeight = m_secondaryHeight;
+        m_measurements.inputWidth = m_inputWidth;
+        m_measurements.inputHeight = m_inputHeight;
         if (m_measureTimings)
         {
             m_measurements.phase = readSetting<uint32_t>("sample/automation/phase", 0);
@@ -533,6 +547,7 @@ namespace nau::render
             {
                 return false;
             }
+            ++m_measurements.gpu1Generation;
             NAU_LOG_INFO("SSAO: GPU 1 producer, AO {}x{}, framework unsynchronized={}", m_secondaryWidth, m_secondaryHeight, m_frameworkTransport);
         }
         if (!m_secondary)
@@ -571,6 +586,18 @@ namespace nau::render
         m_resolveSource = m_drawRaw;
         if (!blurOnSecondary && p.blur != AmbientOcclusionBlur::off && p.blur != AmbientOcclusionBlur::bilateralUpsample)
         {
+            FilterTiming* sample = nullptr;
+            if (m_measureTimings)
+                for (auto& timing : m_filterTimings)
+                    if (!timing.pending)
+                    {
+                        sample = &timing;
+                        timing.frame = m_frameIndex;
+                        timing.generation = m_timingGeneration;
+                        timing.pending = true;
+                        d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing.begin, nullptr, nullptr);
+                        break;
+                    }
             m_drawConstants.pipeline[1] = 0.f;
             draw(p.blur == AmbientOcclusionBlur::gaussian ? m_horizontal : m_filtered, *m_blurMaterial, "halfBlur", m_drawRaw);
             if (p.blur == AmbientOcclusionBlur::gaussian)
@@ -579,6 +606,7 @@ namespace nau::render
                 draw(m_filtered, *m_blurMaterial, "halfBlur", m_horizontal);
             }
             m_resolveSource = m_filtered;
+            if (sample) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &sample->end, nullptr, nullptr);
         }
         if (m_fullOutput)
         {
@@ -657,6 +685,25 @@ namespace nau::render
     math::Vector4 AmbientOcclusion::getResolveControl() const
     {
         return math::Vector4(m_settings.mode != AmbientOcclusionMode::off && m_resolveSource ? 1.f : 0.f, m_fullOutput ? -1.f : m_drawConstants.reconstruction[0], m_settings.pipeline.linearDepth16 ? 1.f : 0.f, m_settings.pipeline.gatherUpsample ? 1.f : 0.f);
+    }
+
+    void AmbientOcclusion::pollFilterTimings()
+    {
+        uint64_t frequency = 0;
+        d3d::driver_command(D3V3D_COMMAND_TIMESTAMPFREQ, &frequency, nullptr, nullptr);
+        for (auto& timing : m_filterTimings)
+        {
+            uint64_t begin = 0, end = 0;
+            if (!timing.pending ||
+                !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, timing.begin, &begin, nullptr) ||
+                !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, timing.end, &end, nullptr)) continue;
+            if (frequency && timing.generation == m_timingGeneration && timing.frame > m_measurements.primaryFilterFrame && end >= begin)
+            {
+                m_measurements.primaryFilterFrame = timing.frame;
+                m_measurements.primaryFilterMs = static_cast<float>(1000.0 * static_cast<double>(end - begin) / frequency);
+            }
+            timing.pending = false;
+        }
     }
 
     void AmbientOcclusion::pollWaitTimings()
