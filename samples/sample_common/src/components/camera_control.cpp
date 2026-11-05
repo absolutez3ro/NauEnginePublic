@@ -110,7 +110,7 @@ namespace nau::sample
                 if (xegtao)
                     ImGui::TextWrapped("XeGTAO: High (3 slices, 3 steps), 5 depth mips, two denoise passes. Blur below is an additional filter.");
                 if (hbao)
-                    ImGui::TextUnformatted("HBAO: depth normals, 16 directions, radius 2");
+                    ImGui::TextUnformatted("HBAO: depth normals, 16 directions");
                 else
                     changed |= combo("Normals", p.normals, "Transfer prepass normals\0Reconstruct from depth\0");
                 changed |= combo("Blur", p.blur, "Off\0Box 4x4\0Box 4x4 GatherRed\0Bogdanov Gaussian\0Bilateral 4x4 + upsample\0");
