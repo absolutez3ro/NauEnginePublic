@@ -69,7 +69,9 @@ namespace nau::render
         bool quarterResolution = false;
         bool gatherUpsample = false;
         bool waitForSecondary = true;
+        bool fullResolution = false;
 
+        uint32_t resolutionDivisor() const { return fullResolution ? 1 : (quarterResolution ? 4 : 2); }
         bool operator==(const AmbientOcclusionPipeline&) const = default;
     };
 

@@ -17,6 +17,8 @@ namespace nau::render
 {
     namespace
     {
+        constexpr float HBAO_TRACE_RADIUS = 2.f;
+
         template <typename TValue>
         TValue readSetting(const char* name, const TValue& fallback)
         {
@@ -77,6 +79,7 @@ namespace nau::render
         p.weightedUpsample = readSetting<bool>("render/ssao/weightedUpsample", false);
         p.rejectOutside = readSetting<bool>("render/ssao/rejectOutside", false);
         p.quarterResolution = readSetting<bool>("render/ssao/quarterResolution", false);
+        p.fullResolution = readSetting<bool>("render/ssao/fullResolution", false);
         p.gatherUpsample = readSetting<bool>("render/ssao/gatherUpsample", false);
         p.waitForSecondary = readTransportMode() == 0 && readSetting<bool>("render/ssao/waitForSecondary", true);
         return settings;
@@ -245,7 +248,7 @@ namespace nau::render
             (next.algorithm == AmbientOcclusionVariant::hbao);
         const bool layoutChanged = rawPipelineChanged || old.inputs != next.inputs || old.normals != next.normals ||
             old.packedNormals != next.packedNormals || old.linearDepth16 != next.linearDepth16 ||
-            old.quarterResolution != next.quarterResolution;
+            old.resolutionDivisor() != next.resolutionDivisor();
         m_logSettings |= old != next || m_settings.execution != settings.execution || m_settings.mode != settings.mode;
         if (layoutChanged || asyncChanged) resetSecondary();
         m_settings = effectiveSettings;
@@ -292,19 +295,20 @@ namespace nau::render
         std::memcpy(m_constants.inverseProjection, &inverseProjection, sizeof(inverseProjection));
         std::memcpy(m_constants.view, &view, sizeof(view));
         std::memcpy(m_constants.parameters, &m_parameters, sizeof(m_parameters));
+        const auto& p = m_settings.pipeline;
+        const bool hbao = p.algorithm == AmbientOcclusionVariant::hbao;
+        if (hbao) m_constants.parameters[0] = HBAO_TRACE_RADIUS;
         m_constants.filter[2] = m_blurDepthThreshold;
         if (m_settings.mode == AmbientOcclusionMode::off || !m_jobs[0].result)
         {
             logSettings();
             return;
         }
-        const auto& p = m_settings.pipeline;
-        const bool hbao = p.algorithm == AmbientOcclusionVariant::hbao;
         // Keep the requested SSAO normal mode intact while HBAO always reads depth only.
         m_constants.options[0] = hbao || p.normals == AmbientOcclusionNormals::reconstructed ? 1.f : 0.f;
         m_constants.options[1] = p.packedNormals ? 1.f : 0.f;
         m_constants.options[2] = p.linearDepth16 ? 1.f : 0.f;
-        m_constants.options[3] = p.eightSamples ? 8.f : (hbao ? 16.f : 14.f);
+        m_constants.options[3] = hbao ? 16.f : (p.eightSamples ? 8.f : 14.f);
         m_constants.pipeline[0] = static_cast<float>(p.blur);
         m_constants.pipeline[1] = 0.f;
         m_constants.pipeline[2] = p.rejectOutside ? 1.f : 0.f;
@@ -317,7 +321,7 @@ namespace nau::render
         m_constants.reconstruction[0] = p.blur == AmbientOcclusionBlur::bilateralUpsample ? 2.f :
             (p.weightedUpsample ? 3.f : (p.upsample == AmbientOcclusionUpsample::bilinear ? 1.f : 0.f));
         m_constants.reconstruction[1] = p.gatherUpsample ? 1.f : 0.f;
-        m_constants.reconstruction[2] = p.quarterResolution ? 4.f : 2.f;
+        m_constants.reconstruction[2] = static_cast<float>(p.resolutionDivisor());
         m_constants.reconstruction[3] = m_blurDepthThreshold;
         m_constants.filter[0] = static_cast<float>(m_secondaryWidth);
         m_constants.filter[1] = static_cast<float>(m_secondaryHeight);
@@ -530,7 +534,7 @@ namespace nau::render
         resetSecondary();
         m_primaryWidth = info.w;
         m_primaryHeight = info.h;
-        const uint32_t divisor = m_settings.pipeline.quarterResolution ? 4 : 2;
+        const uint32_t divisor = m_settings.pipeline.resolutionDivisor();
         m_secondaryWidth = (info.w + divisor - 1) / divisor;
         m_secondaryHeight = (info.h + divisor - 1) / divisor;
         m_inputWidth = m_settings.pipeline.inputs == AmbientOcclusionInputs::full ? info.w : m_secondaryWidth;
@@ -593,7 +597,9 @@ namespace nau::render
                 desc.rawComputeBytecodeSize = compute->bytecode.size();
             }
             else if (hbao)
+            {
                 NAU_LOG_WARNING("HBAO: secondary compute shader unavailable, using the GPU 1 pixel path");
+            }
             desc.reconstructNormals = hbao || m_settings.pipeline.normals == AmbientOcclusionNormals::reconstructed;
             desc.packedNormals = m_settings.pipeline.packedNormals;
             desc.linearDepth16 = m_settings.pipeline.linearDepth16;
@@ -609,6 +615,8 @@ namespace nau::render
             {
                 return false;
             }
+            if (hbao && !desc.rawComputeBytecode)
+                NAU_LOG_INFO("HBAO: GPU 1 raw AO path=pixel");
             ++m_measurements.gpu1Generation;
             NAU_LOG_INFO("AO: GPU 1 producer, AO {}x{}, algorithm={}, framework unsynchronized={}, mailbox mode={}",
                 m_secondaryWidth, m_secondaryHeight, static_cast<uint32_t>(m_settings.pipeline.algorithm), m_frameworkTransport, m_mailboxMode);
@@ -857,8 +865,11 @@ namespace nau::render
         {
             if (m_mailboxMode) return m_mailboxMode == 2 ? "MGPU mailbox GPU (2b)" : "MGPU mailbox CPU (2a)";
             if (m_frameworkTransport) return "MGPU framework (unsynchronized)";
+            if (m_settings.pipeline.fullResolution) return "MGPU, full AO";
             return m_settings.pipeline.quarterResolution ? "MGPU, quarter AO" : "MGPU, half AO";
         }
+        if (m_settings.pipeline.fullResolution)
+            return m_settings.execution == AmbientOcclusionExecution::multiGpu ? "single GPU, full AO (MGPU unavailable)" : "single GPU, full AO";
         return m_settings.execution == AmbientOcclusionExecution::multiGpu
                    ? (m_settings.pipeline.quarterResolution ? "single GPU, quarter AO (MGPU unavailable)" : "single GPU, half AO (MGPU unavailable)")
                    : (m_settings.pipeline.quarterResolution ? "single GPU, quarter AO" : "single GPU, half AO");
@@ -877,11 +888,11 @@ namespace nau::render
         const auto& p = m_settings.pipeline;
         const bool hbao = p.algorithm == AmbientOcclusionVariant::hbao;
         const auto normals = hbao ? AmbientOcclusionNormals::reconstructed : p.normals;
-        NAU_LOG_INFO("AO pipeline: {}, AO={}x{}, inputs={}x{}, algorithm={}, normals={}, requestedNormals={}, blur={}, blurGPU={}, upsample={}, RG8={}, R16F={}, {}={}, weighted={}, reject={}, gatherUp={}, wait={}, mode={}",
+        NAU_LOG_INFO("AO pipeline: {}, AO={}x{}, inputs={}x{}, algorithm={}, radius={}, normals={}, requestedNormals={}, blur={}, blurGPU={}, upsample={}, RG8={}, R16F={}, {}={}, weighted={}, reject={}, gatherUp={}, wait={}, mode={}",
             getExecutionLabel(), m_secondaryWidth, m_secondaryHeight, m_inputWidth, m_inputHeight,
-            static_cast<uint32_t>(p.algorithm), static_cast<uint32_t>(normals), static_cast<uint32_t>(p.normals), static_cast<uint32_t>(p.blur),
+            static_cast<uint32_t>(p.algorithm), m_constants.parameters[0], static_cast<uint32_t>(normals), static_cast<uint32_t>(p.normals), static_cast<uint32_t>(p.blur),
             static_cast<uint32_t>(p.blurExecution), static_cast<uint32_t>(p.upsample), p.packedNormals, p.linearDepth16,
-            hbao ? "directions" : "samples", p.eightSamples ? 8 : (hbao ? 16 : 14), p.weightedUpsample, p.rejectOutside, p.gatherUpsample, p.waitForSecondary, static_cast<uint32_t>(m_settings.mode));
+            hbao ? "directions" : "samples", hbao ? 16 : (p.eightSamples ? 8 : 14), p.weightedUpsample, !hbao && p.rejectOutside, p.gatherUpsample, p.waitForSecondary, static_cast<uint32_t>(m_settings.mode));
         m_logSettings = false;
     }
 

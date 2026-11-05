@@ -8,32 +8,51 @@
 
 static const float HBAO_PI = 3.14159265359;
 static const float HBAO_TAN_BIAS = 0.57735026919; // tan(30 degrees).
-static const float HBAO_MAX_RADIUS_PIXELS = 64.0; // Input-depth texels, also for reduced AO.
+static const float HBAO_MAX_RADIUS_PIXELS = 64.0;
+static const float HBAO_DISCARD_DISTANCE = 300.0;
 static const float HBAO_INTENSITY = 1.9;
 static const float HBAO_EPSILON = 1e-6;
+static const int HBAO_DIRECTIONS = 16;
+static const int HBAO_STEPS = 4;
 
-bool hbaoReadPosition(int2 pixel, out float3 position)
+float hbaoReadDepth(float2 uv)
 {
-    position = 0.0;
-    if (any(pixel < 0) || any(pixel >= int2(aoSizes.zw))) return false;
-    // rawDepth converts an optional positive linear R16F value back to reversed-Z.
-    float depth = depthAtPixel(pixel);
-    if (depth <= 0.0 || !isfinite(depth)) return false;
-    float2 uv = (float2(pixel) + 0.5) / aoSizes.zw;
-    float4 p = mul(aoInverseProjection, float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), depth, 1.0));
-    if (abs(p.w) <= HBAO_EPSILON) return false;
-    position = p.xyz / p.w;
-    // Nau's right-handed view space looks down -Z; reject the eye and invalid input.
-    return all(isfinite(position)) && position.z < -HBAO_EPSILON;
+    // The reference uses bilinear sampling with far depth at the border.
+    // In reversed-Z this is zero, so fade the clamped sample by the in-bounds weight.
+    float2 texel = uv * aoSizes.zw - 0.5;
+    if (aoOptions.z == 0.0)
+    {
+        float2 coverage = saturate(min(texel + 1.0, aoSizes.zw - texel));
+        return aoDepth.SampleLevel(aoLinearClamp, uv, 0) * coverage.x * coverage.y;
+    }
+
+    // Convert each R16F texel before filtering to reproduce interpolation in
+    // projected depth. Texture2D.Load returns zero for out-of-bounds taps.
+    int2 pixel = int2(floor(texel));
+    float2 weight = frac(texel);
+    float top = lerp(rawDepth(aoDepth.Load(int3(pixel, 0))),
+                     rawDepth(aoDepth.Load(int3(pixel + int2(1, 0), 0))), weight.x);
+    float bottom = lerp(rawDepth(aoDepth.Load(int3(pixel + int2(0, 1), 0))),
+                        rawDepth(aoDepth.Load(int3(pixel + int2(1, 1), 0))), weight.x);
+    return lerp(top, bottom, weight.y);
 }
 
-// One-input-pixel derivative in the positive texture axis. Prefer the shorter
-// valid side at discontinuities; an unavailable neighbor never samples the sky.
-float3 hbaoPositionDifference(int2 pixel, int2 axis, float3 center)
+bool hbaoReadPosition(float2 uv, out float3 position)
+{
+    position = 0.0;
+    float depth = hbaoReadDepth(uv);
+    float4 p = mul(aoInverseProjection, float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), depth, 1.0));
+    if (abs(p.w) <= HBAO_EPSILON) return false;
+    // Reflect Nau's view Z so the original positive-Z tangent formula applies.
+    position = p.xyz / p.w * float3(1.0, 1.0, -1.0);
+    return all(isfinite(position)) && position.z > HBAO_EPSILON;
+}
+
+float3 hbaoPositionDifference(float2 uv, float2 offset, float3 center)
 {
     float3 before, after;
-    bool hasBefore = hbaoReadPosition(pixel - axis, before);
-    bool hasAfter = hbaoReadPosition(pixel + axis, after);
+    bool hasBefore = hbaoReadPosition(uv - offset, before);
+    bool hasAfter = hbaoReadPosition(uv + offset, after);
     float3 negative = center - before;
     float3 positive = after - center;
     if (hasBefore && hasAfter)
@@ -45,7 +64,6 @@ float3 hbaoPositionDifference(int2 pixel, int2 axis, float3 center)
 
 float hbaoTangent(float3 delta)
 {
-    // +delta.z points toward the eye in Nau, therefore raises the occluding horizon.
     return delta.z * rsqrt(max(dot(delta.xy, delta.xy), HBAO_EPSILON * HBAO_EPSILON));
 }
 
@@ -54,30 +72,32 @@ float hbaoTangentToSine(float tangent)
     return tangent * rsqrt(1.0 + tangent * tangent);
 }
 
-float hbaoHorizon(int2 centerPixel, float3 center, float3 dx, float3 dy,
-                  float2 direction, float stepPixels, uint steps, float jitter, float inverseRadiusSquared)
+float2 hbaoSnapUvOffset(float2 offset, float2 inverseSize)
 {
-    // Use actual sampled pixel centers for both the tangent and the horizon.
-    // Texture Y points down; dy was reconstructed in this same coordinate system.
-    float3 tangent = direction.x * dx + direction.y * dy;
+    return round(offset * aoSizes.xy) * inverseSize;
+}
+
+float hbaoHorizon(float2 uv, float3 center, float3 dx, float3 dy,
+                  float2 deltaUv, float2 inverseSize, int steps, float jitter, float radiusSquared)
+{
+    uv += hbaoSnapUvOffset(jitter * deltaUv, inverseSize);
+    deltaUv = hbaoSnapUvOffset(deltaUv, inverseSize);
+    float3 tangent = deltaUv.x * dx + deltaUv.y * dy;
     float tangentHorizon = hbaoTangent(tangent) + HBAO_TAN_BIAS;
     float sineHorizon = hbaoTangentToSine(tangentHorizon);
     float occlusion = 0.0;
-    [unroll]
-    for (uint step = 0; step < 4; ++step)
+    for (int step = 0; step < steps; ++step)
     {
-        if (step >= steps) break;
-        int2 samplePixel = centerPixel + int2(round(direction * ((float(step) + 1.0 + jitter) * stepPixels)));
+        uv += deltaUv;
         float3 samplePosition;
-        if (!hbaoReadPosition(samplePixel, samplePosition)) continue;
+        if (!hbaoReadPosition(uv, samplePosition)) continue;
         float3 delta = samplePosition - center;
         float distanceSquared = dot(delta, delta);
-        if (distanceSquared <= HBAO_EPSILON * HBAO_EPSILON || distanceSquared * inverseRadiusSquared >= 1.0) continue;
         float sampleTangent = hbaoTangent(delta);
-        if (sampleTangent > tangentHorizon)
+        if (distanceSquared < radiusSquared && sampleTangent > tangentHorizon)
         {
             float sampleSine = hbaoTangentToSine(sampleTangent);
-            occlusion += saturate(1.0 - distanceSquared * inverseRadiusSquared) * (sampleSine - sineHorizon);
+            occlusion += saturate(1.0 - distanceSquared / radiusSquared) * (sampleSine - sineHorizon);
             tangentHorizon = sampleTangent;
             sineHorizon = sampleSine;
         }
@@ -93,45 +113,41 @@ float computeHbao(uint2 outputPixel)
     float radiusSquared = radius * radius;
     if (!isfinite(radiusSquared) || radiusSquared <= HBAO_EPSILON * HBAO_EPSILON) return 1.0;
 
-    // PS SV_Position.xy and CS (DTid.xy + 0.5) refer to identical output centers.
-    // Map once to an input texel, then reconstruct at that texel's actual center.
-    float2 outputUv = (float2(outputPixel) + 0.5) / aoSizes.xy;
-    int2 centerPixel = min(int2(outputUv * aoSizes.zw), int2(aoSizes.zw) - 1);
+    // Both the PS and CS pass the integer pixel index used by the reference.
+    float2 inverseSize = rcp(aoSizes.xy);
+    float2 outputUv = float2(outputPixel) * inverseSize;
     float3 center;
-    if (!hbaoReadPosition(centerPixel, center)) return 1.0;
+    if (!hbaoReadPosition(outputUv, center) || center.z > HBAO_DISCARD_DISTANCE) return 1.0;
 
-    // Project scene-unit radius onto the input-depth grid. The cap is applied
-    // before step distribution so the jittered final tap remains within 64 pixels.
-    float radiusPixels = 0.5 * abs(aoProjection[0][0]) * radius * aoSizes.z / -center.z;
+    // ClipInfo in the reference stores cot(verticalFov / 2) for both axes.
+    float radiusPixels = (0.5 * abs(aoProjection[1][1]) * radius / center.z) * aoSizes.x;
     if (!isfinite(radiusPixels) || radiusPixels <= 1.0) return 1.0;
-    radiusPixels = min(radiusPixels, HBAO_MAX_RADIUS_PIXELS);
-    uint steps = min(4u, uint(floor(radiusPixels)));
-    float stepPixels = radiusPixels / (float(steps) + 1.0);
-    float3 dx = hbaoPositionDifference(centerPixel, int2(1, 0), center);
-    float3 dy = hbaoPositionDifference(centerPixel, int2(0, 1), center);
+    float3 dx = hbaoPositionDifference(outputUv, float2(inverseSize.x, 0.0), center);
+    float3 dy = hbaoPositionDifference(outputUv, float2(0.0, inverseSize.y), center) * (aoSizes.y / aoSizes.x);
 
-    // Nau's existing random texture is RGB UNORM, unlike a signed cos/sin map.
-    // Decode and normalize XY for rotation; Z remains a [0,1] step jitter.
-    float3 noise = aoRandomMap.SampleLevel(aoLinearWrap, (float2(outputPixel) + 0.5) * 0.25, 0).rgb;
-    float2 rotation = noise.xy * 2.0 - 1.0;
-    float rotationLengthSquared = dot(rotation, rotation);
-    rotation = rotationLengthSquared > HBAO_EPSILON ? rotation * rsqrt(rotationLengthSquared) : float2(1.0, 0.0);
-    float jitter = saturate(noise.z);
-    // The existing eightSamples toggle means 8 directions for HBAO; otherwise 16.
-    // Each direction has up to four horizon steps, independent of SSAO's 8/14 taps.
-    uint directions = aoOptions.w <= 8.0 ? 8u : 16u;
+    // Match the reference's direct use of sampled XY as the rotation pair.
+    float3 noise = aoRandomMap.SampleLevel(aoLinearWrap, outputUv * (aoSizes.xy * 0.25), 0).rgb;
+    int steps = int(min(float(HBAO_STEPS), radiusPixels));
+    float stepPixels = radiusPixels / (float(steps) + 1.0);
+    float maxSteps = HBAO_MAX_RADIUS_PIXELS / stepPixels;
+    if (maxSteps < steps)
+    {
+        steps = max(int(floor(maxSteps + noise.z)), 1);
+        stepPixels = HBAO_MAX_RADIUS_PIXELS / float(steps);
+    }
+    float2 stepUv = stepPixels * inverseSize;
     float occlusion = 0.0;
     [unroll]
-    for (uint directionIndex = 0; directionIndex < 16; ++directionIndex)
+    for (int directionIndex = 0; directionIndex < HBAO_DIRECTIONS; ++directionIndex)
     {
-        if (directionIndex >= directions) break;
         float sine, cosine;
-        sincos((2.0 * HBAO_PI / float(directions)) * float(directionIndex), sine, cosine);
-        float2 direction = float2(cosine * rotation.x - sine * rotation.y,
-                                  cosine * rotation.y + sine * rotation.x);
-        occlusion += hbaoHorizon(centerPixel, center, dx, dy, direction, stepPixels, steps, jitter, rcp(radiusSquared));
+        sincos((2.0 * HBAO_PI / HBAO_DIRECTIONS) * directionIndex, sine, cosine);
+        float2 direction = float2(cosine * noise.x - sine * noise.y,
+                                  cosine * noise.y + sine * noise.x);
+        occlusion += hbaoHorizon(outputUv, center, dx, dy, direction * stepUv,
+                                 inverseSize, steps, noise.z, radiusSquared);
     }
-    return saturate(1.0 - HBAO_INTENSITY * occlusion / float(directions));
+    return saturate(1.0 - (occlusion / HBAO_DIRECTIONS * HBAO_INTENSITY));
 }
 
 #endif

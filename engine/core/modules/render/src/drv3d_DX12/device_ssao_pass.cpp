@@ -393,6 +393,8 @@ namespace drv3d_dx12
         {
             result = createPipelines(desc);
         }
+        if (SUCCEEDED(result) && validShader(desc.rawComputeShader))
+            NAU_LOG_INFO("HBAO: GPU 1 raw AO path={}", m_computeRaw ? "compute" : "pixel");
 
         return result;
     }

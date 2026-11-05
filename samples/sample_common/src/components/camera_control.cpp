@@ -95,11 +95,18 @@ namespace nau::sample
                 else if (!p.waitForSecondary) ImGui::TextWrapped("GPU 0 uses the latest completed AO; it never waits for this frame's GPU 1 result.");
                 else if (waitMs >= 0.f) ImGui::Text("GPU0 queue wait: %.3f ms", waitMs);
                 else ImGui::TextUnformatted("GPU0 queue wait: n/a (no GPU1 result yet)");
+                int resolution = p.fullResolution ? 0 : (p.quarterResolution ? 2 : 1);
+                if (ImGui::Combo("AO resolution", &resolution, "Full\0Half\0Quarter\0"))
+                {
+                    p.fullResolution = resolution == 0;
+                    p.quarterResolution = resolution == 2;
+                    changed = true;
+                }
                 changed |= combo("Inputs", p.inputs, "Downsample to AO size\0Full resolution\0");
                 changed |= combo("AO algorithm + noise", p.algorithm, "Nau\0Bogdanov\0HBAO\0");
                 const bool hbao = p.algorithm == AmbientOcclusionVariant::hbao;
                 if (hbao)
-                    ImGui::TextUnformatted("Normals: derived from depth (HBAO)");
+                    ImGui::TextUnformatted("HBAO: depth normals, 16 directions, radius 2");
                 else
                     changed |= combo("Normals", p.normals, "Transfer prepass normals\0Reconstruct from depth\0");
                 changed |= combo("Blur", p.blur, "Off\0Box 4x4\0Box 4x4 GatherRed\0Bogdanov Gaussian\0Bilateral 4x4 + upsample\0");
@@ -110,10 +117,9 @@ namespace nau::sample
                 ImGui::Separator();
                 if (!hbao) changed |= ImGui::Checkbox("Octahedral normals RG8", &p.packedNormals);
                 changed |= ImGui::Checkbox("Linear depth R16F", &p.linearDepth16);
-                changed |= ImGui::Checkbox(hbao ? "8 HBAO directions (default: 16)" : "8 AO samples (default: 14)", &p.eightSamples);
+                if (!hbao) changed |= ImGui::Checkbox("8 AO samples (default: 14)", &p.eightSamples);
                 changed |= ImGui::Checkbox("Depth-weighted bilinear upsample", &p.weightedUpsample);
-                changed |= ImGui::Checkbox("Reject samples outside screen", &p.rejectOutside);
-                changed |= ImGui::Checkbox("Quarter-resolution AO", &p.quarterResolution);
+                if (!hbao) changed |= ImGui::Checkbox("Reject samples outside screen", &p.rejectOutside);
                 changed |= ImGui::Checkbox("GatherRed upsample", &p.gatherUpsample);
                 if (p.inputs == AmbientOcclusionInputs::full && (p.gatherUpsample || p.blur == AmbientOcclusionBlur::gather))
                     ImGui::TextWrapped("Full inputs use mapped depth reads; GatherRed requires matching AO/depth grids.");
