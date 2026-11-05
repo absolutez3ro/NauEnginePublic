@@ -44,7 +44,7 @@ namespace nau::render
         BaseTexture* getResolveTexture(BaseTexture* fullSize) const;
         void configureResolveSampler(MaterialAssetView& material) const;
         void bindResolveInputs();
-        float getWaitMilliseconds() const { return m_usingSecondary && !m_frameworkTransport && m_settings.pipeline.waitForSecondary && m_settings.mode != AmbientOcclusionMode::off ? m_waitMilliseconds : -1.f; }
+        float getWaitMilliseconds() const { return m_usingSecondary && !m_frameworkTransport && !m_mailboxMode && m_settings.pipeline.waitForSecondary && m_settings.mode != AmbientOcclusionMode::off ? m_waitMilliseconds : -1.f; }
         const char* getWaitLabel() const;
         struct Measurements
         {
@@ -52,6 +52,8 @@ namespace nau::render
             uint32_t phase = 0, loadMask = 0;
             bool gpu1 = false, aoValid = false;
             bool frameworkTransport = false;
+            bool mailboxTransport = false;
+            uint32_t transportMode = 1; // Protected, framework, CPU mailbox (2a), GPU mailbox (2b).
             int readyAtConsumer = -1;
             float overlapMs = -1.f, waitMs = -1.f, chainObservedMs = -1.f;
             d3d::mgpu::SsaoGpuTiming gpu1Timing;
@@ -142,6 +144,7 @@ namespace nau::render
         WaitTiming* m_currentTiming = nullptr;
         bool m_measureTimings = false;
         bool m_frameworkTransport = true;
+        uint32_t m_mailboxMode = 0; // 0 disabled, 1 CPU selection, 2 GPU selection.
         bool m_frameworkOutputInitialized = false;
         uint64_t m_frameIndex = 0;
         Measurements m_measurements;

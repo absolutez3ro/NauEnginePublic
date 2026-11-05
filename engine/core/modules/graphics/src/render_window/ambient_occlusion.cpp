@@ -28,6 +28,16 @@ namespace nau::render
             const float value = readSetting(name, fallback);
             return eastl::clamp(std::isfinite(value) ? value : fallback, minimum, maximum);
         }
+
+        uint32_t readTransportMode()
+        {
+            const auto transport = readSetting<eastl::string>("render/ssao/transport", "");
+            if (transport == "mailbox") return 3;
+            if (transport == "mailbox-cpu") return 2;
+            if (transport == "framework") return 1;
+            if (transport == "protected") return 0;
+            return readSetting<bool>("render/ssao/frameworkTransport", true) ? 1u : 0u;
+        }
     }  // namespace
 
     bool AmbientOcclusion::isRequested()
@@ -54,7 +64,7 @@ namespace nau::render
         p.algorithm = static_cast<AmbientOcclusionVariant>(eastl::min(readSetting<uint32_t>("render/ssao/algorithm", static_cast<uint32_t>(p.algorithm)), 1u));
         p.normals = static_cast<AmbientOcclusionNormals>(eastl::min(readSetting<uint32_t>("render/ssao/normals", 0), 1u));
         p.blur = static_cast<AmbientOcclusionBlur>(eastl::min(readSetting<uint32_t>("render/ssao/blurMethod", readSetting<bool>("render/ssao/blur", true) ? static_cast<uint32_t>(p.blur) : 0u), 4u));
-        p.blurExecution = readSetting<bool>("render/ssao/blurOnSecondary", readSetting<bool>("render/ssao/frameworkTransport", true)) ? AmbientOcclusionExecution::multiGpu : AmbientOcclusionExecution::singleGpu;
+        p.blurExecution = readSetting<bool>("render/ssao/blurOnSecondary", readTransportMode() != 0) ? AmbientOcclusionExecution::multiGpu : AmbientOcclusionExecution::singleGpu;
         p.upsample = static_cast<AmbientOcclusionUpsample>(eastl::min(readSetting<uint32_t>("render/ssao/upsample", static_cast<uint32_t>(p.upsample)), 2u));
         p.packedNormals = readSetting<bool>("render/ssao/packedNormals", false);
         p.linearDepth16 = readSetting<bool>("render/ssao/linearDepth16", false);
@@ -63,7 +73,7 @@ namespace nau::render
         p.rejectOutside = readSetting<bool>("render/ssao/rejectOutside", false);
         p.quarterResolution = readSetting<bool>("render/ssao/quarterResolution", false);
         p.gatherUpsample = readSetting<bool>("render/ssao/gatherUpsample", false);
-        p.waitForSecondary = !readSetting<bool>("render/ssao/frameworkTransport", true) && readSetting<bool>("render/ssao/waitForSecondary", true);
+        p.waitForSecondary = readTransportMode() == 0 && readSetting<bool>("render/ssao/waitForSecondary", true);
         return settings;
     }
 
@@ -181,16 +191,22 @@ namespace nau::render
 
     void AmbientOcclusion::beginFrame(uint32_t width, uint32_t height, const Settings& settings)
     {
-        const bool framework = readSetting<bool>("render/ssao/frameworkTransport", true);
-        if (framework != m_frameworkTransport)
+        const uint32_t transport = readTransportMode();
+        const bool framework = transport == 1;
+        const uint32_t mailbox = transport >= 2 ? transport - 1 : 0;
+        if (framework != m_frameworkTransport || mailbox != m_mailboxMode)
         {
             resetSecondary();
             m_frameworkTransport = framework;
+            m_mailboxMode = mailbox;
             ++m_timingGeneration;
             m_waitMilliseconds = -1.f;
+            m_logSettings = true;
         }
+        Settings effectiveSettings = settings;
+        if (framework || mailbox) effectiveSettings.pipeline.waitForSecondary = false;
         const auto& old = m_settings.pipeline;
-        const auto& next = settings.pipeline;
+        const auto& next = effectiveSettings.pipeline;
         m_measureTimings = readSetting<bool>("render/measurements/enabled", false);
         d3d::mgpu::begin_foreign_queue_frame(readSetting<bool>("render/ssao/submitOnlyHandoffs", false), m_measureTimings);
         pollWaitTimings();
@@ -221,7 +237,7 @@ namespace nau::render
             old.quarterResolution != next.quarterResolution;
         m_logSettings |= old != next || m_settings.execution != settings.execution || m_settings.mode != settings.mode;
         if (layoutChanged || asyncChanged) resetSecondary();
-        m_settings = settings;
+        m_settings = effectiveSettings;
         prepareTargets(width, height);
         // A full-size AO allocation exists only for a separate reconstruction pass.
         if (next.upsample != AmbientOcclusionUpsample::separate && m_fullOutput)
@@ -247,6 +263,8 @@ namespace nau::render
         }
         m_measurements.gpu1 = m_measurements.aoValid = false;
         m_measurements.frameworkTransport = false;
+        m_measurements.mailboxTransport = false;
+        m_measurements.transportMode = m_mailboxMode ? m_mailboxMode + 1 : (m_frameworkTransport ? 1u : 0u);
         m_measurements.aoFrame = 0;
         m_currentTiming = nullptr;
         m_normals = normals;
@@ -293,7 +311,7 @@ namespace nau::render
         m_drawConstants = m_constants;
         if (m_settings.execution == AmbientOcclusionExecution::multiGpu && prepareSecondary())
         {
-            if (m_frameworkTransport)
+            if (m_frameworkTransport || m_mailboxMode)
             {
                 m_measurements.aoFrame = m_measurements.chainFrame = m_measurements.timingFrame = 0;
                 m_measurements.chainObservedMs = m_measurements.overlapMs = m_measurements.waitMs = -1.f;
@@ -307,12 +325,16 @@ namespace nau::render
                     m_frameworkOutputInitialized = true;
                 }
                 bool submitted = false;
-                m_usingSecondary = d3d::mgpu::exchangeFrameworkSsao(m_secondary, m_constants,
-                    m_jobs[0].normals, m_jobs[0].depth, m_jobs[0].result, m_frameIndex, submitted);
+                if (m_mailboxMode)
+                    m_usingSecondary = d3d::mgpu::submitMailboxSsao(m_secondary, m_constants,
+                        m_jobs[0].normals, m_jobs[0].depth, m_frameIndex, submitted);
+                else
+                    m_usingSecondary = d3d::mgpu::exchangeFrameworkSsao(m_secondary, m_constants,
+                        m_jobs[0].normals, m_jobs[0].depth, m_jobs[0].result, m_frameIndex, submitted);
                 if (m_usingSecondary)
                 {
-                    // The result is whatever is in shared memory at GPU execution time. Its source
-                    // frame cannot be truthfully identified by a CPU-side fence poll.
+                    // Mailbox receives later, in render, after the independent G-buffer/CSM work.
+                    // Its delayed readback identifies a previous consumed frame, never this CPU frame.
                     m_measurements.aoFrame = 0;
                     logSettings();
                     return;
@@ -383,7 +405,8 @@ namespace nau::render
         {
             m_measurements.gpu1 = true;
             m_measurements.frameworkTransport = m_frameworkTransport;
-            if (!m_frameworkTransport && !m_settings.pipeline.waitForSecondary && m_currentTiming)
+            m_measurements.mailboxTransport = m_mailboxMode != 0;
+            if (!m_frameworkTransport && !m_mailboxMode && !m_settings.pipeline.waitForSecondary && m_currentTiming)
             {
                 m_currentTiming->readyAtConsumer = d3d::mgpu::is_primary_transfer_complete(m_secondaryReady) ? 1 : 0;
                 m_currentTiming->waited = false;
@@ -391,7 +414,22 @@ namespace nau::render
                 d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &m_currentTiming->end, nullptr, nullptr);
             }
             // This wait is recorded after G-buffer/CSM, immediately before consuming this frame's AO.
-            if (m_frameworkTransport)
+            if (m_mailboxMode)
+            {
+                if (!d3d::mgpu::receiveMailboxSsao(m_secondary, m_jobs[0].result, m_frameIndex))
+                {
+                    // Drain before reusing endpoints after a partial native submission or device loss.
+                    d3d::mgpu::destroySsaoProducer(m_secondary);
+                    m_secondary = nullptr;
+                    m_usingSecondary = false;
+                    m_measurements.gpu1 = m_measurements.mailboxTransport = false;
+                    m_measurements.gpu1Timing = {};
+                    m_logSettings = true;
+                    draw(m_drawRaw, *m_rawMaterial, "default");
+                }
+                m_drawConstants = m_constants;
+            }
+            else if (m_frameworkTransport)
             {
                 // Shared AO was copied unconditionally in the primary graphics list.
                 m_drawConstants = m_constants;
@@ -422,7 +460,7 @@ namespace nau::render
             // Match GPU 1's selected input size, shader and half-size R8 output.
             draw(m_drawRaw, *m_rawMaterial, "default");
         }
-        if (!m_measurements.aoFrame && !(m_usingSecondary && m_frameworkTransport)) m_measurements.aoFrame = m_frameIndex;
+        if (!m_measurements.aoFrame && !(m_usingSecondary && (m_frameworkTransport || m_mailboxMode))) m_measurements.aoFrame = m_frameIndex;
         m_measurements.aoValid = true;
         filter(output);
     }
@@ -488,7 +526,7 @@ namespace nau::render
         {
             return false;
         }
-        const size_t jobCount = !m_frameworkTransport && m_settings.execution == AmbientOcclusionExecution::multiGpu && !m_settings.pipeline.waitForSecondary ? kJobCount : 1;
+        const size_t jobCount = !m_frameworkTransport && !m_mailboxMode && m_settings.execution == AmbientOcclusionExecution::multiGpu && !m_settings.pipeline.waitForSecondary ? kJobCount : 1;
         for (size_t index = 0; index < jobCount; ++index)
         {
             auto& job = m_jobs[index];
@@ -539,6 +577,8 @@ namespace nau::render
             desc.linearDepth16 = m_settings.pipeline.linearDepth16;
             desc.measureTimings = m_measureTimings;
             desc.frameworkStyle = m_frameworkTransport;
+            desc.mailboxStyle = m_mailboxMode != 0;
+            desc.gpuMailbox = m_mailboxMode == 2;
             const Shader* filter = m_filterShader->getShader();
             desc.filterBytecode = filter->bytecode.data();
             desc.filterBytecodeSize = filter->bytecode.size();
@@ -548,7 +588,7 @@ namespace nau::render
                 return false;
             }
             ++m_measurements.gpu1Generation;
-            NAU_LOG_INFO("SSAO: GPU 1 producer, AO {}x{}, framework unsynchronized={}", m_secondaryWidth, m_secondaryHeight, m_frameworkTransport);
+            NAU_LOG_INFO("SSAO: GPU 1 producer, AO {}x{}, framework unsynchronized={}, mailbox mode={}", m_secondaryWidth, m_secondaryHeight, m_frameworkTransport, m_mailboxMode);
         }
         if (!m_secondary)
         {
@@ -778,6 +818,7 @@ namespace nau::render
     {
         if (m_settings.mode == AmbientOcclusionMode::off) return "n/a (AO off)";
         if (!m_usingSecondary) return "n/a (no GPU1 AO)";
+        if (m_mailboxMode) return "OFF (mailbox)";
         if (m_frameworkTransport) return "OFF (framework, unsynchronized)";
         if (!m_settings.pipeline.waitForSecondary) return "OFF (async)";
         return m_waitMilliseconds < 0.f ? "pending" : nullptr;
@@ -791,6 +832,7 @@ namespace nau::render
         }
         if (m_usingSecondary)
         {
+            if (m_mailboxMode) return m_mailboxMode == 2 ? "MGPU mailbox GPU (2b)" : "MGPU mailbox CPU (2a)";
             if (m_frameworkTransport) return "MGPU framework (unsynchronized)";
             return m_settings.pipeline.quarterResolution ? "MGPU, quarter AO" : "MGPU, half AO";
         }

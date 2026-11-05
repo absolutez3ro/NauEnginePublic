@@ -3,6 +3,7 @@
 // Copyright 2026 N-GINN LLC. All rights reserved.
 #include "device_ssao_pass.h"
 #include "ssao_unpack_depth_bytecode.h"
+#include "mailbox_receive.h"
 #include "nau/3d/ssao_random_texture.h"
 
 #include <EASTL/vector.h>
@@ -14,6 +15,7 @@ namespace drv3d_dx12
     namespace
     {
         constexpr UINT CONSTANT_BYTES = (sizeof(d3d::mgpu::SsaoConstants) + 255u) & ~255u;
+        constexpr UINT MAILBOX_CONTROL_OFFSET = CONSTANT_BYTES * 3;
         enum Timestamp : UINT { INPUT_BEGIN, RAW_BEGIN, RAW_END, FILTER_END, OUTPUT_END, TIMESTAMP_COUNT };
         constexpr UINT SRV_TABLES = 4, SRVS_PER_TABLE = 5, SRVS_PER_SET = SRV_TABLES * SRVS_PER_TABLE;
 
@@ -42,7 +44,8 @@ namespace drv3d_dx12
         }
 
         HRESULT init(const DeviceSsaoPassDesc& desc);
-        HRESULT execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex, const FrameworkSsaoTextures* shared = nullptr);
+        HRESULT execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex, const FrameworkSsaoTextures* shared = nullptr,
+            const MailboxSsaoJob* mailbox = nullptr, MailboxSsaoCompletion* completion = nullptr);
         HRESULT releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex);
         void pollTiming();
         HRESULT wait(DWORD timeoutMs);
@@ -62,6 +65,7 @@ namespace drv3d_dx12
         {
             Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
             Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
+            Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> publication;
             DeviceResource constants;
             uint8_t* mapped = nullptr;
             UINT64 fenceValue = 0;
@@ -87,6 +91,7 @@ namespace drv3d_dx12
         // Declaration order keeps the device and allocator alive until the resources are destroyed.
         Microsoft::WRL::ComPtr<ID3D12Device> m_device;
         eastl::shared_ptr<IDeviceResourceAllocator> m_allocator;
+        eastl::shared_ptr<void> m_mailboxOwner;
         struct Resources
         {
             DeviceResource normals;
@@ -106,6 +111,7 @@ namespace drv3d_dx12
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_randomFootprint = {};
         bool m_randomUploaded = false;
         bool m_frameworkStyle = false;
+        bool m_mailboxStyle = false;
         bool m_reconstructNormals = false;
         bool m_packedFrameworkDepth = false;
         bool m_packedFrameworkNormals = false;
@@ -250,6 +256,23 @@ namespace drv3d_dx12
         return m_state->m_timing;
     }
 
+    HRESULT DeviceSsaoPass::executeMailbox(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared,
+        const MailboxSsaoJob& job, uint64_t frame, MailboxSsaoCompletion& completion)
+    {
+        completion = {};
+        if (!m_state || !m_state->m_mailboxStyle || !shared.depth || !shared.result ||
+            (!m_state->m_reconstructNormals && !shared.normals) || !job.completion || !job.frameId ||
+            !job.inputsReady.fence || !job.inputsReady.value || job.outputSlot >= MAILBOX_OUT_SLOTS ||
+            (job.publishMailbox && !job.mailbox) || !frame || frame > UINT32_MAX) return E_INVALIDARG;
+        // Slot descriptions match the resources allocated with this pass. Slots are owned and retained by the producer.
+        return m_state->execute(constants, {}, {}, frame, 0, &shared, &job, &completion);
+    }
+
+    void DeviceSsaoPass::retainMailboxResources(const eastl::shared_ptr<void>& resources)
+    {
+        if (m_state && m_state->m_mailboxStyle) m_state->m_mailboxOwner = resources;
+    }
+
     HRESULT DeviceSsaoPass::releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex)
     {
         return m_state && !m_state->m_frameworkStyle && resourceIndex < RESOURCE_COUNT ? m_state->releaseOutput(released, resourceIndex) : DXGI_ERROR_INVALID_CALL;
@@ -284,9 +307,10 @@ namespace drv3d_dx12
     {
         m_device = desc.allocator->getDevice();
         m_allocator = desc.allocator;
-        m_frameworkStyle = desc.frameworkStyle;
+        m_mailboxStyle = desc.mailboxStyle;
+        m_frameworkStyle = desc.frameworkStyle || desc.mailboxStyle;
         m_reconstructNormals = desc.reconstructNormals;
-        m_packedFrameworkDepth = desc.frameworkStyle && desc.packedFrameworkDepth;
+        m_packedFrameworkDepth = m_frameworkStyle && desc.packedFrameworkDepth;
         m_packedFrameworkNormals = m_packedFrameworkDepth && desc.packedFrameworkNormals && !m_reconstructNormals;
         m_timing.packedDepth = m_packedFrameworkDepth;
         m_timing.packedNormals = m_packedFrameworkNormals;
@@ -617,7 +641,7 @@ namespace drv3d_dx12
                 return SUCCEEDED(result) ? recording->list->Reset(recording->allocator.Get(), m_rawPso.Get()) : result;
             }
         }
-        if (m_frameworkStyle && m_recordings.size() >= 3)
+        if (m_frameworkStyle && m_recordings.size() >= (m_mailboxStyle ? MAILBOX_IN_SLOTS : 3u))
         {
             ++m_timing.skippedSubmissions;
             return S_FALSE;
@@ -630,7 +654,17 @@ namespace drv3d_dx12
         }
         if (SUCCEEDED(result))
         {
-            result = next->constants.createBuffer(m_allocator.get(), CONSTANT_BYTES * 3, D3D12_HEAP_TYPE_UPLOAD);
+            if (m_mailboxStyle)
+            {
+                result = next->list->Close();
+                if (SUCCEEDED(result)) result = m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, next->allocator.Get(), nullptr, IID_PPV_ARGS(&next->publication));
+                if (SUCCEEDED(result)) result = next->publication->Close();
+                if (SUCCEEDED(result)) result = next->list->Reset(next->allocator.Get(), m_rawPso.Get());
+            }
+        }
+        if (SUCCEEDED(result))
+        {
+            result = next->constants.createBuffer(m_allocator.get(), MAILBOX_CONTROL_OFFSET + (m_mailboxStyle ? 512u : 0u), D3D12_HEAP_TYPE_UPLOAD);
         }
         if (SUCCEEDED(result))
         {
@@ -757,7 +791,8 @@ namespace drv3d_dx12
         m_list->ResourceBarrier(1, &transition);
     }
 
-    HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex, const FrameworkSsaoTextures* shared)
+    HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex, const FrameworkSsaoTextures* shared,
+        const MailboxSsaoJob* mailbox, MailboxSsaoCompletion* completion)
     {
         auto& resources = m_resources[resourceIndex];
         Recording* recording = nullptr;
@@ -888,6 +923,21 @@ namespace drv3d_dx12
             recording->timingFrame = frame;
         }
         if (shared) copyShared(resources.output.getResource(), shared->result, true);
+        if (mailbox)
+        {
+            const uint32_t id = static_cast<uint32_t>(frame);
+            std::memcpy(recording->mapped + MAILBOX_CONTROL_OFFSET, &id, sizeof(id));
+            D3D12_TEXTURE_COPY_LOCATION source = {}, destination = {};
+            source.pResource = recording->constants.getResource();
+            source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            source.PlacedFootprint.Offset = MAILBOX_CONTROL_OFFSET;
+            source.PlacedFootprint.Footprint = {DXGI_FORMAT_R32_UINT, 1, 1, 1, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT};
+            destination.pResource = mailbox->frameId;
+            destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            barrier(mailbox->frameId, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+            m_list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+            barrier(mailbox->frameId, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+        }
         if (recording->timestampHeap)
         {
             m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, OUTPUT_END);
@@ -916,14 +966,61 @@ namespace drv3d_dx12
         {
             return result;
         }
+        if (mailbox && mailbox->publishMailbox)
+        {
+            // Pre-record B before submitting A; no fallible command recording remains between data and publication.
+            result = recording->publication->Reset(recording->allocator.Get(), nullptr);
+            if (FAILED(result)) return result;
+            uint64_t entries[MAILBOX_OUT_SLOTS] = {};
+            entries[mailbox->outputSlot] = frame;
+            std::memcpy(recording->mapped + MAILBOX_CONTROL_OFFSET + 256, entries, sizeof(entries));
+            D3D12_RESOURCE_BARRIER transition = {};
+            transition.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            transition.Transition = {mailbox->mailbox, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST};
+            recording->publication->ResourceBarrier(1, &transition);
+            recording->publication->CopyBufferRegion(mailbox->mailbox, 0, recording->constants.getResource(), MAILBOX_CONTROL_OFFSET + 256, sizeof(entries));
+            transition.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+            transition.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+            recording->publication->ResourceBarrier(1, &transition);
+            result = recording->publication->Close();
+            if (FAILED(result)) return result;
+        }
+        if (mailbox)
+        {
+            // Only GPU1 waits for this frame's inputs. Do not route this through waitOn(), which adds a local signal.
+            result = m_queue->Wait(mailbox->inputsReady.fence, mailbox->inputsReady.value);
+            if (FAILED(result)) return result;
+        }
         ID3D12CommandList* lists[] = {m_list};
         m_queue->ExecuteCommandLists(1, lists);
         m_randomUploaded = true;
 
-        recording->fenceValue = ++m_serial;
-        resources.rendered = recording->fenceValue;
-        recording->timingPending = true;
-        ++m_timing.submittedJobs;
+        if (mailbox)
+        {
+            // Record ownership as soon as A is submitted, including every subsequent failing Signal path.
+            recording->fenceValue = ++m_serial;
+            resources.rendered = recording->fenceValue;
+            recording->timingPending = true;
+            ++m_timing.submittedJobs;
+            completion->dataReady = mailbox->completion->enqueueSignal(m_queue.Get());
+            if (!completion->dataReady) { signal(); return E_FAIL; }
+            if (mailbox->publishMailbox)
+            {
+                ID3D12CommandList* publish[] = {recording->publication.Get()};
+                m_queue->ExecuteCommandLists(1, publish);
+                completion->published = mailbox->completion->enqueueSignal(m_queue.Get());
+                if (!completion->published) { signal(); return E_FAIL; }
+            }
+            else completion->published = completion->dataReady;
+        }
+
+        if (!mailbox)
+        {
+            recording->fenceValue = ++m_serial;
+            resources.rendered = recording->fenceValue;
+            recording->timingPending = true;
+            ++m_timing.submittedJobs;
+        }
         return signal();
     }
 }  // namespace drv3d_dx12

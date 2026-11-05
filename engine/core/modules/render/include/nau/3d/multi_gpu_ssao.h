@@ -29,10 +29,12 @@ namespace d3d::mgpu
         bool linearDepth16 = false;
         bool measureTimings = false;
         bool frameworkStyle = false;
+        bool mailboxStyle = false;
+        bool gpuMailbox = true;
     };
 
     struct SsaoProducer;
-    /** @brief Creates the framework shared-texture producer when frameworkStyle is set, or the protected comparison producer otherwise. */
+    /** @brief Creates the selected mailbox/shared-texture producer, or the protected comparison producer otherwise. */
     NAU_RENDER_EXPORT SsaoProducer* createSsaoProducer(const SsaoProducerDesc& desc);
     /**
      * @brief Queues RG16F/R32F inputs at their declared size, raw R8 AO, and its return copy.
@@ -50,6 +52,11 @@ namespace d3d::mgpu
      * True means the transport remains usable; submitted reports whether a GPU1 list was queued.
      */
     NAU_RENDER_EXPORT bool exchangeFrameworkSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, uint64_t frame, bool& submitted);
+    // Mailbox publishes frame-owned inputs early; reception is explicitly recorded later, before resolve.
+    // Neither function waits for GPU1 on the CPU or GPU0. Busy slots skip submission, preserving the old AO.
+    // GPU selection is experimental: mailbox metadata is read concurrently with GPU1 publication.
+    NAU_RENDER_EXPORT bool submitMailboxSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, uint64_t frame, bool& submitted);
+    NAU_RENDER_EXPORT bool receiveMailboxSsao(SsaoProducer* producer, BaseTexture* destination, uint64_t frame);
     /** @brief Latest completed GPU 1 timestamps, read without waiting; frame zero means unavailable. */
     NAU_RENDER_EXPORT SsaoGpuTiming pollSsaoTiming(SsaoProducer* producer);
     /** @brief Drains transfers and retires native resources before endpoint destruction, resize or driver shutdown. */

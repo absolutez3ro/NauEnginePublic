@@ -30,9 +30,36 @@ namespace nau::sample
             {
                 ImGui::Text("%.1f FPS", window->getFrameRate());
                 auto& properties = getServiceProvider().get<GlobalProperties>();
-                bool framework = properties.getValue<bool>("render/ssao/frameworkTransport").value_or(true);
+                auto transport = properties.getValue<eastl::string>("render/ssao/transport").value_or("");
+                bool mailbox = transport == "mailbox" || transport == "mailbox-cpu";
+                bool gpuMailbox = transport != "mailbox-cpu";
+                const bool legacyFramework = properties.getValue<bool>("render/ssao/frameworkTransport").value_or(true);
+                bool framework = transport == "framework" || (transport != "protected" && !mailbox && legacyFramework);
                 if (ImGui::Checkbox("Framework shared textures (unsynchronized)", &framework))
+                {
                     properties.setValue("render/ssao/frameworkTransport", framework).ignore();
+                    transport = framework ? "framework" : "protected";
+                    properties.setValue("render/ssao/transport", transport).ignore();
+                    mailbox = false;
+                }
+                if (ImGui::Checkbox("AO mailbox transport", &mailbox))
+                {
+                    transport = mailbox ? (gpuMailbox ? "mailbox" : "mailbox-cpu") : (legacyFramework ? "framework" : "protected");
+                    properties.setValue("render/ssao/transport", transport).ignore();
+                    framework = !mailbox && transport == "framework";
+                }
+                if (mailbox && ImGui::Checkbox("GPU mailbox selection (2b)", &gpuMailbox))
+                {
+                    transport = gpuMailbox ? "mailbox" : "mailbox-cpu";
+                    properties.setValue("render/ssao/transport", transport).ignore();
+                }
+                if (mailbox)
+                {
+                    ImGui::TextWrapped(gpuMailbox ? "GPU selects AO before resolve (2b). Previous AO remains when no new result is selected." :
+                                                   "CPU selects the latest completed AO before resolve (2a).");
+                    if (gpuMailbox)
+                        ImGui::TextWrapped("Experimental: mailbox metadata is read without synchronization. AO payload slots are retained until their readers finish.");
+                }
                 bool serialize = properties.getValue<bool>("graphics/serializeRenderJobs").value_or(false);
                 if (ImGui::Checkbox("CPU waits for GPU (legacy)", &serialize))
                     properties.setValue("graphics/serializeRenderJobs", serialize).ignore();
@@ -59,14 +86,15 @@ namespace nau::sample
                 if (ImGui::Button("Bogdanov preset (F9)")) window->setAmbientOcclusionVariant(AmbientOcclusionVariant::bogdanov);
                 auto p = window->getAmbientOcclusionPipeline();
                 bool changed = false;
-                if (framework && p.waitForSecondary) { p.waitForSecondary = false; changed = true; }
-                if (!framework && ImGui::Button(p.waitForSecondary ? "Wait for GPU1: ON" : "Wait for GPU1: OFF (async)"))
+                if ((framework || mailbox) && p.waitForSecondary) { p.waitForSecondary = false; changed = true; }
+                if (!framework && !mailbox && ImGui::Button(p.waitForSecondary ? "Wait for GPU1: ON" : "Wait for GPU1: OFF (async)"))
                 {
                     p.waitForSecondary = !p.waitForSecondary;
                     changed = true;
                 }
                 const float waitMs = window->getAmbientOcclusionWaitMilliseconds();
-                if (framework) ImGui::TextWrapped("GPU 0 copies shared AO unconditionally. Concurrent GPU writes are permitted in this experiment.");
+                if (mailbox) ImGui::TextWrapped("GPU 0 never waits for GPU 1. Input and output slots are retired after their readers finish. AO source age is measured by delayed readback.");
+                else if (framework) ImGui::TextWrapped("GPU 0 copies shared AO unconditionally. Concurrent GPU writes are permitted in this experiment.");
                 else if (!p.waitForSecondary) ImGui::TextWrapped("GPU 0 uses the latest completed AO; it never waits for this frame's GPU 1 result.");
                 else if (waitMs >= 0.f) ImGui::Text("GPU0 queue wait: %.3f ms", waitMs);
                 else ImGui::TextUnformatted("GPU0 queue wait: n/a (no GPU1 result yet)");

@@ -28,6 +28,7 @@ namespace drv3d_dx12
         bool linearDepth16 = false;
         bool measureTimings = false;
         bool frameworkStyle = false;
+        bool mailboxStyle = false;
         bool packedFrameworkDepth = false;
         bool packedFrameworkNormals = false;
     };
@@ -38,6 +39,22 @@ namespace drv3d_dx12
         ID3D12Resource* depth = nullptr;
         ID3D12Resource* result = nullptr;
         ID3D12Heap* heaps[3] = {};
+    };
+
+    struct MailboxSsaoJob
+    {
+        CrossAdapterSyncPoint inputsReady;
+        CrossAdapterFence* completion = nullptr;
+        ID3D12Resource* frameId = nullptr;
+        ID3D12Resource* mailbox = nullptr;
+        uint32_t outputSlot = 0;
+        bool publishMailbox = true;
+    };
+
+    struct MailboxSsaoCompletion
+    {
+        uint64_t dataReady = 0;
+        uint64_t published = 0;
     };
 
     /**
@@ -64,6 +81,9 @@ namespace drv3d_dx12
         // Copies shared inputs, computes AO, and publishes shared output in one direct list.
         // S_FALSE means all three command/constant recordings are busy; never waits or grows the budget.
         HRESULT executeFramework(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared, uint64_t frame = 0);
+        HRESULT executeMailbox(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared,
+            const MailboxSsaoJob& job, uint64_t frame, MailboxSsaoCompletion& completion);
+        void retainMailboxResources(const eastl::shared_ptr<void>& resources);
         d3d::mgpu::SsaoGpuTiming pollTiming();
         // The output-copy dependency is applied only when this set is rendered again or reset.
         HRESULT releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex = 0);

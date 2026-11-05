@@ -18,8 +18,9 @@ namespace drv3d_dx12
      * One device signals, the other one waits. Both operations are enqueued on command queues, so the CPU never
      * blocks on them. Values are issued by this object only, which keeps them monotonic.
      *
-     * A wait is accepted only for a value whose signal is already enqueued. A queue waiting for a value that is never
-     * signaled would stall that GPU until a device timeout, so such waits are refused instead.
+     * A wait is accepted only for an issued value: either a signal already enqueued here, or a value reserved for
+     * immediate submission through Nau's command stream. A reservation must never be abandoned while a foreign
+     * queue can wait for it, because a signal that is never submitted would stall that GPU until a device timeout.
      */
     class CrossAdapterFence
     {
@@ -120,7 +121,7 @@ namespace drv3d_dx12
          */
         uint64_t enqueueSignal(ID3D12CommandQueue* queue)
         {
-            if (!*this || !belongsTo(queue, m_devices[static_cast<uint32_t>(Side::SIGNALER)].Get()))
+            if (!*this || m_issued >= UINT64_MAX - 1 || !belongsTo(queue, m_devices[static_cast<uint32_t>(Side::SIGNALER)].Get()))
             {
                 return 0;
             }
@@ -132,8 +133,18 @@ namespace drv3d_dx12
         }
 
         /**
+         * @brief Reserves the next monotonic value for immediate signal submission through Nau's command stream.
+         * The caller must enqueue signalForeignFenceAfterSubmit() before exposing this value to a foreign wait.
+         * Returns zero when empty or exhausted; UINT64_MAX is reserved for device-removal completion.
+         */
+        uint64_t reserveSignal()
+        {
+            return *this && m_issued < UINT64_MAX - 1 ? ++m_issued : 0;
+        }
+
+        /**
          * @brief Makes a queue of the waiting device wait on the GPU until value is signaled.
-         * @return false if the fence is empty, the queue belongs to another device, value is 0 or not enqueued yet,
+         * @return false if the fence is empty, the queue belongs to another device, value is 0 or not issued yet,
          *         or Wait failed. Nothing is enqueued in that case.
          */
         bool enqueueWait(ID3D12CommandQueue* queue, uint64_t value)

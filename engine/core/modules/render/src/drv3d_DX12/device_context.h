@@ -17,6 +17,7 @@
 #include "texture.h"
 #include "buffer.h"
 #include "resource_memory_heap.h"
+#include "mailbox_receive.h"
 #include "tagged_handles.h"
 #include "bindless.h"
 #include "device_queue.h"
@@ -1411,6 +1412,7 @@ class DeviceContext : protected ResourceUsageHistoryDataSetDebugger, public debu
       DeviceQueueType queue);
     void transitionTextureForForeignQueue(Image *image);
     void copySharedTexture(Image *image, ID3D12Resource *shared, bool toShared);
+    void mailboxReceive(Image *ao, const MailboxReceiveDesc &desc);
     void signalForeignFence(ID3D12Fence *fence, uint64_t value);
     void waitForeignFence(ID3D12Fence *fence, uint64_t value);
     void bufferReadBack(BufferResourceReferenceAndRange buffer, HostDeviceSharedMemoryRegion cpu_memory, size_t offset);
@@ -1812,6 +1814,9 @@ public:
   // queue after it.
   void releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint64_t value);
   void copySharedTexture(Image *image, ID3D12Resource *shared, bool toShared);
+  void mailboxReceive(Image *ao, const MailboxReceiveDesc &desc);
+  // Submit the recorded graphics batch and signal without retiring frontend/frame storage.
+  void signalForeignFenceAfterSubmit(ID3D12Fence *fence, uint64_t value);
   void releaseToForeignQueue(Image *const *images, uint32_t count, ID3D12Fence *fence, uint64_t value);
   void waitForForeignQueue(ID3D12Fence *fence, uint64_t value);
   void beginForeignQueueFrame(bool submitOnly, bool measure);

@@ -77,7 +77,9 @@ namespace nau::render
             m_measurementsCsv.imbue(std::locale::classic());
             m_measurementsCsv << "frame,elapsed_ms,frame_ms,phase,width,height,requested_gpu,actual_gpu,gpu1_available,wait_enabled,cpu_serialize,ao_valid,ao_source_frame,ao_age_frames,timing_frame,overlap_gpu_ms,wait_interval_ms,ready_at_record_cpu,gpu1_timing_frame,gpu1_raw_ms,gpu1_total_ms,chain_frame,chain_observed_ms,load_mask,submit_only_handoffs,handoff_releases,handoff_waits,handoff_frame_flushes,handoff_cpu_ms,handoff_slot_waits,handoff_slot_wait_ms,frame_slot_waits,frame_slot_wait_ms,framework_unsynchronized,"
                 "gpu1_input_ms,gpu1_blur_ms,gpu1_output_ms,gpu1_job_ms,gpu1_submitted,gpu1_completed,gpu1_skipped,gpu1_generation,"
-                "gpu0_exchange_frame,gpu0_publish_ms,gpu0_receive_ms,gpu0_blur_frame,gpu0_blur_ms,ao_width,ao_height,input_width,input_height,blur_gpu,normals_reconstructed,linear_depth16,packed_framework_depth,packed_framework_normals\n";
+                "gpu0_exchange_frame,gpu0_publish_ms,gpu0_receive_ms,gpu0_blur_frame,gpu0_blur_ms,ao_width,ao_height,input_width,input_height,blur_gpu,normals_reconstructed,linear_depth16,packed_framework_depth,packed_framework_normals,"
+                "ao_transport,ao_readback_frame,ao_readback_source_frame,ao_readback_age_frames,ao_age_samples,ao_age_0,ao_age_1,ao_age_2,ao_age_3,ao_age_4,ao_age_5,ao_age_6,ao_age_7plus,"
+                "mailbox_skip_input,mailbox_skip_output,mailbox_skip_backlog,mailbox_submit_signals,mailbox_bad_ids,mailbox_unavailable_frames,mailbox_dropped_age_samples\n";
             m_measurementsCsv << std::fixed << std::setprecision(6);
             NAU_LOG_INFO("Measurements: CSV {} (frame intervals are CPU render/present cadence; chain latency is a frame-polled upper bound)", path);
         }
@@ -89,10 +91,13 @@ namespace nau::render
         const auto handoffs = d3d::mgpu::get_foreign_queue_measurements();
         const auto pipeline = getAmbientOcclusionPipeline();
         const int64_t age = m.aoValid && m.aoFrame ? static_cast<int64_t>(m.frame - m.aoFrame) : -1;
+        const auto& gpu1 = m.gpu1Timing;
+        const int64_t readbackAge = m.mailboxTransport && gpu1.displayedAoFrame && gpu1.displayedAoFrame <= gpu1.displayedFrame
+            ? static_cast<int64_t>(gpu1.displayedFrame - gpu1.displayedAoFrame) : -1;
         m_measurementsCsv << m.frame << ',' << std::chrono::duration<double, std::milli>(now - m_measurementsOrigin).count() << ',' << dt << ','
             << m.phase << ',' << m_gBuffer->getWidth() << ',' << m_gBuffer->getHeight() << ','
             << static_cast<uint32_t>(getAmbientOcclusionExecution()) << ',' << (m.gpu1 ? 1 : 0) << ',' << (d3d::is_multi_gpu_available() ? 1 : 0) << ','
-            << (getAmbientOcclusionPipeline().waitForSecondary ? 1 : 0) << ',' << (properties.getValue<bool>("graphics/serializeRenderJobs").value_or(false) ? 1 : 0) << ','
+            << (m.transportMode == 0 && pipeline.waitForSecondary ? 1 : 0) << ',' << (properties.getValue<bool>("graphics/serializeRenderJobs").value_or(false) ? 1 : 0) << ','
             << (m.aoValid ? 1 : 0) << ',' << m.aoFrame << ',' << age << ',' << m.timingFrame << ',' << m.overlapMs << ',' << m.waitMs << ',' << m.readyAtConsumer << ','
             << m.gpu1Timing.frame << ',' << m.gpu1Timing.rawMilliseconds << ',' << m.gpu1Timing.totalMilliseconds << ',' << m.chainFrame << ',' << m.chainObservedMs << ','
             << m.loadMask << ',' << (handoffs.submitOnly ? 1 : 0) << ',' << handoffs.releases << ',' << handoffs.waits << ','
@@ -103,7 +108,11 @@ namespace nau::render
             << m.gpu1Timing.primaryFrame << ',' << m.gpu1Timing.primaryPublishMilliseconds << ',' << m.gpu1Timing.primaryReceiveMilliseconds << ','
             << m.primaryFilterFrame << ',' << m.primaryFilterMs << ',' << m.aoWidth << ',' << m.aoHeight << ',' << m.inputWidth << ',' << m.inputHeight << ','
             << (m.gpu1 && pipeline.blurExecution == AmbientOcclusionExecution::multiGpu ? 1 : 0) << ','
-            << (pipeline.normals == AmbientOcclusionNormals::reconstructed ? 1 : 0) << ',' << (pipeline.linearDepth16 ? 1 : 0) << ',' << (m.gpu1Timing.packedDepth ? 1 : 0) << ',' << (m.gpu1Timing.packedNormals ? 1 : 0) << '\n';
+            << (pipeline.normals == AmbientOcclusionNormals::reconstructed ? 1 : 0) << ',' << (pipeline.linearDepth16 ? 1 : 0) << ',' << (m.gpu1Timing.packedDepth ? 1 : 0) << ',' << (m.gpu1Timing.packedNormals ? 1 : 0) << ','
+            << m.transportMode << ',' << gpu1.displayedFrame << ',' << gpu1.displayedAoFrame << ',' << readbackAge << ',' << gpu1.ageSamples;
+        for (uint64_t count : gpu1.ageHistogram) m_measurementsCsv << ',' << count;
+        m_measurementsCsv << ',' << gpu1.skippedInput << ',' << gpu1.skippedOutput << ',' << gpu1.skippedBacklog << ',' << gpu1.submitOnlySignals << ','
+            << gpu1.badFrameIds << ',' << gpu1.unavailableAoFrames << ',' << gpu1.droppedAgeSamples << '\n';
     }
 
     void RenderWindowImpl::setWorld(nau::Uid worldUid)

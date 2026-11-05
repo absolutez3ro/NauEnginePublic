@@ -5,6 +5,7 @@
 
 #include "device_ssao_pass.h"
 #include "framework_ssao_resources.h"
+#include "mailbox_ssao_state.h"
 #include "device.h"
 #include "texture.h"
 #include "nau/3d/dag_drv3d_multi_gpu.h"
@@ -40,6 +41,7 @@ namespace d3d::mgpu
 
         drv3d_dx12::DeviceSsaoPass pass;
         eastl::unique_ptr<drv3d_dx12::FrameworkSsaoResources> framework;
+        eastl::shared_ptr<drv3d_dx12::MailboxSsaoState> mailbox;
         bool frameworkInitialized = false;
         TransferChannelHandle normals = nullptr;
         TransferChannelHandle depth = nullptr;
@@ -52,6 +54,7 @@ namespace d3d::mgpu
             void* begin = nullptr;
             void* published = nullptr;
             void* received = nullptr;
+            void* receiveBegin = nullptr;
             uint64_t frame = 0;
             bool pending = false;
         };
@@ -62,21 +65,23 @@ namespace d3d::mgpu
 
         void pollPrimaryTiming()
         {
-            if (!framework || !measureTimings) return;
+            if ((!framework && !mailbox) || !measureTimings) return;
             uint64_t frequency = 0;
             d3d::driver_command(D3V3D_COMMAND_TIMESTAMPFREQ, &frequency, nullptr, nullptr);
             for (auto& query : primaryQueries)
             {
-                uint64_t begin = 0, published = 0, received = 0;
+                uint64_t begin = 0, published = 0, received = 0, receiveBegin = 0;
                 if (!query.pending ||
                     !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, query.begin, &begin, nullptr) ||
                     !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, query.published, &published, nullptr) ||
-                    !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, query.received, &received, nullptr)) continue;
+                    !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, query.received, &received, nullptr) ||
+                    (mailbox && !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, query.receiveBegin, &receiveBegin, nullptr))) continue;
                 if (frequency && query.frame > primaryFrame && published >= begin && received >= published)
                 {
                     primaryFrame = query.frame;
                     publishMilliseconds = static_cast<float>(1000.0 * static_cast<double>(published - begin) / frequency);
-                    receiveMilliseconds = static_cast<float>(1000.0 * static_cast<double>(received - published) / frequency);
+                    const uint64_t start = mailbox ? receiveBegin : published;
+                    receiveMilliseconds = received >= start ? static_cast<float>(1000.0 * static_cast<double>(received - start) / frequency) : -1.f;
                 }
                 query.pending = false;
             }
@@ -84,18 +89,24 @@ namespace d3d::mgpu
 
         ~SsaoProducer()
         {
-            if (framework)
+            if (framework || mailbox)
             {
                 // Only teardown/resize drains the adapters. There is no per-frame handoff.
                 drv3d_dx12::get_device().getContext().wait();
                 const HRESULT result = pass.reset();
                 if (FAILED(result)) NAU_LOG_WARNING("Framework SSAO: GPU1 drain failed, HRESULT {:#x}", static_cast<uint32_t>(result));
+                if (mailbox)
+                {
+                    mailbox->inputsReady.waitOnCpu(mailbox->inputsReady.issuedValue(), 10000);
+                    mailbox->resultsReady.waitOnCpu(mailbox->resultsReady.issuedValue(), 10000);
+                }
             }
             for (auto& query : primaryQueries)
             {
                 d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &query.begin, nullptr, nullptr);
                 d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &query.published, nullptr, nullptr);
                 d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &query.received, nullptr, nullptr);
+                d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &query.receiveBegin, nullptr, nullptr);
             }
             // Endpoints owned by the technique remain alive until all copy queues drain.
             destroy_transfer_channel(normals);
@@ -136,12 +147,20 @@ namespace d3d::mgpu
             pass.linearDepth16 = desc.linearDepth16;
             pass.measureTimings = desc.measureTimings;
             pass.frameworkStyle = desc.frameworkStyle;
-            pass.packedFrameworkDepth = desc.frameworkStyle && usePackedSoftwareDepth(allocator->getDevice());
+            pass.mailboxStyle = desc.mailboxStyle;
+            pass.packedFrameworkDepth = (desc.frameworkStyle || desc.mailboxStyle) && usePackedSoftwareDepth(allocator->getDevice());
             const char* normalOption = std::getenv("NAU_SSAO_PACK_NORMALS");
             pass.packedFrameworkNormals = pass.packedFrameworkDepth && !desc.reconstructNormals && (!normalOption || normalOption[0] != '0');
             for (uint32_t attempt = 0; attempt < 2; ++attempt)
             {
                 result = producer->pass.init(pass);
+                if (SUCCEEDED(result) && desc.mailboxStyle)
+                {
+                    producer->mailbox = eastl::make_shared<drv3d_dx12::MailboxSsaoState>();
+                    result = producer->mailbox->init(static_cast<ID3D12Device*>(get_device(PRIMARY_GPU)),
+                        allocator->getDevice(), pass, desc.gpuMailbox);
+                    if (SUCCEEDED(result)) producer->pass.retainMailboxResources(producer->mailbox);
+                }
                 if (SUCCEEDED(result) && desc.frameworkStyle)
                 {
                     producer->framework = eastl::make_unique<drv3d_dx12::FrameworkSsaoResources>();
@@ -150,6 +169,7 @@ namespace d3d::mgpu
                 }
                 if (SUCCEEDED(result) || !pass.packedFrameworkDepth) break;
                 producer->framework.reset();
+                producer->mailbox.reset();
                 producer->pass.reset();
                 pass.packedFrameworkDepth = false;
                 pass.packedFrameworkNormals = false;
@@ -158,7 +178,7 @@ namespace d3d::mgpu
             if (SUCCEEDED(result) && desc.frameworkStyle)
                 NAU_LOG_INFO("SSAO: packed software depth transfer={}, normals={}", pass.packedFrameworkDepth, pass.packedFrameworkNormals);
         }
-        if (SUCCEEDED(result) && !desc.frameworkStyle)
+        if (SUCCEEDED(result) && !desc.frameworkStyle && !desc.mailboxStyle)
         {
             TransferChannelDesc channel;
             channel.width = desc.inputWidth ? desc.inputWidth : desc.width;
@@ -191,10 +211,12 @@ namespace d3d::mgpu
     {
         if (!producer) return {};
         producer->pollPrimaryTiming();
+        if (producer->mailbox) producer->mailbox->poll();
         auto timing = producer->pass.pollTiming();
         timing.primaryFrame = producer->primaryFrame;
         timing.primaryPublishMilliseconds = producer->publishMilliseconds;
         timing.primaryReceiveMilliseconds = producer->receiveMilliseconds;
+        if (producer->mailbox) producer->mailbox->copyObservations(timing);
         return timing;
     }
 
@@ -237,6 +259,120 @@ namespace d3d::mgpu
         submitted = result == S_OK;
         if (FAILED(result)) report_secondary_gpu_failure(static_cast<uint32_t>(result));
         return SUCCEEDED(result);
+    }
+
+    bool submitMailboxSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, uint64_t frame, bool& submitted)
+    {
+        submitted = false;
+        if (!producer || !producer->mailbox || !depth || (!producer->reconstructNormals && !normals) ||
+            !frame || frame > UINT32_MAX || !is_multi_gpu_available()) return false;
+        auto& mailbox = *producer->mailbox;
+        if (!mailbox.poll()) return false;
+        producer->pollPrimaryTiming();
+        const auto image = [](BaseTexture* texture) { return drv3d_dx12::getbasetex(texture)->getDeviceImage(); };
+        auto* depthImage = image(depth);
+        auto* normalImage = producer->reconstructNormals ? nullptr : image(normals);
+        if (!depthImage || (!producer->reconstructNormals && !normalImage)) return false;
+        const int input = mailbox.freeInput(), output = mailbox.freeOutput();
+        bool issue = true;
+        if (input < 0) { ++mailbox.observations.skippedInput; issue = false; }
+        else if (output < 0) { ++mailbox.observations.skippedOutput; issue = false; }
+        else if (mailbox.runnableJobs() > 1) { ++mailbox.observations.skippedBacklog; issue = false; }
+
+        SsaoProducer::PrimaryTiming* timing = nullptr;
+        if (producer->measureTimings)
+            for (auto& query : producer->primaryQueries)
+                if (!query.pending)
+                {
+                    timing = &query;
+                    query.frame = frame;
+                    query.pending = true;
+                    d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &query.begin, nullptr, nullptr);
+                    break;
+                }
+        auto& context = drv3d_dx12::get_device().getContext();
+        if (issue)
+        {
+            context.copySharedTexture(depthImage, mailbox.resources.inputDepthPrimary(input), true);
+            if (!producer->reconstructNormals)
+                context.copySharedTexture(normalImage, mailbox.resources.inputNormalsPrimary(input), true);
+        }
+        if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->published, nullptr, nullptr);
+        // Even skipped frames submit one progress signal, allowing retired outputs/readbacks to become reusable.
+        const uint64_t v0 = mailbox.inputsReady.reserveSignal();
+        if (!v0) return false;
+        context.signalForeignFenceAfterSubmit(mailbox.inputsReady.getFence(drv3d_dx12::CrossAdapterFence::Side::SIGNALER), v0);
+        ++mailbox.observations.submitOnlySignals;
+        if (!issue) return true;
+
+        drv3d_dx12::MailboxSsaoJob job;
+        job.inputsReady = {mailbox.inputsReady.getFence(drv3d_dx12::CrossAdapterFence::Side::WAITER), v0};
+        job.completion = &mailbox.resultsReady;
+        job.frameId = mailbox.resources.outputIdSecondary(output);
+        job.mailbox = mailbox.resources.mailboxSecondary();
+        job.outputSlot = output;
+        job.publishMailbox = mailbox.gpuSelection;
+        drv3d_dx12::MailboxSsaoCompletion done;
+        const HRESULT result = producer->pass.executeMailbox(constants, mailbox.resources.shared(input, output), job, frame, done);
+        if (FAILED(result)) { report_secondary_gpu_failure(static_cast<uint32_t>(result)); return false; }
+        if (result == S_FALSE) return true;
+        mailbox.inputs[input].readDone = done.dataReady;
+        mailbox.outputs[output] = {v0, done.dataReady, done.published, frame, 0};
+        submitted = true;
+        return true;
+    }
+
+    bool receiveMailboxSsao(SsaoProducer* producer, BaseTexture* destination, uint64_t frame)
+    {
+        if (!producer || !producer->mailbox || !destination || !is_multi_gpu_available()) return false;
+        auto& mailbox = *producer->mailbox;
+        if (!mailbox.poll()) return false;
+        auto* target = drv3d_dx12::getbasetex(destination)->getDeviceImage();
+        if (!target) return false;
+        drv3d_dx12::MailboxReceiveDesc desc;
+        desc.gpuSelection = mailbox.gpuSelection;
+        desc.cpuSlot = mailbox.newestSlot;
+        desc.mailbox = mailbox.resources.mailboxPrimary();
+        desc.predicate = mailbox.resources.predicate();
+        desc.frameId = mailbox.resources.frameId();
+        for (UINT i = 0; i < drv3d_dx12::MAILBOX_OUT_SLOTS; ++i)
+        {
+            desc.ao[i] = mailbox.resources.outputAoPrimary(i);
+            desc.id[i] = mailbox.resources.outputIdPrimary(i);
+        }
+        // A torn mailbox may expose old and new entries together. Copy in source-frame order,
+        // keeping predicate offsets tied to their actual slots, so the newest visible ID wins.
+        for (UINT i = 1; i < drv3d_dx12::MAILBOX_OUT_SLOTS; ++i)
+        {
+            UINT j = i;
+            while (j && mailbox.outputs[desc.copyOrder[j]].frame < mailbox.outputs[desc.copyOrder[j - 1]].frame)
+            {
+                const UINT swap = desc.copyOrder[j]; desc.copyOrder[j] = desc.copyOrder[j - 1]; desc.copyOrder[j - 1] = swap;
+                --j;
+            }
+        }
+        if (producer->measureTimings)
+        {
+            bool sampleAllocated = false;
+            for (UINT i = 0; i < drv3d_dx12::MailboxSsaoResources::READBACK_SLOTS; ++i)
+                if (!mailbox.samples[i].pending)
+                {
+                    // Next frame's F0 signal is ordered after this receive and readback on GPU0.
+                    mailbox.samples[i] = {frame, mailbox.inputsReady.issuedValue() + 1, true};
+                    desc.readback = mailbox.resources.readback();
+                    desc.readbackOffset = i * drv3d_dx12::MailboxSsaoResources::READBACK_STRIDE;
+                    sampleAllocated = true;
+                    break;
+                }
+            if (!sampleAllocated) ++mailbox.observations.droppedAgeSamples;
+        }
+        SsaoProducer::PrimaryTiming* timing = nullptr;
+        for (auto& query : producer->primaryQueries)
+            if (query.pending && query.frame == frame) { timing = &query; break; }
+        if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->receiveBegin, nullptr, nullptr);
+        drv3d_dx12::get_device().getContext().mailboxReceive(target, desc);
+        if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->received, nullptr, nullptr);
+        return true;
     }
 
     PrimarySyncPoint submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, uint64_t frame)
@@ -301,5 +437,6 @@ namespace d3d::mgpu
     void collectSsaoResources()
     {
         drv3d_dx12::DeviceSsaoPass::collectRetiredResources();
+        drv3d_dx12::MailboxSsaoResources::collectRetiredSetups();
     }
 }  // namespace d3d::mgpu

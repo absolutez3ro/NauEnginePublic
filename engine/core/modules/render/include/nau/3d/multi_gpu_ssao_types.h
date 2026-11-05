@@ -27,6 +27,12 @@ namespace d3d::mgpu
         float primaryReceiveMilliseconds = -1.f;
         bool packedDepth = false;
         bool packedNormals = false;
+        bool mailbox = false;
+        bool gpuMailbox = false;
+        uint64_t displayedFrame = 0, displayedAoFrame = 0, ageSamples = 0;
+        uint64_t ageHistogram[8] = {}; // 0..6 frames, then 7 or more; based on the paired GPU-copied ID.
+        uint64_t skippedInput = 0, skippedOutput = 0, skippedBacklog = 0;
+        uint64_t submitOnlySignals = 0, badFrameIds = 0, unavailableAoFrames = 0, droppedAgeSamples = 0;
     };
     /**
      * @brief Column-major matrices and parameters matching ssao_common.hlsli.
