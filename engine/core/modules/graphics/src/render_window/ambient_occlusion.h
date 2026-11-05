@@ -65,6 +65,8 @@ namespace nau::render
 
     private:
         void draw(BaseTexture* target, MaterialAssetView& material, const char* pipeline, BaseTexture* source = nullptr);
+        bool drawRaw();
+        bool drawXeGtao();
         void filter(BaseTexture* output);
         void resetSecondary();
         void downsampleInputs(BaseTexture* normals, BaseTexture* depth);
@@ -97,6 +99,14 @@ namespace nau::render
         ShaderAssetView::Ptr m_vertexShader;
         ShaderAssetView::Ptr m_rawShader;
         ShaderAssetView::Ptr m_hbaoShader;
+        std::array<ShaderAssetView::Ptr, 5> m_xeShaders;
+        std::array<PROGRAM, 5> m_xePrograms = {BAD_PROGRAM, BAD_PROGRAM, BAD_PROGRAM, BAD_PROGRAM, BAD_PROGRAM};
+        d3d::SamplerHandle m_xePointClamp = {};
+        BaseTexture* m_xeDepth = nullptr;
+        BaseTexture* m_xePing = nullptr;
+        BaseTexture* m_xePong = nullptr;
+        BaseTexture* m_xeEdges = nullptr;
+        bool m_xeAttempted = false;
         ShaderAssetView::Ptr m_filterShader;
         Texture* m_randomTexture = nullptr;
         d3d::SamplerHandle m_linearClamp = {};

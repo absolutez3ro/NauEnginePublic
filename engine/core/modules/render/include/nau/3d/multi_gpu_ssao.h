@@ -26,6 +26,17 @@ namespace d3d::mgpu
         // The pixel raw pass remains available when the secondary cannot store typed R8 UAVs.
         const void* rawComputeBytecode = nullptr;
         size_t rawComputeBytecodeSize = 0;
+        // XeGTAO uses depth prefilter, high-quality GTAO, two denoise passes and R8 composite.
+        const void* xePrefilterBytecode = nullptr;
+        size_t xePrefilterBytecodeSize = 0;
+        const void* xeMainBytecode = nullptr;
+        size_t xeMainBytecodeSize = 0;
+        const void* xeDenoiseBytecode = nullptr;
+        size_t xeDenoiseBytecodeSize = 0;
+        const void* xeDenoiseLastBytecode = nullptr;
+        size_t xeDenoiseLastBytecodeSize = 0;
+        const void* xeCompositeBytecode = nullptr;
+        size_t xeCompositeBytecodeSize = 0;
         const void* filterBytecode = nullptr;
         size_t filterBytecodeSize = 0;
         bool reconstructNormals = false;

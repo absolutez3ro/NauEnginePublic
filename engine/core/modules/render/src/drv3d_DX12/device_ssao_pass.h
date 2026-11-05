@@ -23,6 +23,11 @@ namespace drv3d_dx12
         D3D12_SHADER_BYTECODE vertexShader = {};
         D3D12_SHADER_BYTECODE rawShader = {};
         D3D12_SHADER_BYTECODE rawComputeShader = {};
+        D3D12_SHADER_BYTECODE xePrefilterShader = {};
+        D3D12_SHADER_BYTECODE xeMainShader = {};
+        D3D12_SHADER_BYTECODE xeDenoiseShader = {};
+        D3D12_SHADER_BYTECODE xeDenoiseLastShader = {};
+        D3D12_SHADER_BYTECODE xeCompositeShader = {};
         D3D12_SHADER_BYTECODE filterShader = {};
         bool reconstructNormals = false;
         bool packedNormals = false;

@@ -41,10 +41,10 @@ namespace drv3d_dx12
         return createTexture(allocator, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
     }
 
-    HRESULT DeviceResource::createTexture(IDeviceResourceAllocator* allocator, UINT width, UINT height, DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags)
+    HRESULT DeviceResource::createTexture(IDeviceResourceAllocator* allocator, UINT width, UINT height, DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags, UINT mipLevels)
     {
         if (width == 0 || height == 0 || width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
-            height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+            height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION || mipLevels == 0 || mipLevels > D3D12_REQ_MIP_LEVELS)
         {
             return E_INVALIDARG;
         }
@@ -54,7 +54,7 @@ namespace drv3d_dx12
         desc.Width = width;
         desc.Height = height;
         desc.DepthOrArraySize = 1;
-        desc.MipLevels = 1;
+        desc.MipLevels = static_cast<UINT16>(mipLevels);
         desc.Format = format;
         desc.SampleDesc.Count = 1;
         desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;

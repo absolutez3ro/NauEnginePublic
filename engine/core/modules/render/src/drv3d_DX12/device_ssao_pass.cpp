@@ -20,6 +20,9 @@ namespace drv3d_dx12
         enum Timestamp : UINT { INPUT_BEGIN, RAW_BEGIN, RAW_END, FILTER_END, OUTPUT_END, TIMESTAMP_COUNT };
         constexpr UINT SRV_TABLES = 4, SRVS_PER_TABLE = 5, SRVS_PER_SET = SRV_TABLES * SRVS_PER_TABLE;
         constexpr UINT UAVS_PER_SET = 2; // Output and unfiltered AO; share the shader-visible SRV heap.
+        enum XePass : UINT { XE_PREFILTER, XE_MAIN, XE_DENOISE, XE_DENOISE_LAST, XE_COMPOSITE, XE_PASS_COUNT };
+        constexpr UINT XE_COMPOSITE_RAW = XE_PASS_COUNT;
+        constexpr UINT XE_TABLES = XE_PASS_COUNT + 1, XE_SRVS = 5, XE_UAVS = 5, XE_DESCRIPTORS = XE_SRVS + XE_UAVS;
 
         bool validShader(const D3D12_SHADER_BYTECODE& shader)
         {
@@ -88,6 +91,9 @@ namespace drv3d_dx12
         };
 
         HRESULT acquireRecording(Recording*& recording);
+        HRESULT createXeDescriptors();
+        HRESULT createXePipelines(const DeviceSsaoPassDesc& desc);
+        void executeXe(const d3d::mgpu::SsaoConstants& data, Recording& recording, UINT resourceIndex, bool filtered);
 
     private:
         // Declaration order keeps the device and allocator alive until the resources are destroyed.
@@ -101,6 +107,10 @@ namespace drv3d_dx12
             DeviceResource output;
             DeviceResource raw;
             DeviceResource horizontal;
+            DeviceResource xeDepth;
+            DeviceResource xePing;
+            DeviceResource xePong;
+            DeviceResource xeEdges;
             bool targetsInitialized = false;
             uint64_t rendered = 0;
             Microsoft::WRL::ComPtr<ID3D12Fence> outputReleased;
@@ -117,6 +127,7 @@ namespace drv3d_dx12
         bool m_mailboxStyle = false;
         bool m_reconstructNormals = false;
         bool m_computeRaw = false;
+        bool m_xegtao = false;
         bool m_packedFrameworkDepth = false;
         bool m_packedFrameworkNormals = false;
         DeviceResource m_packedDepth;
@@ -138,6 +149,9 @@ namespace drv3d_dx12
         Microsoft::WRL::ComPtr<ID3D12PipelineState> m_computeRawPso;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> m_filterPso;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> m_horizontalPso;
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_xeHeap;
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> m_xeRoot;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> m_xePso[XE_PASS_COUNT];
         HANDLE m_event = nullptr;
         UINT m_width = 0;
         UINT m_height = 0;
@@ -324,7 +338,30 @@ namespace drv3d_dx12
         m_height = desc.height;
         m_normalFormat = desc.packedNormals ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_FLOAT;
         m_depthFormat = desc.linearDepth16 ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_R32_FLOAT;
-        if (validShader(desc.rawComputeShader))
+        m_xegtao = validShader(desc.xePrefilterShader) || validShader(desc.xeMainShader) ||
+            validShader(desc.xeDenoiseShader) || validShader(desc.xeDenoiseLastShader) || validShader(desc.xeCompositeShader);
+        if (m_xegtao)
+        {
+            // Five depth mips use normalized coordinates from the logical AO viewport.
+            if (m_width < 16 || m_height < 16) return E_INVALIDARG;
+            if (!validShader(desc.xePrefilterShader) || !validShader(desc.xeMainShader) || !validShader(desc.xeDenoiseShader) ||
+                !validShader(desc.xeDenoiseLastShader) || !validShader(desc.xeCompositeShader)) return E_INVALIDARG;
+            for (DXGI_FORMAT format : {DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R8_UNORM})
+            {
+                D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {format};
+                const auto required = D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_SHADER_LOAD |
+                    D3D12_FORMAT_SUPPORT1_SHADER_GATHER | D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW |
+                    (format == DXGI_FORMAT_R16_FLOAT ? D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE : D3D12_FORMAT_SUPPORT1_NONE);
+                if (FAILED(m_device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ||
+                    (support.Support1 & required) != required || (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) == 0)
+                {
+                    NAU_LOG_ERROR("XeGTAO: secondary typed UAV format {} unsupported", static_cast<uint32_t>(format));
+                    return DXGI_ERROR_UNSUPPORTED;
+                }
+            }
+            m_computeRaw = true;
+        }
+        else if (validShader(desc.rawComputeShader))
         {
             D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {DXGI_FORMAT_R8_UNORM};
             const auto required = D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW;
@@ -370,6 +407,17 @@ namespace drv3d_dx12
                 result = resources.raw.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, aoFlags);
             if (SUCCEEDED(result))
                 result = resources.horizontal.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+            if (SUCCEEDED(result) && m_xegtao)
+            {
+                result = resources.xeDepth.createTexture(m_allocator.get(), m_width,
+                    m_height, DXGI_FORMAT_R16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, 5);
+                if (SUCCEEDED(result)) result = resources.xePing.createTexture(m_allocator.get(), m_width, m_height,
+                    DXGI_FORMAT_R32_UINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                if (SUCCEEDED(result)) result = resources.xePong.createTexture(m_allocator.get(), m_width, m_height,
+                    DXGI_FORMAT_R32_UINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                if (SUCCEEDED(result)) result = resources.xeEdges.createTexture(m_allocator.get(), m_width, m_height,
+                    DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            }
         }
         if (SUCCEEDED(result) && m_packedFrameworkDepth)
         {
@@ -393,7 +441,11 @@ namespace drv3d_dx12
         {
             result = createPipelines(desc);
         }
-        if (SUCCEEDED(result) && validShader(desc.rawComputeShader))
+        if (SUCCEEDED(result) && m_xegtao) result = createXeDescriptors();
+        if (SUCCEEDED(result) && m_xegtao) result = createXePipelines(desc);
+        if (SUCCEEDED(result) && m_xegtao)
+            NAU_LOG_INFO("XeGTAO: GPU 1 raw AO path=compute, quality=high, denoise=2");
+        if (SUCCEEDED(result) && !m_xegtao && validShader(desc.rawComputeShader))
             NAU_LOG_INFO("HBAO: GPU 1 raw AO path={}", m_computeRaw ? "compute" : "pixel");
 
         return result;
@@ -511,6 +563,100 @@ namespace drv3d_dx12
         return S_OK;
     }
 
+    HRESULT DeviceSsaoPass::State::createXeDescriptors()
+    {
+        const UINT resourceCount = m_frameworkStyle ? 1u : RESOURCE_COUNT;
+        D3D12_DESCRIPTOR_HEAP_DESC heap = {};
+        heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        heap.NumDescriptors = resourceCount * XE_TABLES * XE_DESCRIPTORS;
+        heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        const HRESULT result = m_device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&m_xeHeap));
+        if (FAILED(result)) return result;
+        for (UINT resourceIndex = 0; resourceIndex < resourceCount; ++resourceIndex)
+        {
+            auto& resources = m_resources[resourceIndex];
+            for (UINT pass = 0; pass < XE_TABLES; ++pass)
+            {
+                ID3D12Resource* sources[] = {resources.xeDepth.getResource(), resources.xeDepth.getResource(),
+                    resources.xePing.getResource(), resources.xePong.getResource(), resources.xePing.getResource(), resources.xePing.getResource()};
+                ID3D12Resource* inputs[] = {resources.normals.getResource(), resources.depth.getResource(),
+                    sources[pass], resources.xeEdges.getResource(), m_random.getResource()};
+                const UINT base = (resourceIndex * XE_TABLES + pass) * XE_DESCRIPTORS;
+                for (UINT input = 0; input < XE_SRVS; ++input)
+                {
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+                    srv.Format = inputs[input]->GetDesc().Format;
+                    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    srv.Texture2D.MipLevels = inputs[input]->GetDesc().MipLevels;
+                    auto handle = m_xeHeap->GetCPUDescriptorHandleForHeapStart();
+                    handle.ptr += (base + input) * m_srvStride;
+                    m_device->CreateShaderResourceView(inputs[input], &srv, handle);
+                }
+                ID3D12Resource* targets[] = {resources.xeDepth.getResource(), resources.xePing.getResource(),
+                    resources.xePong.getResource(), resources.xePing.getResource(), resources.output.getResource(), resources.raw.getResource()};
+                for (UINT output = 0; output < XE_UAVS; ++output)
+                {
+                    ID3D12Resource* destination = pass == XE_MAIN && output == 1 ? resources.xeEdges.getResource() : targets[pass];
+                    D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+                    uav.Format = destination->GetDesc().Format;
+                    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+                    uav.Texture2D.MipSlice = pass == XE_PREFILTER ? output : 0;
+                    auto handle = m_xeHeap->GetCPUDescriptorHandleForHeapStart();
+                    handle.ptr += (base + XE_SRVS + output) * m_srvStride;
+                    m_device->CreateUnorderedAccessView(destination, nullptr, &uav, handle);
+                }
+            }
+        }
+        return S_OK;
+    }
+
+    HRESULT DeviceSsaoPass::State::createXePipelines(const DeviceSsaoPassDesc& desc)
+    {
+        D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+        ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        ranges[0].NumDescriptors = XE_SRVS;
+        ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+        ranges[1].NumDescriptors = XE_UAVS;
+        D3D12_ROOT_PARAMETER parameters[3] = {};
+        parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        for (UINT index = 0; index < 2; ++index)
+        {
+            parameters[index + 1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            parameters[index + 1].DescriptorTable.NumDescriptorRanges = 1;
+            parameters[index + 1].DescriptorTable.pDescriptorRanges = &ranges[index];
+        }
+        D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+        for (UINT index = 0; index < 2; ++index)
+        {
+            samplers[index].Filter = index == 0 ? D3D12_FILTER_MIN_MAG_MIP_POINT : D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+            samplers[index].AddressU = samplers[index].AddressV = samplers[index].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+            samplers[index].MaxAnisotropy = 1;
+            samplers[index].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+            samplers[index].MaxLOD = D3D12_FLOAT32_MAX;
+            samplers[index].ShaderRegister = index;
+        }
+        D3D12_ROOT_SIGNATURE_DESC root = {};
+        root.NumParameters = 3;
+        root.pParameters = parameters;
+        root.NumStaticSamplers = 2;
+        root.pStaticSamplers = samplers;
+        Microsoft::WRL::ComPtr<ID3DBlob> serialized, errors;
+        HRESULT result = D3D12SerializeRootSignature(&root, D3D_ROOT_SIGNATURE_VERSION_1_0, &serialized, &errors);
+        if (SUCCEEDED(result))
+            result = m_device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(&m_xeRoot));
+        const D3D12_SHADER_BYTECODE shaders[] = {desc.xePrefilterShader, desc.xeMainShader,
+            desc.xeDenoiseShader, desc.xeDenoiseLastShader, desc.xeCompositeShader};
+        for (UINT pass = 0; pass < XE_PASS_COUNT && SUCCEEDED(result); ++pass)
+        {
+            D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline = {};
+            pipeline.pRootSignature = m_xeRoot.Get();
+            pipeline.CS = shaders[pass];
+            result = m_device->CreateComputePipelineState(&pipeline, IID_PPV_ARGS(&m_xePso[pass]));
+        }
+        return result;
+    }
+
     HRESULT DeviceSsaoPass::State::createPipelines(const DeviceSsaoPassDesc& desc)
     {
         D3D12_DESCRIPTOR_RANGE range = {};
@@ -597,7 +743,7 @@ namespace drv3d_dx12
             pso.RTVFormats[0] = m_depthFormat;
             result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_unpackPso));
         }
-        if (SUCCEEDED(result) && m_computeRaw)
+        if (SUCCEEDED(result) && m_computeRaw && !m_xegtao)
         {
             D3D12_DESCRIPTOR_RANGE ranges[2] = {};
             ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -858,6 +1004,55 @@ namespace drv3d_dx12
         m_list->ResourceBarrier(1, &transition);
     }
 
+    void DeviceSsaoPass::State::executeXe(const d3d::mgpu::SsaoConstants& data, Recording& recording, UINT resourceIndex, bool filtered)
+    {
+        auto& resources = m_resources[resourceIndex];
+        const auto read = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        const auto write = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        ID3D12DescriptorHeap* heap[] = {m_xeHeap.Get()};
+        m_list->SetDescriptorHeaps(1, heap);
+        m_list->SetComputeRootSignature(m_xeRoot.Get());
+        std::memcpy(recording.mapped, &data, sizeof(data));
+        m_list->SetComputeRootConstantBufferView(0, recording.constants.getResource()->GetGPUVirtualAddress());
+        const auto dispatch = [&](XePass pass, UINT groupsX, UINT groupsY, UINT table)
+        {
+            auto srv = m_xeHeap->GetGPUDescriptorHandleForHeapStart();
+            srv.ptr += (resourceIndex * XE_TABLES + table) * XE_DESCRIPTORS * m_srvStride;
+            auto uav = srv;
+            uav.ptr += XE_SRVS * m_srvStride;
+            m_list->SetComputeRootDescriptorTable(1, srv);
+            m_list->SetComputeRootDescriptorTable(2, uav);
+            m_list->SetPipelineState(m_xePso[pass].Get());
+            m_list->Dispatch(groupsX, groupsY, 1);
+        };
+        barrier(resources.xeDepth.getResource(), D3D12_RESOURCE_STATE_COMMON, write);
+        dispatch(XE_PREFILTER, (m_width + 15) / 16, (m_height + 15) / 16, XE_PREFILTER);
+        barrier(resources.xeDepth.getResource(), write, read);
+        barrier(resources.xePing.getResource(), D3D12_RESOURCE_STATE_COMMON, write);
+        barrier(resources.xeEdges.getResource(), D3D12_RESOURCE_STATE_COMMON, write);
+        dispatch(XE_MAIN, (m_width + 7) / 8, (m_height + 7) / 8, XE_MAIN);
+        barrier(resources.xePing.getResource(), write, read);
+        barrier(resources.xeEdges.getResource(), write, read);
+        barrier(resources.xePong.getResource(), D3D12_RESOURCE_STATE_COMMON, write);
+        dispatch(XE_DENOISE, (m_width + 15) / 16, (m_height + 7) / 8, XE_DENOISE);
+        barrier(resources.xePong.getResource(), write, read);
+        barrier(resources.xePing.getResource(), read, write);
+        dispatch(XE_DENOISE_LAST, (m_width + 15) / 16, (m_height + 7) / 8, XE_DENOISE_LAST);
+        barrier(resources.xePing.getResource(), write, read);
+        auto* target = filtered ? resources.raw.getResource() : resources.output.getResource();
+        barrier(target, D3D12_RESOURCE_STATE_COMMON, write);
+        dispatch(XE_COMPOSITE, (m_width + 7) / 8, (m_height + 7) / 8, filtered ? XE_COMPOSITE_RAW : XE_COMPOSITE);
+        barrier(target, write, D3D12_RESOURCE_STATE_COMMON);
+        barrier(resources.xeDepth.getResource(), read, D3D12_RESOURCE_STATE_COMMON);
+        barrier(resources.xePing.getResource(), read, D3D12_RESOURCE_STATE_COMMON);
+        barrier(resources.xePong.getResource(), read, D3D12_RESOURCE_STATE_COMMON);
+        barrier(resources.xeEdges.getResource(), read, D3D12_RESOURCE_STATE_COMMON);
+        // Changing descriptor heaps invalidates graphics descriptor tables used by the optional post-blur.
+        heap[0] = m_srvHeap.Get();
+        m_list->SetDescriptorHeaps(1, heap);
+        m_list->SetGraphicsRootSignature(m_root.Get());
+    }
+
     HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex, const FrameworkSsaoTextures* shared,
         const MailboxSsaoJob* mailbox, MailboxSsaoCompletion* completion)
     {
@@ -981,7 +1176,9 @@ namespace drv3d_dx12
             resources.targetsInitialized = true;
         }
         if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, RAW_BEGIN);
-        if (m_computeRaw)
+        if (m_xegtao)
+            executeXe(data, *recording, resourceIndex, filtered);
+        else if (m_computeRaw)
         {
             auto* target = filtered ? resources.raw.getResource() : resources.output.getResource();
             std::memcpy(recording->mapped, &data, sizeof(data));

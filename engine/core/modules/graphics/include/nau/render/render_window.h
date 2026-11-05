@@ -45,7 +45,8 @@ namespace nau::render
     {
         current = 0,
         bogdanov = 1,
-        hbao = 2
+        hbao = 2,
+        xegtao = 3
     };
 
     enum class AmbientOcclusionInputs : uint32_t { downsampled, full };

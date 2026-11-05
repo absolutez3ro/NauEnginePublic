@@ -226,7 +226,15 @@ namespace nau::render
         AmbientOcclusionPipeline pipeline;
         const auto requested = getAmbientOcclusionPipeline();
         pipeline.waitForSecondary = requested.waitForSecondary;
-        if (variant == AmbientOcclusionVariant::hbao)
+        if (variant == AmbientOcclusionVariant::xegtao)
+        {
+            pipeline.algorithm = variant;
+            pipeline.inputs = AmbientOcclusionInputs::full;
+            pipeline.fullResolution = true;
+            pipeline.blur = AmbientOcclusionBlur::off;
+            pipeline.upsample = AmbientOcclusionUpsample::bilinear;
+        }
+        else if (variant == AmbientOcclusionVariant::hbao)
         {
             // Algorithm selection preserves the user's SSAO normals and stage preferences.
             pipeline = requested;

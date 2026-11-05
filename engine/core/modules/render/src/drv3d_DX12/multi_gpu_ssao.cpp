@@ -142,6 +142,11 @@ namespace d3d::mgpu
             pass.vertexShader = {desc.vertexBytecode, desc.vertexBytecodeSize};
             pass.rawShader = {desc.rawBytecode, desc.rawBytecodeSize};
             pass.rawComputeShader = {desc.rawComputeBytecode, desc.rawComputeBytecodeSize};
+            pass.xePrefilterShader = {desc.xePrefilterBytecode, desc.xePrefilterBytecodeSize};
+            pass.xeMainShader = {desc.xeMainBytecode, desc.xeMainBytecodeSize};
+            pass.xeDenoiseShader = {desc.xeDenoiseBytecode, desc.xeDenoiseBytecodeSize};
+            pass.xeDenoiseLastShader = {desc.xeDenoiseLastBytecode, desc.xeDenoiseLastBytecodeSize};
+            pass.xeCompositeShader = {desc.xeCompositeBytecode, desc.xeCompositeBytecodeSize};
             pass.filterShader = {desc.filterBytecode, desc.filterBytecodeSize};
             pass.reconstructNormals = producer->reconstructNormals = desc.reconstructNormals;
             pass.packedNormals = desc.packedNormals;
