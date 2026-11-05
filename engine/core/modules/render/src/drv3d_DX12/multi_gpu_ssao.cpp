@@ -141,6 +141,7 @@ namespace d3d::mgpu
             pass.inputHeight = desc.inputHeight;
             pass.vertexShader = {desc.vertexBytecode, desc.vertexBytecodeSize};
             pass.rawShader = {desc.rawBytecode, desc.rawBytecodeSize};
+            pass.rawComputeShader = {desc.rawComputeBytecode, desc.rawComputeBytecodeSize};
             pass.filterShader = {desc.filterBytecode, desc.filterBytecodeSize};
             pass.reconstructNormals = producer->reconstructNormals = desc.reconstructNormals;
             pass.packedNormals = desc.packedNormals;

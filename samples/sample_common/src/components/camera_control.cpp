@@ -96,17 +96,21 @@ namespace nau::sample
                 else if (waitMs >= 0.f) ImGui::Text("GPU0 queue wait: %.3f ms", waitMs);
                 else ImGui::TextUnformatted("GPU0 queue wait: n/a (no GPU1 result yet)");
                 changed |= combo("Inputs", p.inputs, "Downsample to AO size\0Full resolution\0");
-                changed |= combo("AO algorithm + noise", p.algorithm, "Nau\0Bogdanov\0");
-                changed |= combo("Normals", p.normals, "Transfer prepass normals\0Reconstruct from depth\0");
+                changed |= combo("AO algorithm + noise", p.algorithm, "Nau\0Bogdanov\0HBAO\0");
+                const bool hbao = p.algorithm == AmbientOcclusionVariant::hbao;
+                if (hbao)
+                    ImGui::TextUnformatted("Normals: derived from depth (HBAO)");
+                else
+                    changed |= combo("Normals", p.normals, "Transfer prepass normals\0Reconstruct from depth\0");
                 changed |= combo("Blur", p.blur, "Off\0Box 4x4\0Box 4x4 GatherRed\0Bogdanov Gaussian\0Bilateral 4x4 + upsample\0");
                 changed |= combo("Blur execution", p.blurExecution, "GPU 0\0GPU 1 (with MGPU)\0");
                 changed |= combo("Upsample", p.upsample, "Separate pass\0Inside deferred resolve\0Bilinear in resolve\0");
                 if (p.blur == AmbientOcclusionBlur::bilateralUpsample)
                     ImGui::TextWrapped("Bilateral blur runs during reconstruction on GPU 0. Separate/resolve selects its location.");
                 ImGui::Separator();
-                changed |= ImGui::Checkbox("Octahedral normals RG8", &p.packedNormals);
+                if (!hbao) changed |= ImGui::Checkbox("Octahedral normals RG8", &p.packedNormals);
                 changed |= ImGui::Checkbox("Linear depth R16F", &p.linearDepth16);
-                changed |= ImGui::Checkbox("8 AO samples (default: 14)", &p.eightSamples);
+                changed |= ImGui::Checkbox(hbao ? "8 HBAO directions (default: 16)" : "8 AO samples (default: 14)", &p.eightSamples);
                 changed |= ImGui::Checkbox("Depth-weighted bilinear upsample", &p.weightedUpsample);
                 changed |= ImGui::Checkbox("Reject samples outside screen", &p.rejectOutside);
                 changed |= ImGui::Checkbox("Quarter-resolution AO", &p.quarterResolution);

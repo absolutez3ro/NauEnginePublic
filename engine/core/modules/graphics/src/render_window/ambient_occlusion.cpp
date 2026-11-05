@@ -52,16 +52,21 @@ namespace nau::render
         settings.execution = readSetting<bool>("render/ssao/useSecondary", false)
                                  ? AmbientOcclusionExecution::multiGpu
                                  : AmbientOcclusionExecution::singleGpu;
-        if (readSetting<uint32_t>("render/ssao/variant", 0) == 1)
+        const auto variant = static_cast<AmbientOcclusionVariant>(eastl::min(readSetting<uint32_t>("render/ssao/variant", 0), 2u));
+        if (variant == AmbientOcclusionVariant::bogdanov)
         {
             settings.pipeline.inputs = AmbientOcclusionInputs::full;
             settings.pipeline.algorithm = AmbientOcclusionVariant::bogdanov;
             settings.pipeline.blur = AmbientOcclusionBlur::gaussian;
             settings.pipeline.upsample = AmbientOcclusionUpsample::bilinear;
         }
+        else if (variant == AmbientOcclusionVariant::hbao)
+        {
+            settings.pipeline.algorithm = variant;
+        }
         auto& p = settings.pipeline;
         p.inputs = static_cast<AmbientOcclusionInputs>(eastl::min(readSetting<uint32_t>("render/ssao/inputs", static_cast<uint32_t>(p.inputs)), 1u));
-        p.algorithm = static_cast<AmbientOcclusionVariant>(eastl::min(readSetting<uint32_t>("render/ssao/algorithm", static_cast<uint32_t>(p.algorithm)), 1u));
+        p.algorithm = static_cast<AmbientOcclusionVariant>(eastl::min(readSetting<uint32_t>("render/ssao/algorithm", static_cast<uint32_t>(p.algorithm)), 2u));
         p.normals = static_cast<AmbientOcclusionNormals>(eastl::min(readSetting<uint32_t>("render/ssao/normals", 0), 1u));
         p.blur = static_cast<AmbientOcclusionBlur>(eastl::min(readSetting<uint32_t>("render/ssao/blurMethod", readSetting<bool>("render/ssao/blur", true) ? static_cast<uint32_t>(p.blur) : 0u), 4u));
         p.blurExecution = readSetting<bool>("render/ssao/blurOnSecondary", readTransportMode() != 0) ? AmbientOcclusionExecution::multiGpu : AmbientOcclusionExecution::singleGpu;
@@ -123,6 +128,10 @@ namespace nau::render
             m_vertexShader = co_await vertex.getAssetViewTyped<ShaderAssetView>();
             m_rawShader = co_await rawShader.getAssetViewTyped<ShaderAssetView>();
             m_filterShader = co_await filterShader.getAssetViewTyped<ShaderAssetView>();
+            // HBAO's compute path is optional; the raw pixel shader remains a fallback on either GPU.
+            ShaderAssetRef hbaoShader{"file:/res/shaders/cache/shader_cache.nsbc+[hbao.cs.csmain]"};
+            auto hbao = co_await hbaoShader.getAssetViewTyped<ShaderAssetView>().doTry();
+            if (hbao) m_hbaoShader = *hbao;
             if (!m_vertexShader || !m_rawShader || !m_filterShader)
             {
                 NAU_LOG_ERROR("SSAO: secondary shaders unavailable, using GPU 0");
@@ -232,7 +241,9 @@ namespace nau::render
             ++m_timingGeneration;
             m_waitMilliseconds = -1.f;
         }
-        const bool layoutChanged = old.inputs != next.inputs || old.normals != next.normals ||
+        const bool rawPipelineChanged = (old.algorithm == AmbientOcclusionVariant::hbao) !=
+            (next.algorithm == AmbientOcclusionVariant::hbao);
+        const bool layoutChanged = rawPipelineChanged || old.inputs != next.inputs || old.normals != next.normals ||
             old.packedNormals != next.packedNormals || old.linearDepth16 != next.linearDepth16 ||
             old.quarterResolution != next.quarterResolution;
         m_logSettings |= old != next || m_settings.execution != settings.execution || m_settings.mode != settings.mode;
@@ -288,10 +299,12 @@ namespace nau::render
             return;
         }
         const auto& p = m_settings.pipeline;
-        m_constants.options[0] = p.normals == AmbientOcclusionNormals::reconstructed ? 1.f : 0.f;
+        const bool hbao = p.algorithm == AmbientOcclusionVariant::hbao;
+        // Keep the requested SSAO normal mode intact while HBAO always reads depth only.
+        m_constants.options[0] = hbao || p.normals == AmbientOcclusionNormals::reconstructed ? 1.f : 0.f;
         m_constants.options[1] = p.packedNormals ? 1.f : 0.f;
         m_constants.options[2] = p.linearDepth16 ? 1.f : 0.f;
-        m_constants.options[3] = p.eightSamples ? 8.f : 14.f;
+        m_constants.options[3] = p.eightSamples ? 8.f : (hbao ? 16.f : 14.f);
         m_constants.pipeline[0] = static_cast<float>(p.blur);
         m_constants.pipeline[1] = 0.f;
         m_constants.pipeline[2] = p.rejectOutside ? 1.f : 0.f;
@@ -561,6 +574,7 @@ namespace nau::render
         if (!m_secondaryAttempted)
         {
             m_secondaryAttempted = true;
+            const bool hbao = m_settings.pipeline.algorithm == AmbientOcclusionVariant::hbao;
             const Shader* vertex = m_vertexShader->getShader();
             const Shader* raw = m_rawShader->getShader();
             d3d::mgpu::SsaoProducerDesc desc;
@@ -572,7 +586,15 @@ namespace nau::render
             desc.vertexBytecodeSize = vertex->bytecode.size();
             desc.rawBytecode = raw->bytecode.data();
             desc.rawBytecodeSize = raw->bytecode.size();
-            desc.reconstructNormals = m_settings.pipeline.normals == AmbientOcclusionNormals::reconstructed;
+            if (hbao && m_hbaoShader && !m_hbaoShader->getShader()->bytecode.empty())
+            {
+                const Shader* compute = m_hbaoShader->getShader();
+                desc.rawComputeBytecode = compute->bytecode.data();
+                desc.rawComputeBytecodeSize = compute->bytecode.size();
+            }
+            else if (hbao)
+                NAU_LOG_WARNING("HBAO: secondary compute shader unavailable, using the GPU 1 pixel path");
+            desc.reconstructNormals = hbao || m_settings.pipeline.normals == AmbientOcclusionNormals::reconstructed;
             desc.packedNormals = m_settings.pipeline.packedNormals;
             desc.linearDepth16 = m_settings.pipeline.linearDepth16;
             desc.measureTimings = m_measureTimings;
@@ -588,7 +610,8 @@ namespace nau::render
                 return false;
             }
             ++m_measurements.gpu1Generation;
-            NAU_LOG_INFO("SSAO: GPU 1 producer, AO {}x{}, framework unsynchronized={}, mailbox mode={}", m_secondaryWidth, m_secondaryHeight, m_frameworkTransport, m_mailboxMode);
+            NAU_LOG_INFO("AO: GPU 1 producer, AO {}x{}, algorithm={}, framework unsynchronized={}, mailbox mode={}",
+                m_secondaryWidth, m_secondaryHeight, static_cast<uint32_t>(m_settings.pipeline.algorithm), m_frameworkTransport, m_mailboxMode);
         }
         if (!m_secondary)
         {
@@ -843,6 +866,8 @@ namespace nau::render
 
     const char* AmbientOcclusion::getVariantLabel() const
     {
+        if (m_settings.pipeline.algorithm == AmbientOcclusionVariant::hbao)
+            return "HBAO / depth normals / independent stages";
         return m_settings.pipeline.algorithm == AmbientOcclusionVariant::bogdanov ? "Bogdanov AO / independent stages" : "Nau AO / independent stages";
     }
 
@@ -850,11 +875,13 @@ namespace nau::render
     {
         if (!m_logSettings) return;
         const auto& p = m_settings.pipeline;
-        NAU_LOG_INFO("SSAO pipeline: {}, AO={}x{}, inputs={}x{}, algorithm={}, normals={}, blur={}, blurGPU={}, upsample={}, RG8={}, R16F={}, samples={}, weighted={}, reject={}, gatherUp={}, wait={}, mode={}",
+        const bool hbao = p.algorithm == AmbientOcclusionVariant::hbao;
+        const auto normals = hbao ? AmbientOcclusionNormals::reconstructed : p.normals;
+        NAU_LOG_INFO("AO pipeline: {}, AO={}x{}, inputs={}x{}, algorithm={}, normals={}, requestedNormals={}, blur={}, blurGPU={}, upsample={}, RG8={}, R16F={}, {}={}, weighted={}, reject={}, gatherUp={}, wait={}, mode={}",
             getExecutionLabel(), m_secondaryWidth, m_secondaryHeight, m_inputWidth, m_inputHeight,
-            static_cast<uint32_t>(p.algorithm), static_cast<uint32_t>(p.normals), static_cast<uint32_t>(p.blur),
+            static_cast<uint32_t>(p.algorithm), static_cast<uint32_t>(normals), static_cast<uint32_t>(p.normals), static_cast<uint32_t>(p.blur),
             static_cast<uint32_t>(p.blurExecution), static_cast<uint32_t>(p.upsample), p.packedNormals, p.linearDepth16,
-            p.eightSamples ? 8 : 14, p.weightedUpsample, p.rejectOutside, p.gatherUpsample, p.waitForSecondary, static_cast<uint32_t>(m_settings.mode));
+            hbao ? "directions" : "samples", p.eightSamples ? 8 : (hbao ? 16 : 14), p.weightedUpsample, p.rejectOutside, p.gatherUpsample, p.waitForSecondary, static_cast<uint32_t>(m_settings.mode));
         m_logSettings = false;
     }
 

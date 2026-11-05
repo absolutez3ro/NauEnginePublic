@@ -22,6 +22,10 @@ namespace d3d::mgpu
         size_t vertexBytecodeSize = 0;
         const void* rawBytecode = nullptr;
         size_t rawBytecodeSize = 0;
+        // Optional 8x8 compute raw-AO pass with the same constants/SRVs and an R8 output at u0.
+        // The pixel raw pass remains available when the secondary cannot store typed R8 UAVs.
+        const void* rawComputeBytecode = nullptr;
+        size_t rawComputeBytecodeSize = 0;
         const void* filterBytecode = nullptr;
         size_t filterBytecodeSize = 0;
         bool reconstructNormals = false;

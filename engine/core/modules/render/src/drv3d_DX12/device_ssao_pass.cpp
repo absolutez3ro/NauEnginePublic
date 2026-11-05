@@ -5,6 +5,7 @@
 #include "ssao_unpack_depth_bytecode.h"
 #include "mailbox_receive.h"
 #include "nau/3d/ssao_random_texture.h"
+#include "nau/diag/logging.h"
 
 #include <EASTL/vector.h>
 
@@ -18,6 +19,7 @@ namespace drv3d_dx12
         constexpr UINT MAILBOX_CONTROL_OFFSET = CONSTANT_BYTES * 3;
         enum Timestamp : UINT { INPUT_BEGIN, RAW_BEGIN, RAW_END, FILTER_END, OUTPUT_END, TIMESTAMP_COUNT };
         constexpr UINT SRV_TABLES = 4, SRVS_PER_TABLE = 5, SRVS_PER_SET = SRV_TABLES * SRVS_PER_TABLE;
+        constexpr UINT UAVS_PER_SET = 2; // Output and unfiltered AO; share the shader-visible SRV heap.
 
         bool validShader(const D3D12_SHADER_BYTECODE& shader)
         {
@@ -99,6 +101,7 @@ namespace drv3d_dx12
             DeviceResource output;
             DeviceResource raw;
             DeviceResource horizontal;
+            bool targetsInitialized = false;
             uint64_t rendered = 0;
             Microsoft::WRL::ComPtr<ID3D12Fence> outputReleased;
             uint64_t outputReleasedValue = 0;
@@ -113,6 +116,7 @@ namespace drv3d_dx12
         bool m_frameworkStyle = false;
         bool m_mailboxStyle = false;
         bool m_reconstructNormals = false;
+        bool m_computeRaw = false;
         bool m_packedFrameworkDepth = false;
         bool m_packedFrameworkNormals = false;
         DeviceResource m_packedDepth;
@@ -129,7 +133,9 @@ namespace drv3d_dx12
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvHeap;
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
         Microsoft::WRL::ComPtr<ID3D12RootSignature> m_root;
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> m_computeRoot;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> m_rawPso;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> m_computeRawPso;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> m_filterPso;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> m_horizontalPso;
         HANDLE m_event = nullptr;
@@ -318,6 +324,18 @@ namespace drv3d_dx12
         m_height = desc.height;
         m_normalFormat = desc.packedNormals ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_FLOAT;
         m_depthFormat = desc.linearDepth16 ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_R32_FLOAT;
+        if (validShader(desc.rawComputeShader))
+        {
+            D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {DXGI_FORMAT_R8_UNORM};
+            const auto required = D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW;
+            m_computeRaw = SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) &&
+                (support.Support1 & required) == required && (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) != 0;
+            // The same algorithm is present in rawShader. Unsupported adapters keep the pixel path.
+            if (!m_computeRaw)
+                NAU_LOG_WARNING("AO: secondary R8 typed UAV stores unavailable; using the same algorithm's pixel path");
+        }
+        const auto aoFlags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
+            (m_computeRaw ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE);
         D3D12_COMMAND_QUEUE_DESC queueDesc = {};
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         HRESULT result = m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_queue));
@@ -347,9 +365,9 @@ namespace drv3d_dx12
                                             desc.inputHeight ? desc.inputHeight : m_height, m_depthFormat,
                                             m_packedFrameworkDepth ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE);
             if (SUCCEEDED(result))
-                result = resources.output.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+                result = resources.output.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, aoFlags);
             if (SUCCEEDED(result))
-                result = resources.raw.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+                result = resources.raw.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, aoFlags);
             if (SUCCEEDED(result))
                 result = resources.horizontal.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         }
@@ -421,7 +439,7 @@ namespace drv3d_dx12
         desc.NumDescriptors = 3 * resourceCount;
         HRESULT result = m_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&m_rtvHeap));
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        desc.NumDescriptors = SRVS_PER_SET * resourceCount;
+        desc.NumDescriptors = (SRVS_PER_SET + (m_computeRaw ? UAVS_PER_SET : 0u)) * resourceCount;
         desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (SUCCEEDED(result))
         {
@@ -473,6 +491,18 @@ namespace drv3d_dx12
                     auto handle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
                     handle.ptr += (resourceIndex * SRVS_PER_SET + table * SRVS_PER_TABLE + input) * m_srvStride;
                     m_device->CreateShaderResourceView(inputs[input], &srv, handle);
+                }
+            }
+            if (m_computeRaw)
+            {
+                D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+                uav.Format = DXGI_FORMAT_R8_UNORM;
+                uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+                for (UINT i = 0; i < UAVS_PER_SET; ++i)
+                {
+                    auto handle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+                    handle.ptr += (SRVS_PER_SET * resourceCount + resourceIndex * UAVS_PER_SET + i) * m_srvStride;
+                    m_device->CreateUnorderedAccessView(targets[i], nullptr, &uav, handle);
                 }
             }
         }
@@ -564,6 +594,41 @@ namespace drv3d_dx12
             }
             pso.RTVFormats[0] = m_depthFormat;
             result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_unpackPso));
+        }
+        if (SUCCEEDED(result) && m_computeRaw)
+        {
+            D3D12_DESCRIPTOR_RANGE ranges[2] = {};
+            ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+            ranges[0].NumDescriptors = SRVS_PER_TABLE;
+            ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+            ranges[1].NumDescriptors = 1;
+            D3D12_ROOT_PARAMETER computeParameters[3] = {};
+            computeParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+            computeParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            computeParameters[1].DescriptorTable.NumDescriptorRanges = 1;
+            computeParameters[1].DescriptorTable.pDescriptorRanges = &ranges[0];
+            computeParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            computeParameters[2].DescriptorTable.NumDescriptorRanges = 1;
+            computeParameters[2].DescriptorTable.pDescriptorRanges = &ranges[1];
+            for (auto& parameter : computeParameters) parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            for (auto& sampler : samplers) sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            D3D12_ROOT_SIGNATURE_DESC computeRoot = {};
+            computeRoot.NumParameters = 3;
+            computeRoot.pParameters = computeParameters;
+            computeRoot.NumStaticSamplers = 2;
+            computeRoot.pStaticSamplers = samplers;
+            serialized.Reset();
+            errors.Reset();
+            result = D3D12SerializeRootSignature(&computeRoot, D3D_ROOT_SIGNATURE_VERSION_1_0, &serialized, &errors);
+            if (SUCCEEDED(result))
+                result = m_device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(&m_computeRoot));
+            if (SUCCEEDED(result))
+            {
+                D3D12_COMPUTE_PIPELINE_STATE_DESC computePso = {};
+                computePso.pRootSignature = m_computeRoot.Get();
+                computePso.CS = desc.rawComputeShader;
+                result = m_device->CreateComputePipelineState(&computePso, IID_PPV_ARGS(&m_computeRawPso));
+            }
         }
         return result;
     }
@@ -831,7 +896,8 @@ namespace drv3d_dx12
             destination.pResource = m_random.getResource();
             destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
             m_list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
-            barrier(m_random.getResource(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            barrier(m_random.getResource(), D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
         ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Get()};
         m_list->SetDescriptorHeaps(1, heaps);
@@ -876,8 +942,9 @@ namespace drv3d_dx12
         m_list->RSSetViewports(1, &viewport);
         m_list->RSSetScissorRects(1, &scissor);
         m_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        barrier(resources.depth.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        barrier(resources.normals.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        auto inputState = m_computeRaw ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barrier(resources.depth.getResource(), D3D12_RESOURCE_STATE_COMMON, inputState);
+        barrier(resources.normals.getResource(), D3D12_RESOURCE_STATE_COMMON, inputState);
         const bool filtered = data.filter[3] > 1.f && data.pipeline[0] >= 1.f && data.pipeline[0] <= 3.f && m_filterPso;
         const bool gaussian = data.pipeline[0] == 3.f;
         const auto draw = [&](ID3D12Resource* target, UINT rtvIndex, UINT table, UINT constantIndex,
@@ -896,11 +963,51 @@ namespace drv3d_dx12
             m_list->DrawInstanced(3, 1, 0, 0);
             barrier(target, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COMMON);
         };
+        if (m_computeRaw && !resources.targetsInitialized)
+        {
+            // Initialize placed render-target metadata once before using the same AO textures as UAVs.
+            ID3D12Resource* targets[] = {resources.output.getResource(), resources.raw.getResource(), resources.horizontal.getResource()};
+            constexpr float clear[4] = {};
+            for (UINT i = 0; i < 3; ++i)
+            {
+                auto rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+                rtv.ptr += (resourceIndex * 3 + i) * m_rtvStride;
+                barrier(targets[i], D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                m_list->ClearRenderTargetView(rtv, clear, 0, nullptr);
+                barrier(targets[i], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COMMON);
+            }
+            resources.targetsInitialized = true;
+        }
         if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, RAW_BEGIN);
-        draw(filtered ? resources.raw.getResource() : resources.output.getResource(), filtered ? 1 : 0, 0, 0, m_rawPso.Get(), data);
+        if (m_computeRaw)
+        {
+            auto* target = filtered ? resources.raw.getResource() : resources.output.getResource();
+            std::memcpy(recording->mapped, &data, sizeof(data));
+            m_list->SetComputeRootSignature(m_computeRoot.Get());
+            m_list->SetComputeRootConstantBufferView(0, recording->constants.getResource()->GetGPUVirtualAddress());
+            auto srv = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
+            srv.ptr += resourceIndex * SRVS_PER_SET * m_srvStride;
+            m_list->SetComputeRootDescriptorTable(1, srv);
+            const UINT resourceCount = m_frameworkStyle ? 1u : RESOURCE_COUNT;
+            auto uav = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
+            uav.ptr += (SRVS_PER_SET * resourceCount + resourceIndex * UAVS_PER_SET + (filtered ? 1u : 0u)) * m_srvStride;
+            m_list->SetComputeRootDescriptorTable(2, uav);
+            m_list->SetPipelineState(m_computeRawPso.Get());
+            barrier(target, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            m_list->Dispatch((m_width + 7) / 8, (m_height + 7) / 8, 1);
+            barrier(target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+        }
+        else
+            draw(filtered ? resources.raw.getResource() : resources.output.getResource(), filtered ? 1 : 0, 0, 0, m_rawPso.Get(), data);
         if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, RAW_END);
         if (filtered)
         {
+            if (inputState != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+            {
+                barrier(resources.depth.getResource(), inputState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                barrier(resources.normals.getResource(), inputState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                inputState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            }
             barrier(resources.raw.getResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             auto constants = data;
             constants.pipeline[1] = 0.f;
@@ -915,8 +1022,8 @@ namespace drv3d_dx12
             }
             barrier(resources.raw.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         }
-        barrier(resources.normals.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
-        barrier(resources.depth.getResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+        barrier(resources.normals.getResource(), inputState, D3D12_RESOURCE_STATE_COMMON);
+        barrier(resources.depth.getResource(), inputState, D3D12_RESOURCE_STATE_COMMON);
         if (recording->timestampHeap)
         {
             m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, FILTER_END);

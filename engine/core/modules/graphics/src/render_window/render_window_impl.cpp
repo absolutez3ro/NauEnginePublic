@@ -224,8 +224,15 @@ namespace nau::render
     void RenderWindowImpl::setAmbientOcclusionVariant(AmbientOcclusionVariant variant)
     {
         AmbientOcclusionPipeline pipeline;
-        pipeline.waitForSecondary = getAmbientOcclusionPipeline().waitForSecondary;
-        if (variant == AmbientOcclusionVariant::bogdanov)
+        const auto requested = getAmbientOcclusionPipeline();
+        pipeline.waitForSecondary = requested.waitForSecondary;
+        if (variant == AmbientOcclusionVariant::hbao)
+        {
+            // Algorithm selection preserves the user's SSAO normals and stage preferences.
+            pipeline = requested;
+            pipeline.algorithm = variant;
+        }
+        else if (variant == AmbientOcclusionVariant::bogdanov)
         {
             pipeline.inputs = AmbientOcclusionInputs::full;
             pipeline.algorithm = variant;

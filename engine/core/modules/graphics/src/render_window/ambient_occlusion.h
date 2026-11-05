@@ -96,6 +96,7 @@ namespace nau::render
         MaterialAssetView::Ptr m_blurMaterial;
         ShaderAssetView::Ptr m_vertexShader;
         ShaderAssetView::Ptr m_rawShader;
+        ShaderAssetView::Ptr m_hbaoShader;
         ShaderAssetView::Ptr m_filterShader;
         Texture* m_randomTexture = nullptr;
         d3d::SamplerHandle m_linearClamp = {};
