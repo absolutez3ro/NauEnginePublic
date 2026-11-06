@@ -7,9 +7,11 @@
 #include "framework_ssao_resources.h"
 #include "mailbox_ssao_state.h"
 #include "device.h"
+#include "format_store.h"
 #include "texture.h"
 #include "nau/3d/dag_drv3d_multi_gpu.h"
 #include "nau/3d/dag_drv3dCmd.h"
+#include "nau/gpu_profiler/gpu_profiler.h"
 #include "nau_device_resource_allocator.h"
 #include "multi_gpu_device.h"
 #include <cstdlib>
@@ -18,6 +20,16 @@ namespace d3d::mgpu
 {
     namespace
     {
+        namespace profiler = nau::gpu_profiler;
+
+        uint64_t texturePayloadBytes(ID3D12Resource* resource)
+        {
+            if (!resource) return 0;
+            const auto desc = resource->GetDesc();
+            const auto format = drv3d_dx12::FormatStore::fromDXGIFormat(desc.Format);
+            return desc.Width * desc.Height * format.getBytesPerPixelBlock();
+        }
+
         bool usePackedSoftwareDepth(ID3D12Device* device)
         {
             // Group WARP's expensive per-texel shared-memory reads. Keep the hardware path until measured there.
@@ -48,6 +60,7 @@ namespace d3d::mgpu
         TransferChannelHandle output = nullptr;
         bool reconstructNormals = false;
         bool measureTimings = false;
+        uint64_t profiledInputBytes = 0;
         uint32_t nextResource = 0;
         struct PrimaryTiming
         {
@@ -165,7 +178,16 @@ namespace d3d::mgpu
                     producer->mailbox = eastl::make_shared<drv3d_dx12::MailboxSsaoState>();
                     result = producer->mailbox->init(static_cast<ID3D12Device*>(get_device(PRIMARY_GPU)),
                         allocator->getDevice(), pass, desc.gpuMailbox);
-                    if (SUCCEEDED(result)) producer->pass.retainMailboxResources(producer->mailbox);
+                    if (SUCCEEDED(result))
+                    {
+                        producer->pass.retainMailboxResources(producer->mailbox);
+                        if (profiler::GpuProfiler::instance().isEnabled())
+                        {
+                            const auto& resources = producer->mailbox->resources;
+                            producer->profiledInputBytes = texturePayloadBytes(resources.inputDepthPrimary(0)) +
+                                texturePayloadBytes(resources.inputNormalsPrimary(0));
+                        }
+                    }
                 }
                 if (SUCCEEDED(result) && desc.frameworkStyle)
                 {
@@ -250,8 +272,11 @@ namespace d3d::mgpu
                     d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &query.begin, nullptr, nullptr);
                     break;
                 }
-        context.copySharedTexture(depthImage, shared.depth, true);
-        if (!producer->reconstructNormals) context.copySharedTexture(normalImage, shared.normals, true);
+        {
+            NAU_GPU_TIMER("ao_framework_inputs");
+            context.copySharedTexture(depthImage, shared.depth, true);
+            if (!producer->reconstructNormals) context.copySharedTexture(normalImage, shared.normals, true);
+        }
         if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->published, nullptr, nullptr);
         if (!producer->frameworkInitialized)
         {
@@ -259,7 +284,10 @@ namespace d3d::mgpu
             context.copySharedTexture(resultImage, shared.result, true);
             producer->frameworkInitialized = true;
         }
-        context.copySharedTexture(resultImage, shared.result, false);
+        {
+            NAU_GPU_TIMER("ao_framework_receive");
+            context.copySharedTexture(resultImage, shared.result, false);
+        }
         if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->received, nullptr, nullptr);
         const HRESULT result = producer->pass.executeFramework(constants, producer->framework->secondary(), frame);
         submitted = result == S_OK;
@@ -303,6 +331,9 @@ namespace d3d::mgpu
         auto& context = drv3d_dx12::get_device().getContext();
         if (issue)
         {
+            // Both halves of the default window's AO input transfer are recorded in this frame.
+            NAU_GPU_TRANSFER_SRC("ao_inputs", profiler::PrimaryGpu, profiler::SecondaryGpu,
+                profiler::FrameToken, profiler::PrimarySource, producer->profiledInputBytes);
             context.copySharedTexture(depthImage, mailbox.resources.inputDepthPrimary(input), true);
             if (!producer->reconstructNormals)
                 context.copySharedTexture(normalImage, mailbox.resources.inputNormalsPrimary(input), true);
@@ -320,8 +351,14 @@ namespace d3d::mgpu
         job.mailbox = mailbox.resources.mailboxSecondary();
         job.outputSlot = output;
         job.publishMailbox = mailbox.gpuSelection;
+        job.profiledInputBytes = producer->profiledInputBytes;
         drv3d_dx12::MailboxSsaoCompletion done;
         const HRESULT result = producer->pass.executeMailbox(constants, mailbox.resources.shared(input, output), job, frame, done);
+        auto& trace = profiler::GpuProfiler::instance();
+        if (result == S_OK)
+            trace.markTransferConsumed("ao_inputs");
+        else
+            trace.markTransferDiscarded("ao_inputs", trace.frameIndex());
         if (FAILED(result)) { report_secondary_gpu_failure(static_cast<uint32_t>(result)); return false; }
         if (result == S_FALSE) return true;
         mailbox.inputs[input].readDone = done.dataReady;
@@ -378,7 +415,11 @@ namespace d3d::mgpu
         for (auto& query : producer->primaryQueries)
             if (query.pending && query.frame == frame) { timing = &query; break; }
         if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->receiveBegin, nullptr, nullptr);
-        drv3d_dx12::get_device().getContext().mailboxReceive(target, desc);
+        {
+            // The selected result ID is only known on GPU0 in mode 2b.
+            NAU_GPU_TIMER("ao_mailbox_receive");
+            drv3d_dx12::get_device().getContext().mailboxReceive(target, desc);
+        }
         if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->received, nullptr, nullptr);
         return true;
     }

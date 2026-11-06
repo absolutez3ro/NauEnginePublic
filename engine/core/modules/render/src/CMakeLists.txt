@@ -55,7 +55,7 @@ target_link_libraries(${TargetName} PUBLIC
 )
 
 if(WIN32)
-  target_link_libraries(${TargetName} PRIVATE d3d12 dxgi)
+  target_link_libraries(${TargetName} PRIVATE d3d12 dxgi GpuProfiler)
 endif()
 
 nau_target_link_modules(${TargetName}

@@ -912,7 +912,7 @@ bool fill_interface_table(D3dInterfaceTable &d3dit);
 
 
 /// returns driver name (pointer to static string)
-const char *get_driver_name();
+NAU_RENDER_EXPORT const char *get_driver_name();
 
 /// returns driver code
 NAU_RENDER_EXPORT DriverCode get_driver_code();
@@ -923,7 +923,7 @@ static inline bool is_stub_driver() { return get_driver_code().is(d3d::stub); }
 const char *get_device_driver_version();
 
 /// returns device name (pointer to static string)
-const char *get_device_name();
+NAU_RENDER_EXPORT const char *get_device_name();
 
 /// returns pointer to static buffer containing last error message
 NAU_RENDER_EXPORT const char *get_last_error();
@@ -1574,7 +1574,7 @@ PROGRAM get_debug_program();
 void beginEvent(const char *); // for debugging
 void endEvent();               // for debugging
 bool get_vrr_supported();
-bool get_vsync_enabled();
+NAU_RENDER_EXPORT bool get_vsync_enabled();
 bool enable_vsync(bool enable);
 
 // Backbuffer is only valid while the GPU is acquired, and can be recreated in between.

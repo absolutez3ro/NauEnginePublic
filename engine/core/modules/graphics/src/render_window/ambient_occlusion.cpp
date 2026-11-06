@@ -10,6 +10,7 @@
 #include "nau/3d/ssao_random_texture.h"
 #include "nau/3d/dag_drv3dCmd.h"
 #include "nau/diag/logging.h"
+#include "nau/gpu_profiler/gpu_profiler.h"
 #include "nau/service/service_provider.h"
 #include "nau/shaders/shader_globals.h"
 
@@ -17,6 +18,8 @@ namespace nau::render
 {
     namespace
     {
+        namespace profiler = nau::gpu_profiler;
+
         template <typename TValue>
         TValue readSetting(const char* name, const TValue& fallback)
         {
@@ -295,6 +298,7 @@ namespace nau::render
 
     void AmbientOcclusion::prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, BaseTexture* normals, BaseTexture* depth)
     {
+        NAU_CPU_TIMER("ao_prepare_cpu");
         m_measurements.frame = ++m_frameIndex;
         m_measurements.aoWidth = m_secondaryWidth;
         m_measurements.aoHeight = m_secondaryHeight;
@@ -440,11 +444,14 @@ namespace nau::render
 
     void AmbientOcclusion::render(BaseTexture* output)
     {
+        NAU_CPU_TIMER("ao_receive_cpu");
+        auto& trace = profiler::GpuProfiler::instance();
         bool rawValid = true;
         d3d::set_render_target();
         d3d::set_depth(nullptr, DepthAccess::RW);
         if (m_settings.mode == AmbientOcclusionMode::off || !m_jobs[0].result)
         {
+            trace.setPlacement("ao", profiler::Placement::Off);
             d3d::set_render_target(output, 0);
             d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
             d3d::set_render_target();
@@ -493,6 +500,7 @@ namespace nau::render
                 selectNewestReadyJob();
                 if (!m_shown)
                 {
+                    trace.setPlacement("ao", profiler::Placement::Off);
                     d3d::set_render_target(output, 0);
                     d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
                     d3d::set_render_target();
@@ -513,10 +521,37 @@ namespace nau::render
         if (!m_measurements.aoFrame && !(m_usingSecondary && (m_frameworkTransport || m_mailboxMode))) m_measurements.aoFrame = m_frameIndex;
         m_measurements.aoValid = rawValid;
         filter(output);
+
+        if (trace.isEnabled())
+        {
+            const auto& pipeline = m_settings.pipeline;
+            const char* algorithm = "ssao_nau";
+            switch (pipeline.algorithm)
+            {
+                case AmbientOcclusionVariant::bogdanov: algorithm = "ssao_bogdanov"; break;
+                case AmbientOcclusionVariant::hbao: algorithm = "hbao"; break;
+                case AmbientOcclusionVariant::xegtao: algorithm = "xegtao"; break;
+                case AmbientOcclusionVariant::current: break;
+            }
+            using profiler::Placement;
+            trace.setPlacement(algorithm, rawValid ? (m_usingSecondary ? Placement::Gpu1 : Placement::Gpu0) : Placement::Off);
+            if (m_usingSecondary)
+            {
+                const char* transport = m_frameworkTransport ? "framework" : "protected";
+                if (m_mailboxMode) transport = m_mailboxMode == 2 ? "mailbox_2b" : "mailbox_2a";
+                trace.setPlacement(transport, Placement::Gpu1);
+            }
+            if (pipeline.blur != AmbientOcclusionBlur::off && pipeline.blur != AmbientOcclusionBlur::bilateralUpsample)
+            {
+                const bool blurOnSecondary = m_usingSecondary && pipeline.blurExecution == AmbientOcclusionExecution::multiGpu;
+                trace.setPlacement("ao_blur", blurOnSecondary ? Placement::Gpu1 : Placement::Gpu0);
+            }
+        }
     }
 
     bool AmbientOcclusion::drawRaw()
     {
+        NAU_GPU_TIMER("ao_raw");
         if (m_settings.pipeline.algorithm != AmbientOcclusionVariant::xegtao)
         {
             draw(m_drawRaw, *m_rawMaterial, "default");
@@ -575,7 +610,10 @@ namespace nau::render
         d3d::set_program(m_xePrograms[0]);
         for (uint32_t mip = 0; mip < 5; ++mip)
             d3d::set_rwtex(STAGE_CS, mip, m_xeDepth, 0, mip);
-        d3d::dispatch((m_secondaryWidth + 15) / 16, (m_secondaryHeight + 15) / 16, 1);
+        {
+            NAU_GPU_TIMER("xegtao_prefilter");
+            d3d::dispatch((m_secondaryWidth + 15) / 16, (m_secondaryHeight + 15) / 16, 1);
+        }
         for (uint32_t slot = 0; slot < 5; ++slot)
             d3d::set_rwtex(STAGE_CS, slot, nullptr, 0, 0);
         d3d::resource_barrier({m_xeDepth, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
@@ -586,7 +624,10 @@ namespace nau::render
         d3d::set_tex(STAGE_CS, 2, m_xeDepth);
         d3d::set_rwtex(STAGE_CS, 0, m_xePing, 0, 0);
         d3d::set_rwtex(STAGE_CS, 1, m_xeEdges, 0, 0);
-        d3d::dispatch((m_secondaryWidth + 7) / 8, (m_secondaryHeight + 7) / 8, 1);
+        {
+            NAU_GPU_TIMER("xegtao_main");
+            d3d::dispatch((m_secondaryWidth + 7) / 8, (m_secondaryHeight + 7) / 8, 1);
+        }
         d3d::set_rwtex(STAGE_CS, 0, nullptr, 0, 0);
         d3d::set_rwtex(STAGE_CS, 1, nullptr, 0, 0);
         d3d::resource_barrier({m_xeEdges, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
@@ -602,7 +643,10 @@ namespace nau::render
             d3d::set_program(m_xePrograms[pass]);
             d3d::set_tex(STAGE_CS, 2, source);
             d3d::set_rwtex(STAGE_CS, 0, destination, 0, 0);
-            d3d::dispatch((m_secondaryWidth + 15) / 16, (m_secondaryHeight + 7) / 8, 1);
+            {
+                NAU_GPU_TIMER(pass == 2 ? "xegtao_denoise" : "xegtao_denoise_last");
+                d3d::dispatch((m_secondaryWidth + 15) / 16, (m_secondaryHeight + 7) / 8, 1);
+            }
             d3d::set_rwtex(STAGE_CS, 0, nullptr, 0, 0);
             eastl::swap(source, destination);
         }
@@ -611,7 +655,10 @@ namespace nau::render
         d3d::set_program(m_xePrograms[4]);
         d3d::set_tex(STAGE_CS, 2, source);
         d3d::set_rwtex(STAGE_CS, 0, m_drawRaw, 0, 0);
-        d3d::dispatch((m_secondaryWidth + 7) / 8, (m_secondaryHeight + 7) / 8, 1);
+        {
+            NAU_GPU_TIMER("xegtao_composite");
+            d3d::dispatch((m_secondaryWidth + 7) / 8, (m_secondaryHeight + 7) / 8, 1);
+        }
         d3d::set_rwtex(STAGE_CS, 0, nullptr, 0, 0);
         for (uint32_t slot = 0; slot < 4; ++slot)
             d3d::set_tex(STAGE_CS, slot, nullptr);
@@ -799,6 +846,7 @@ namespace nau::render
 
     void AmbientOcclusion::downsampleInputs(BaseTexture* normals, BaseTexture* depth)
     {
+        NAU_GPU_TIMER("ao_downsample_inputs");
         d3d::resource_barrier({m_normals, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         d3d::resource_barrier({m_depth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         d3d::set_render_target();
@@ -826,6 +874,7 @@ namespace nau::render
         m_resolveSource = m_drawRaw;
         if (!blurOnSecondary && p.blur != AmbientOcclusionBlur::off && p.blur != AmbientOcclusionBlur::bilateralUpsample)
         {
+            NAU_GPU_TIMER("ao_blur");
             FilterTiming* sample = nullptr;
             if (m_measureTimings)
                 for (auto& timing : m_filterTimings)
@@ -850,6 +899,7 @@ namespace nau::render
         }
         if (m_fullOutput)
         {
+            NAU_GPU_TIMER("ao_upsample");
             d3d::resource_barrier({m_depth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
             draw(m_fullOutput, *m_blurMaterial, "upsample", m_resolveSource);
         }
@@ -1004,7 +1054,10 @@ namespace nau::render
             sample->waited = true;
             d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &sample->begin, nullptr, nullptr);
         }
-        d3d::mgpu::wait_for_primary_transfer(m_secondaryReady);
+        {
+            NAU_GPU_TIMER("ao_wait_secondary");
+            d3d::mgpu::wait_for_primary_transfer(m_secondaryReady);
+        }
         if (sample)
         {
             d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &sample->end, nullptr, nullptr);

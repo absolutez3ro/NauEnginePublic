@@ -6,6 +6,8 @@
 #include "mailbox_receive.h"
 #include "nau/3d/ssao_random_texture.h"
 #include "nau/diag/logging.h"
+#include "nau/gpu_profiler/d3d12_timestamp_source.h"
+#include "nau/utils/scope_guard.h"
 
 #include <EASTL/vector.h>
 
@@ -15,6 +17,8 @@ namespace drv3d_dx12
 {
     namespace
     {
+        namespace profiler = nau::gpu_profiler;
+
         constexpr UINT CONSTANT_BYTES = (sizeof(d3d::mgpu::SsaoConstants) + 255u) & ~255u;
         constexpr UINT MAILBOX_CONTROL_OFFSET = CONSTANT_BYTES * 3;
         enum Timestamp : UINT { INPUT_BEGIN, RAW_BEGIN, RAW_END, FILTER_END, OUTPUT_END, TIMESTAMP_COUNT };
@@ -140,6 +144,7 @@ namespace drv3d_dx12
         eastl::vector<eastl::unique_ptr<Recording>> m_recordings;
         ID3D12GraphicsCommandList* m_list = nullptr;
         Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
+        profiler::D3D12TimestampSource m_profileSource;
         Microsoft::WRL::ComPtr<ID3D12Fence> m_dependencies[2 + RESOURCE_COUNT];
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvHeap;
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
@@ -447,6 +452,8 @@ namespace drv3d_dx12
         }
         if (SUCCEEDED(result) && m_xegtao) result = createXeDescriptors();
         if (SUCCEEDED(result) && m_xegtao) result = createXePipelines(desc);
+        if (SUCCEEDED(result))
+            m_profileSource.init(m_device.Get(), m_queue.Get(), m_fence.Get(), profiler::SecondaryGpu, "gfx1.ao");
         if (SUCCEEDED(result) && m_xegtao)
             NAU_LOG_INFO("XeGTAO: GPU 1 raw AO path=compute, quality=high, denoise=2");
         if (SUCCEEDED(result) && !m_xegtao && validShader(desc.rawComputeShader))
@@ -1020,6 +1027,9 @@ namespace drv3d_dx12
         m_list->SetComputeRootConstantBufferView(0, recording.constants.getResource()->GetGPUVirtualAddress());
         const auto dispatch = [&](XePass pass, UINT groupsX, UINT groupsY, UINT table)
         {
+            static constexpr const char* passNames[XE_PASS_COUNT] = {
+                "xegtao_prefilter", "xegtao_main", "xegtao_denoise", "xegtao_denoise_last", "xegtao_composite"};
+            NAU_GPU_TIMER_SRC(m_profileSource.id(), passNames[pass]);
             auto srv = m_xeHeap->GetGPUDescriptorHandleForHeapStart();
             srv.ptr += (resourceIndex * XE_TABLES + table) * XE_DESCRIPTORS * m_srvStride;
             auto uav = srv;
@@ -1068,6 +1078,14 @@ namespace drv3d_dx12
             return result;
         }
         m_list = recording->list.Get();
+        const auto source = m_profileSource.id();
+        auto& trace = profiler::GpuProfiler::instance();
+        m_profileSource.setCommandList(m_list);
+        scope_on_leave
+        {
+            m_profileSource.cancelRecording();
+        };
+        trace.beginScope("ao_gpu1_job", source);
         const auto copyShared = [&](ID3D12Resource* local, ID3D12Resource* common, bool toShared)
         {
             const auto localState = toShared ? D3D12_RESOURCE_STATE_COPY_SOURCE : D3D12_RESOURCE_STATE_COPY_DEST;
@@ -1081,7 +1099,10 @@ namespace drv3d_dx12
         if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, INPUT_BEGIN);
         if (shared)
         {
-            // Contents are selected when these GPU commands execute, without a cross-adapter wait.
+            NAU_GPU_TRANSFER_DST("ao_inputs", profiler::PrimaryGpu, profiler::SecondaryGpu,
+                profiler::FrameToken, mailbox ? source : profiler::InvalidSource, mailbox ? mailbox->profiledInputBytes : 0);
+            NAU_GPU_TIMER_SRC(mailbox ? profiler::InvalidSource : source, "ao_input_copy");
+            // In framework mode the inputs are selected at execution, independently of the GPU0 copies.
             // Reconstructed normals only sample depth; copying normal pixels wastes cross-adapter bandwidth.
             if (!m_reconstructNormals) copyShared(m_packedFrameworkNormals ? m_packedNormals.getResource() : resources.normals.getResource(), shared->normals, false);
             copyShared(m_packedFrameworkDepth ? m_packedDepth.getResource() : resources.depth.getResource(), shared->depth, false);
@@ -1105,6 +1126,7 @@ namespace drv3d_dx12
         m_list->SetGraphicsRootSignature(m_root.Get());
         if (m_packedFrameworkDepth)
         {
+            NAU_GPU_TIMER_SRC(source, "ao_unpack_inputs");
             // Expand the wide shared-memory view into the original local depth format before SSAO.
             // GPU0 still writes its ordinary R16F/R32F texture; no packing pass or frame flush is needed there.
             const auto depthDesc = resources.depth.getResource()->GetDesc();
@@ -1180,6 +1202,7 @@ namespace drv3d_dx12
             resources.targetsInitialized = true;
         }
         if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, RAW_BEGIN);
+        trace.beginScope("ao_raw", source);
         if (m_xegtao)
             executeXe(data, *recording, resourceIndex, filtered);
         else if (m_computeRaw)
@@ -1202,9 +1225,11 @@ namespace drv3d_dx12
         }
         else
             draw(filtered ? resources.raw.getResource() : resources.output.getResource(), filtered ? 1 : 0, 0, 0, m_rawPso.Get(), data);
+        trace.endScope(source);
         if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, RAW_END);
         if (filtered)
         {
+            NAU_GPU_TIMER_SRC(source, "ao_blur");
             if (inputState != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
             {
                 barrier(resources.depth.getResource(), inputState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1232,7 +1257,11 @@ namespace drv3d_dx12
             m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, FILTER_END);
             recording->timingFrame = frame;
         }
-        if (shared) copyShared(resources.output.getResource(), shared->result, true);
+        if (shared)
+        {
+            NAU_GPU_TIMER_SRC(source, "ao_result_copy");
+            copyShared(resources.output.getResource(), shared->result, true);
+        }
         if (mailbox)
         {
             const uint32_t id = static_cast<uint32_t>(frame);
@@ -1253,6 +1282,9 @@ namespace drv3d_dx12
             m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, OUTPUT_END);
             m_list->ResolveQueryData(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, TIMESTAMP_COUNT, recording->timestampReadback.getResource(), 0);
         }
+        trace.endScope(source);
+        m_profileSource.resolve();
+        m_profileSource.setCommandList(nullptr);
 
         result = m_list->Close();
         if (SUCCEEDED(result))
@@ -1306,13 +1338,14 @@ namespace drv3d_dx12
         m_queue->ExecuteCommandLists(1, lists);
         m_randomUploaded = true;
 
+        // Reuse the pass's normal completion signal for the queries. Track ownership even if publication fails.
+        recording->fenceValue = ++m_serial;
+        resources.rendered = recording->fenceValue;
+        recording->timingPending = true;
+        ++m_timing.submittedJobs;
+        m_profileSource.submitted(recording->fenceValue);
         if (mailbox)
         {
-            // Record ownership as soon as A is submitted, including every subsequent failing Signal path.
-            recording->fenceValue = ++m_serial;
-            resources.rendered = recording->fenceValue;
-            recording->timingPending = true;
-            ++m_timing.submittedJobs;
             completion->dataReady = mailbox->completion->enqueueSignal(m_queue.Get());
             if (!completion->dataReady) { signal(); return E_FAIL; }
             if (mailbox->publishMailbox)
@@ -1325,13 +1358,6 @@ namespace drv3d_dx12
             else completion->published = completion->dataReady;
         }
 
-        if (!mailbox)
-        {
-            recording->fenceValue = ++m_serial;
-            resources.rendered = recording->fenceValue;
-            recording->timingPending = true;
-            ++m_timing.submittedJobs;
-        }
         return signal();
     }
 }  // namespace drv3d_dx12
