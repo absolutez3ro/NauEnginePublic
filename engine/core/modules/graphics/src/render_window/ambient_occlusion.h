@@ -179,6 +179,7 @@ namespace nau::render
         BaseTexture* m_depth = nullptr;
         math::Vector4 m_parameters = math::Vector4(0.5f, 0.2f, 1.0f, 0.05f);
         float m_hbaoRadius = 2.f;
+        float m_xegtaoRadius = 0.5f;
         float m_blurDepthThreshold = 0.2f;
         Settings m_settings;
     };

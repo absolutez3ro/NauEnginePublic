@@ -129,6 +129,7 @@ namespace nau::render
         const float epsilon = readFiniteSetting("render/ssao/surfaceEpsilon", 0.05f, 0.0001f, fadeEnd);
         m_parameters = math::Vector4(radius, fadeStart, fadeEnd, epsilon);
         m_hbaoRadius = readFiniteSetting("render/ssao/hbaoRadius", 2.f, 0.0f, 10.0f);
+        m_xegtaoRadius = readFiniteSetting("render/ssao/xegtaoRadius", 0.5f, 0.0f, 10.0f);
         m_blurDepthThreshold = readFiniteSetting("render/ssao/blurDepthThreshold", 0.2f, 0.0f, 10.0f);
         const char* xeShaderPaths[] = {
             "file:/res/shaders/cache/shader_cache.nsbc+[xegtao_prefilter.cs.csmain]",
@@ -327,6 +328,7 @@ namespace nau::render
         const auto& p = m_settings.pipeline;
         const bool hbao = p.algorithm == AmbientOcclusionVariant::hbao;
         if (hbao) m_constants.parameters[0] = m_hbaoRadius;
+        else if (p.algorithm == AmbientOcclusionVariant::xegtao) m_constants.parameters[0] = m_xegtaoRadius;
         m_constants.filter[2] = m_blurDepthThreshold;
         if (m_settings.mode == AmbientOcclusionMode::off || !m_jobs[0].result)
         {

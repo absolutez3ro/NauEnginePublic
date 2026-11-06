@@ -1,0 +1,18 @@
+compile_configs {
+    config {
+        stage:t="cs"
+        entry:t="CSMain"
+    }
+    config {
+        stage:t="cs"
+        entry:t="CSLast"
+    }
+}
+input_layout {
+}
+permutations {
+    permutation {
+        name:t="regular"
+        defines {}
+    }
+}
