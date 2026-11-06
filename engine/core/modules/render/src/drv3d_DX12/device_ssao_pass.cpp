@@ -350,12 +350,16 @@ namespace drv3d_dx12
             {
                 D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {format};
                 const auto required = D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_SHADER_LOAD |
-                    D3D12_FORMAT_SUPPORT1_SHADER_GATHER | D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW |
+                    D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW |
+                    (format != DXGI_FORMAT_R32_UINT ? D3D12_FORMAT_SUPPORT1_SHADER_GATHER : D3D12_FORMAT_SUPPORT1_NONE) |
                     (format == DXGI_FORMAT_R16_FLOAT ? D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE : D3D12_FORMAT_SUPPORT1_NONE);
-                if (FAILED(m_device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ||
+                const HRESULT formatResult = m_device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support));
+                if (FAILED(formatResult) ||
                     (support.Support1 & required) != required || (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) == 0)
                 {
-                    NAU_LOG_ERROR("XeGTAO: secondary typed UAV format {} unsupported", static_cast<uint32_t>(format));
+                    NAU_LOG_ERROR("XeGTAO: secondary format {} unsupported, HRESULT={:#x}, Support1={:#x}, required1={:#x}, Support2={:#x}, required2={:#x}",
+                        static_cast<uint32_t>(format), static_cast<uint32_t>(formatResult), static_cast<uint32_t>(support.Support1),
+                        static_cast<uint32_t>(required), static_cast<uint32_t>(support.Support2), static_cast<uint32_t>(D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE));
                     return DXGI_ERROR_UNSUPPORTED;
                 }
             }

@@ -744,6 +744,17 @@ void XeGTAO_DecodeGatherPartial( const uint4 packedValue, out AOTermType outDeco
 #endif
 }
 
+uint4 XeGTAO_LoadAOTermQuad( Texture2D<uint> sourceAOTerm, int2 pixel, int2 viewportSize )
+{
+    // Match point-clamp GatherRed order without requiring integer texture gathers.
+    const int2 topLeft = clamp(pixel - 1, int2(0, 0), viewportSize - 1);
+    const int2 bottomRight = clamp(pixel, int2(0, 0), viewportSize - 1);
+    return uint4(sourceAOTerm.Load(int3(topLeft.x, bottomRight.y, 0)),
+                 sourceAOTerm.Load(int3(bottomRight.x, bottomRight.y, 0)),
+                 sourceAOTerm.Load(int3(bottomRight.x, topLeft.y, 0)),
+                 sourceAOTerm.Load(int3(topLeft.x, topLeft.y, 0)));
+}
+
 void XeGTAO_Denoise( const uint2 pixCoordBase, const GTAOConstants consts, Texture2D<uint> sourceAOTerm, Texture2D<lpfloat> sourceEdges, SamplerState texSampler, RWTexture2D<uint> outputTexture, const uniform bool finalApply )
 {
     const lpfloat blurAmount = (finalApply)?((lpfloat)consts.DenoiseBlurBeta):((lpfloat)consts.DenoiseBlurBeta/(lpfloat)5.0);
@@ -762,10 +773,10 @@ void XeGTAO_Denoise( const uint2 pixCoordBase, const GTAOConstants consts, Textu
     lpfloat4 edgesQ1        = sourceEdges.GatherRed( texSampler, gatherCenter, int2( 2, 0 ) );
     lpfloat4 edgesQ2        = sourceEdges.GatherRed( texSampler, gatherCenter, int2( 1, 2 ) );
 
-    AOTermType visQ0[4];    XeGTAO_DecodeGatherPartial( sourceAOTerm.GatherRed( texSampler, gatherCenter, int2( 0, 0 ) ), visQ0 );
-    AOTermType visQ1[4];    XeGTAO_DecodeGatherPartial( sourceAOTerm.GatherRed( texSampler, gatherCenter, int2( 2, 0 ) ), visQ1 );
-    AOTermType visQ2[4];    XeGTAO_DecodeGatherPartial( sourceAOTerm.GatherRed( texSampler, gatherCenter, int2( 0, 2 ) ), visQ2 );
-    AOTermType visQ3[4];    XeGTAO_DecodeGatherPartial( sourceAOTerm.GatherRed( texSampler, gatherCenter, int2( 2, 2 ) ), visQ3 );
+    AOTermType visQ0[4];    XeGTAO_DecodeGatherPartial( XeGTAO_LoadAOTermQuad( sourceAOTerm, int2(pixCoordBase), consts.ViewportSize ), visQ0 );
+    AOTermType visQ1[4];    XeGTAO_DecodeGatherPartial( XeGTAO_LoadAOTermQuad( sourceAOTerm, int2(pixCoordBase) + int2(2, 0), consts.ViewportSize ), visQ1 );
+    AOTermType visQ2[4];    XeGTAO_DecodeGatherPartial( XeGTAO_LoadAOTermQuad( sourceAOTerm, int2(pixCoordBase) + int2(0, 2), consts.ViewportSize ), visQ2 );
+    AOTermType visQ3[4];    XeGTAO_DecodeGatherPartial( XeGTAO_LoadAOTermQuad( sourceAOTerm, int2(pixCoordBase) + int2(2, 2), consts.ViewportSize ), visQ3 );
 
     for( int side = 0; side < 2; side++ )
     {
