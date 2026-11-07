@@ -120,6 +120,7 @@ namespace nau::render
             if(m_graphicsScene->hasMainCamera())
             {
                 nau::math::Matrix4 vp = m_graphicsScene->getMainCamera().getProjMatrix() * m_graphicsScene->getMainCamera().getViewMatrix();
+                const eastl::vector<render::OmniShadowCaster> omniCasters = m_graphicsScene->getOmniShadowCasters();
                 for (auto& view : m_graphicsScene->getRenderScene()->getViews())
                 {
                     if (view->containsTag(nau::RenderScene::Tags::shadowCascadeTag))
@@ -127,6 +128,16 @@ namespace nau::render
                         int cascade = (int)view->getUserData();
                         NAU_ASSERT(cascade < nau::csm::CascadeShadows::MAX_CASCADES);
                         view->updateFrustum(m_csm->getWorldRenderMatrix(cascade));
+                    }
+                    else if (view->containsTag(nau::RenderScene::Tags::shadowOmniTag))
+                    {
+                        // A face of the shadow map of a point light; a slot without a light stays idle (instance filter).
+                        const uint32_t index = static_cast<uint32_t>(reinterpret_cast<intptr_t>(view->getUserData()));
+                        const uint32_t slot = index / render::omni_shadow::FACES;
+                        if (slot < omniCasters.size())
+                        {
+                            view->updateFrustum(omniCasters[slot].faceViewProj[index % render::omni_shadow::FACES]);
+                        }
                     }
                     else
                     {

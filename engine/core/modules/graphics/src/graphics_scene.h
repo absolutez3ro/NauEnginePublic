@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <mutex>
 #include <shared_mutex>
 
 #include "nau/animation/components/skeleton_component.h"
@@ -20,6 +22,7 @@
 #include "render_pipeline/skinned_mesh_manager.h"
 #include "render_pipeline/billboards_manager.h"
 #include "render/lights/clusteredLights.h"
+#include "render/omniShadows.h"
 
 #include "graphics_nodes.h"
 
@@ -71,6 +74,18 @@ namespace nau
 
         nau::RenderScene* getRenderScene();
 
+        // Point lights that cast shadows (OmnilightComponent::getCastShadows), up to render::omni_shadow::MAX_LIGHTS. The list is
+        // rebuilt by syncSceneState; the copy is safe to take from any thread.
+        eastl::vector<render::OmniShadowCaster> getOmniShadowCasters() const;
+
+        // The point light pass gets the shadow data of the atlas it is going to sample: the lights by slot, the constant
+        // buffer and the atlas (nullptr atlas: no shadows).
+        void setOmniShadowBinding(const eastl::array<uint32_t, render::omni_shadow::MAX_LIGHTS>& lightIds,
+                                  uint32_t count,
+                                  Sbuffer* constants,
+                                  BaseTexture* atlas,
+                                  d3d::SamplerHandle sampler);
+
     private:
         void syncSceneCameras();
 
@@ -85,6 +100,10 @@ namespace nau
         eastl::unordered_map<Uid, CameraNode> m_cameras;
 
         render::ClusteredLights m_lights;
+
+        mutable std::mutex m_omniShadowMutex;
+        eastl::vector<render::OmniShadowCaster> m_omniShadowCasters;
+        eastl::array<std::atomic<bool>, render::omni_shadow::MAX_LIGHTS> m_omniSlotActive;
         
         nau::Ptr<nau::RenderScene> m_renderScene;
 

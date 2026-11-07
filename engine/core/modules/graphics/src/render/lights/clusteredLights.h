@@ -125,6 +125,10 @@ namespace nau::render
         void destroyLight(uint32_t id);
         uint32_t addOmniLight(const OmniLight& light, OmniLightsManager::mask_type_t mask = OmniLightsManager::GI_LIGHT_MASK);
         void setLight(uint32_t id, const OmniLight& light, bool invalidate_shadow = true);
+
+        // Shadow maps of point lights (omni_shadow.hlsli): lightIds[slot] is the light drawn into the slot of the atlas. The
+        // pass of the point lights samples `atlas` with the constants of `constants`; the lights without a slot are not shadowed.
+        void setOmniShadowBinding(const uint32_t* lightIds, uint32_t count, Sbuffer* constants, BaseTexture* atlas, d3d::SamplerHandle sampler);
         void setLightWithMask(uint32_t id, const OmniLight& light, OmniLightsManager::mask_type_t mask, bool invalidate_shadow);
         OmniLight getOmniLight(uint32_t id) const;
 
@@ -369,6 +373,12 @@ namespace nau::render
         dag::RelocatableFixedVector<uint16_t, OmniLightsManager::MAX_LIGHTS> dynamicOmniLightsShadows;  //-V730_NOINIT
         eastl::bitset<SpotLightsManager::MAX_LIGHTS> dynamicLightsShadowsVolumeSet;
         bool buffersFilled = false;
+
+        // Shadow slot of every omni light (-1: no shadow), written into RenderOmniLight::direction__tex_scale.w.
+        eastl::array<float, OmniLightsManager::MAX_LIGHTS> omniShadowSlots = {};
+        Sbuffer* omniShadowConstants = nullptr;
+        BaseTexture* omniShadowAtlas = nullptr;
+        d3d::SamplerHandle omniShadowSampler = {};
         bool lightsInitialized = false;
 
         /* TODO: Light shadows

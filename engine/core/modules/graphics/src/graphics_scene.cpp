@@ -48,6 +48,27 @@ namespace nau
             m_renderScene->addView(csmView);
         }
 
+        // Faces of the point light shadow maps: omni_shadow::FACES views per light slot. The frustum of a face is updated
+        // every frame from the light (RenderWindowImpl::update); a slot without a light culls nothing.
+        for (uint32_t slot = 0; slot < render::omni_shadow::MAX_LIGHTS; ++slot)
+        {
+            m_omniSlotActive[slot].store(false);
+            for (uint32_t face = 0; face < render::omni_shadow::FACES; ++face)
+            {
+                auto omniView = eastl::make_shared<nau::RenderView>(nau::utils::format("{}_{}_{}", "omniView", slot, face).c_str());
+                omniView->addTag(nau::RenderScene::Tags::shadowOmniTag);
+                omniView->setUserData(reinterpret_cast<void*>(static_cast<intptr_t>(slot * render::omni_shadow::FACES + face)));
+                nau::RenderView* omniViewPtr = omniView.get();
+                auto omniFilter = eastl::function<bool(const InstanceInfo&)>([this, slot, omniViewPtr](const InstanceInfo& info)
+                {
+                    return m_omniSlotActive[slot].load() && info.isCastShadow && omniViewPtr->getFrustum().testSphere(info.worldSphere) != 0;
+                });
+                omniView->setInstanceFilter(omniFilter);
+
+                m_renderScene->addView(omniView);
+            }
+        }
+
         auto translucentView = eastl::make_shared<nau::RenderView>("Main View (Translucent)");
         translucentView->addTag(nau::RenderScene::Tags::translucentTag);
 
@@ -595,6 +616,7 @@ namespace nau
                 directionalLight = makeDirectionalLightNode(directionalLightComponent);
             }
         }
+        eastl::vector<render::OmniShadowCaster> omniShadowCasters;
         for (auto& light : m_lightNodes)
         {
             if (Component* const component = sceneManager.findComponent(light.componentUid))
@@ -603,13 +625,26 @@ namespace nau
                 {
                     GraphicsSceneNode::updateFromScene(light, component->as<const SceneComponent&>());
                     OmnilightComponent& omnilightComponent = component->as<OmnilightComponent&>();
+                    const math::float3 omniPosition((omnilightComponent.getWorldTransform().getTranslation()) + omnilightComponent.getShift());
                     m_lights.setLight(light.lightId, render::ClusteredLights::OmniLight{
-                                                         math::float3((omnilightComponent.getWorldTransform().getTranslation()) + omnilightComponent.getShift()),
+                                                         omniPosition,
                                                          omnilightComponent.getColor(),
                                                          omnilightComponent.getRadius(),
                                                          omnilightComponent.getAttenuation(),
                                                          omnilightComponent.getIntensity(),
                                                          omnilightComponent.getDebugDraw()});
+
+                    if (omnilightComponent.getCastShadows() && omniShadowCasters.size() < render::omni_shadow::MAX_LIGHTS)
+                    {
+                        render::OmniShadowCaster& caster = omniShadowCasters.emplace_back();
+                        caster.lightId = light.lightId;
+                        caster.position = math::Vector3(omniPosition.x, omniPosition.y, omniPosition.z);
+                        caster.radius = omnilightComponent.getRadius();
+                        for (uint32_t face = 0; face < render::omni_shadow::FACES; ++face)
+                        {
+                            caster.faceViewProj[face] = render::omni_shadow::faceViewProj(caster.position, caster.radius, face);
+                        }
+                    }
                 }
                 if (component->is<SpotlightComponent>())
                 {
@@ -628,6 +663,15 @@ namespace nau
                 }
                 // TODO: SpotlightComponent
             }
+        }
+
+        {
+            for (uint32_t slot = 0; slot < render::omni_shadow::MAX_LIGHTS; ++slot)
+            {
+                m_omniSlotActive[slot].store(slot < omniShadowCasters.size());
+            }
+            std::lock_guard lock(m_omniShadowMutex);
+            m_omniShadowCasters = std::move(omniShadowCasters);
         }
 
         if (!m_envNodes.empty())
@@ -708,6 +752,21 @@ namespace nau
     nau::RenderScene* GraphicsScene::getRenderScene()
     {
         return m_renderScene.get();
+    }
+
+    eastl::vector<render::OmniShadowCaster> GraphicsScene::getOmniShadowCasters() const
+    {
+        std::lock_guard lock(m_omniShadowMutex);
+        return m_omniShadowCasters;
+    }
+
+    void GraphicsScene::setOmniShadowBinding(const eastl::array<uint32_t, render::omni_shadow::MAX_LIGHTS>& lightIds,
+                                             const uint32_t count,
+                                             Sbuffer* constants,
+                                             BaseTexture* atlas,
+                                             d3d::SamplerHandle sampler)
+    {
+        m_lights.setOmniShadowBinding(lightIds.data(), count, constants, atlas, sampler);
     }
 
     bool GraphicsScene::hasCamera()

@@ -25,7 +25,8 @@ namespace nau::scene
             CLASS_NAMED_FIELD(m_radius, "radius"),
             CLASS_NAMED_FIELD(m_intensity, "intensity"),
             CLASS_NAMED_FIELD(m_attenuation, "attenuation"),
-            CLASS_NAMED_FIELD(m_debugDraw, "debugDraw"), )
+            CLASS_NAMED_FIELD(m_debugDraw, "debugDraw"),
+            CLASS_NAMED_FIELD(m_castShadows, "castShadows"), )
     public:
         math::Vector3 getShift() const;
         math::Color3 getColor() const;
@@ -33,6 +34,7 @@ namespace nau::scene
         float getAttenuation() const;
         float getIntensity() const;
         bool getDebugDraw() const;
+        bool getCastShadows() const;
 
         void setShift(math::Vector3);
         void setColor(math::Color3);
@@ -40,6 +42,7 @@ namespace nau::scene
         void setAttenuation(float);
         void setIntensity(float);
         void setDebugDraw(bool);
+        void setCastShadows(bool);
     private:
         math::Vector3 m_shift = {};
 
@@ -53,5 +56,6 @@ namespace nau::scene
         float m_attenuation = 0.5;
 
         bool m_debugDraw = false;
+        bool m_castShadows = false;
     };
 }  // namespace nau::scene

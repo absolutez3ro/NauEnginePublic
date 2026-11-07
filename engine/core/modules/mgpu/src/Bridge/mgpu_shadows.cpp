@@ -158,7 +158,7 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
             float latencyMs = 0;
         };
 
-        using PsoKey = std::tuple<bool, AtlasFormat, int32_t, float>; // skinned, format, depth bias, slope bias
+        using PsoKey = std::tuple<bool, AtlasFormat, int32_t, float, bool>; // skinned, format, depth bias, slope bias, depth clip
 
         bool ready = false;
         std::string error;
@@ -237,9 +237,9 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
         // Depth-only pipeline with the render state Nau uses for its cascades: the cull mode of the z-prepass material
         // (static "Clockwise" -> D3D12 FRONT, skinned "CounterClockwise" -> BACK, FrontCounterClockwise = TRUE in
         // drv3d_DX12) and the cascade override (depth bias, Z_CLAMP_ENABLED -> no depth clip, LESS_EQUAL).
-        gfx::GraphicPSO& GetPso(const bool skinned, const AtlasFormat format, const int32_t depthBias, const float slopeBias)
+        gfx::GraphicPSO& GetPso(const bool skinned, const AtlasFormat format, const int32_t depthBias, const float slopeBias, const bool depthClip)
         {
-            const PsoKey key{skinned, format, depthBias, slopeBias};
+            const PsoKey key{skinned, format, depthBias, slopeBias, depthClip};
             if (auto found = psos.find(key); found != psos.end())
             {
                 return *found->second;
@@ -264,7 +264,7 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
             desc.RasterizerState.DepthBias = depthBias;
             desc.RasterizerState.DepthBiasClamp = 0.0f;
             desc.RasterizerState.SlopeScaledDepthBias = slopeBias;
-            desc.RasterizerState.DepthClipEnable = FALSE;
+            desc.RasterizerState.DepthClipEnable = depthClip ? TRUE : FALSE;
             desc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
             desc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
             desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
@@ -516,7 +516,7 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
                         }
 
                         cmdList->SetPipelineState(GetPso(skinned, frame.format, cascade.depthBias,
-                                                         cascade.slopeScaledDepthBias));
+                                                         cascade.slopeScaledDepthBias, cascade.depthClip));
                         const uint32_t drawConstants[kDrawConstants] = {draw.firstMatrix, draw.boneCount};
                         raw->SetGraphicsRoot32BitConstants(kConstantsParameter, kDrawConstants, drawConstants,
                                                            kViewProjConstants);

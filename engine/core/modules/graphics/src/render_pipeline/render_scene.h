@@ -64,6 +64,7 @@ namespace nau
             static constexpr RenderTag opaqueTag = nau::strings::constHash("opaque");
             static constexpr RenderTag translucentTag = nau::strings::constHash("translucent");
             static constexpr RenderTag shadowCascadeTag = nau::strings::constHash("shadow_cascade");
+            static constexpr RenderTag shadowOmniTag = nau::strings::constHash("shadow_omni");
         };
 
     private:

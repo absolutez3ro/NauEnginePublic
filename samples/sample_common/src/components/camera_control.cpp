@@ -151,6 +151,15 @@ namespace nau::sample
             ImGui::Checkbox("DrawDebug:", &drawDebug);
             m_omnilightComponent->setDebugDraw(drawDebug);
 
+            // Shadow map of the point light (6 faces drawn around it); key O switches it, to compare the picture.
+            static bool castShadows = true;
+            if (isKeyboardButtonPressed(0, input::Key::O))
+            {
+                castShadows = !castShadows;
+            }
+            ImGui::Checkbox("Cast shadows (O):", &castShadows);
+            m_omnilightComponent->setCastShadows(castShadows);
+
             static float color[3] = {1, 1, 0};
             ImGui::ColorPicker3("LightColor", color);
             m_omnilightComponent->setColor({color[0], color[1], color[2]});

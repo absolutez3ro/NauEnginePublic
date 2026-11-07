@@ -2,6 +2,8 @@
 
 // Copyright (C) 2024  Gaijin Games KFT.  All rights reserved
 
+#include <cstring>
+
 #include "render/lights/clusteredLights.h"
 
 #include "nau/3d/dag_lockSbuffer.h"
@@ -108,6 +110,22 @@ namespace nau::render
     ClusteredLights::ClusteredLights()
     {
         mem_set_0(currentIndicesSize);
+        omniShadowSlots.fill(-1.0f);
+    }
+
+    void ClusteredLights::setOmniShadowBinding(const uint32_t* lightIds, uint32_t count, Sbuffer* constants, BaseTexture* atlas, d3d::SamplerHandle sampler)
+    {
+        omniShadowSlots.fill(-1.0f);
+        for (uint32_t slot = 0; slot < count; ++slot)
+        {
+            if (lightIds[slot] < omniShadowSlots.size())
+            {
+                omniShadowSlots[lightIds[slot]] = static_cast<float>(slot);
+            }
+        }
+        omniShadowConstants = constants;
+        omniShadowAtlas = atlas;
+        omniShadowSampler = sampler;
     }
 
     ClusteredLights::~ClusteredLights()
@@ -443,6 +461,7 @@ namespace nau::render
         {
             uint32_t id = visibleOmniLightsId[i];
             renderOmniLights[i] = omniLights.getRenderLight(id);
+            renderOmniLights[i].direction__tex_scale.w = id < omniShadowSlots.size() ? omniShadowSlots[id] : -1.0f;
             visibleOmniLightsBounds[i] = Vector4(_mm_loadu_ps(reinterpret_cast<float*>(&renderOmniLights[i].posRadius)));
             visibleOmniLightsMasks[i] = omniLights.getLightMask(id);
 
@@ -468,6 +487,7 @@ namespace nau::render
         for (int i = 0, e = visibleFarOmniLightsId.size(); i < e; ++i)
         {
             renderFarOmniLights[i] = omniLights.getRenderLight(visibleFarOmniLightsId[i]);
+            renderFarOmniLights[i].direction__tex_scale.w = visibleFarOmniLightsId[i] < omniShadowSlots.size() ? omniShadowSlots[visibleFarOmniLightsId[i]] : -1.0f;
             if(omniLights.getLight(visibleFarOmniLightsId[i]).debugDraw)
             {
                 debugOmniLights.push_back(omniLights.getRenderLight(visibleFarOmniLightsId[i]));
@@ -1080,6 +1100,16 @@ namespace nau::render
         material->bindPipeline(pipeline);
 
         d3d::set_const_buffer(STAGE_VS, 1, replaced_buffer);
+
+        if (omniShadowConstants != nullptr && omniShadowAtlas != nullptr && std::strcmp(pipeline, "Omnilight") == 0)
+        {
+            // Shadow maps of the point lights (omni_shadow.hlsli: OmniShadowBuffer b3, t8, s8). Bound after bindPipeline on
+            // purpose: the material sets every sampler of the shader to its own default one (not a comparison sampler).
+            // Lights without a slot are not shadowed, so the binding is harmless when no light casts shadows.
+            d3d::set_const_buffer(STAGE_PS, 3, omniShadowConstants);
+            d3d::set_tex(STAGE_PS, 8, omniShadowAtlas);
+            d3d::set_sampler(STAGE_PS, 8, omniShadowSampler);
+        }
 
         d3d::drawind_instanced(PRIM_TRILIST, index_start, fcount, 0, inst_count);
     }

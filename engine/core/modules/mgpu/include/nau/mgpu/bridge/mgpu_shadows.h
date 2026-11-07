@@ -45,6 +45,9 @@ namespace nau::mgpu::shadows
         uint32_t viewport[4] = {}; // x, y, width, height in atlas pixels
         int32_t depthBias = 0; // D3D12 DepthBias; drv3d_DX12 uses zBias / 2e-5
         float slopeScaledDepthBias = 0; // D3D12 SlopeScaledDepthBias; drv3d_DX12 uses slopeZBias
+        // false (the default): no depth clipping, as for the orthographic cascades (Z_CLAMP_ENABLED). A perspective face of a
+        // point light needs the clipping: triangles through the plane of the light would write garbage depth without it.
+        bool depthClip = false;
     };
 
     struct DrawDesc

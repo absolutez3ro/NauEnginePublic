@@ -3,6 +3,10 @@
 
 #include "clustered/point_light.hlsli"
 
+// Shadow maps of point lights (omni_shadow.hlsli); the slot of a light is written by ClusteredLights into direction__tex_scale.w.
+#define OMNI_SHADOWS 1
+#include "clustered/omni_shadow.hlsli"
+
 struct VsInput
 {
     float3 pos : POSITION;
@@ -16,7 +20,7 @@ struct VsOutput
     float3 worldPos : TEXCOORD3;
     float3 worldPos2 : TEXCOORD4;
 #if OMNI_SHADOWS
-    float4 shadow_tc_to_atlas : TEXCOORD3;
+    nointerpolation float4 shadow_tc_to_atlas : TEXCOORD5;
 #endif
 };
 
@@ -197,7 +201,7 @@ VsOutput deferred_lights_vs(VsInput input, uint omni_light_index : SV_InstanceID
     output.worldPos = worldPos;
     output.worldPos2 = worldPos - world_view_pos.xyz;
 #if OMNI_SHADOWS
-    output.shadow_tc_to_atlas = getOmniLightShadowData(index);
+    output.shadow_tc_to_atlas = float4(ol.direction__tex_scale.w, 0, 0, 0);
 #endif
 #if LIGHT_LIMIT_SIZE
     output.pos_and_radius.w = min(output.pos_and_radius.w, LIGHT_LIMIT_SIZE);

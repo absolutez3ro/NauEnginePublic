@@ -137,6 +137,9 @@ namespace nau::render
                     m_csm->renderShadowsCascades();
                 }
 
+                // Shadow maps of the point lights (before the resolve node draws the lights).
+                renderOmniShadows();
+
                 BaseTexture* backBuf = d3d::get_back_buffer_rt(m_swapchain);
 
                 int32_t width, height;
@@ -215,6 +218,7 @@ namespace nau::render
                     shader_globals::setVariable("screen_pos_to_texcoord", &screen_pos_to_texcoord);
 
                     d3d::set_render_target(const_cast<BaseTexture*>(resolveTarget.get()), 0);
+                    bindOmniShadows();
                     m_graphicsScene->renderLights();
 
                     m_gBuffer->flushResolve();

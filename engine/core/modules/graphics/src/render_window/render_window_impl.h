@@ -153,6 +153,7 @@ namespace nau::render
                 uint64_t token = 0;
                 uint64_t frame = 0;
                 nau::csm::CascadeShadows::ShaderSnapshot snapshot;
+                nau::render::OmniShadows::Snapshot omniSnapshot;  // point light shadows only (m_mgpuOmniShadows)
             };
             eastl::vector<PendingFrame> pendingFrames;
             uint64_t frame = 0;
@@ -160,6 +161,7 @@ namespace nau::render
             // Nau's atlas holds an atlas of the second GPU, drawn with atlasSnapshot for Nau frame atlasFrame.
             bool hasAtlas = false;
             nau::csm::CascadeShadows::ShaderSnapshot atlasSnapshot;
+            nau::render::OmniShadows::Snapshot omniAtlasSnapshot;  // point light shadows only (m_mgpuOmniShadows)
             uint64_t atlasFrame = 0;
 
             // A slot handed to Nau is released once the Nau frame with its copy has finished on the GPU
@@ -196,14 +198,21 @@ namespace nau::render
         // Called by the CSM node after prepareShadowCascades. Returns true when Nau's atlas holds an atlas of the second
         // GPU for this frame: Nau then does not draw the cascades, and gbuffer_resolve uses m_mgpuShadows.atlasSnapshot.
         bool renderMgpuShadows();
-        void releaseMgpuShadows();
+        void releaseMgpuShadows(MgpuShadowsState& state);
         // Releases the slots whose copy has executed; returns true when no slot is waiting any more.
-        bool releaseMgpuShadowSlots();
+        bool releaseMgpuShadowSlots(MgpuShadowsState& state);
         void collectMgpuShadowCasters(int numCascades);
-        uint64_t registerMgpuShadowMesh(const nau::RenderEntity& entity);
+        void appendMgpuViewCasters(MgpuShadowsState& state, nau::RenderView& view, uint32_t cascade);
+        uint64_t registerMgpuShadowMesh(MgpuShadowsState& state, const nau::RenderEntity& entity);
         void publishMgpuStatus() const;
 
         MgpuShadowsState m_mgpuShadows;
+
+        // Point light shadow maps drawn by the second GPU (the same machinery as m_mgpuShadows, own renderer and atlas).
+        // Returns true when the atlas of Nau holds an atlas of the second GPU; m_omniBound then describes it.
+        bool renderMgpuOmniShadows(const eastl::vector<render::OmniShadowCaster>& casters);
+        void collectMgpuOmniShadowCasters(const eastl::vector<render::OmniShadowCaster>& casters);
+        MgpuShadowsState m_mgpuOmniShadows;
 #endif
 
         eastl::map<NauRenderStage, GraphNodes&> m_graphStages = {
@@ -278,6 +287,13 @@ namespace nau::render
         eastl::unique_ptr<render::PostFxRenderer> m_outlineRenderer;
 
         eastl::shared_ptr<nau::csm::CascadeShadows> m_csm;
+
+        // Shadow maps of point lights (render/omniShadows.h). renderOmniShadows is called by the CSM node (draws the faces, or
+        // takes the atlas of the second GPU), bindOmniShadows by gbuffer_resolve right before the point light pass.
+        eastl::unique_ptr<render::OmniShadows> m_omniShadows;
+        render::OmniShadows::Snapshot m_omniBound;  // constants of the atlas that the point light pass samples
+        void renderOmniShadows();
+        void bindOmniShadows();
         
         int32_t m_width;
         int32_t m_height;

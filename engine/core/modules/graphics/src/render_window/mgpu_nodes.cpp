@@ -156,10 +156,8 @@ namespace nau::render
         nau::mgpu::bridge::publishStatus(status);
     }
 
-    bool RenderWindowImpl::releaseMgpuShadowSlots()
+    bool RenderWindowImpl::releaseMgpuShadowSlots(MgpuShadowsState& state)
     {
-        auto& state = m_mgpuShadows;
-
         bool waiting = false;
         for (uint32_t slot = 0; slot < shadows::SLOT_COUNT; ++slot)
         {
@@ -181,10 +179,8 @@ namespace nau::render
         return !waiting;
     }
 
-    void RenderWindowImpl::releaseMgpuShadows()
+    void RenderWindowImpl::releaseMgpuShadows(MgpuShadowsState& state)
     {
-        auto& state = m_mgpuShadows;
-
         // Waits for the second GPU. Nau's copies have executed already (releaseMgpuShadowSlots).
         state.renderer.shutdown();
         state.meshes.clear();
@@ -201,9 +197,9 @@ namespace nau::render
         state.cpuSecondsSinceReport = 0;
     }
 
-    uint64_t RenderWindowImpl::registerMgpuShadowMesh(const RenderEntity& entity)
+    uint64_t RenderWindowImpl::registerMgpuShadowMesh(MgpuShadowsState& state, const RenderEntity& entity)
     {
-        auto& state = m_mgpuShadows;
+        // state: the stream the mesh belongs to (every Mgpu renderer has its own meshes).
 
         const auto bufferKey = eastl::make_pair<const Sbuffer*, const Sbuffer*>(entity.positionBuffer, entity.indexBuffer);
         const int positionsSize = entity.positionBuffer->ressize();
@@ -307,7 +303,15 @@ namespace nau::render
                 continue;
             }
 
-            for (const auto& list : view->getLists())
+            appendMgpuViewCasters(state, *view, static_cast<uint32_t>(cascade));
+        }
+    }
+
+    // The shadow casters of one view (a cascade or a face of a point light shadow map) as draws of the frame description.
+    void RenderWindowImpl::appendMgpuViewCasters(MgpuShadowsState& state, nau::RenderView& view, const uint32_t cascade)
+    {
+        {
+            for (const auto& list : view.getLists())
             {
                 for (const RenderEntity& entity : list->getEntities())
                 {
@@ -316,7 +320,7 @@ namespace nau::render
                         continue;
                     }
 
-                    const uint64_t mesh = registerMgpuShadowMesh(entity);
+                    const uint64_t mesh = registerMgpuShadowMesh(state, entity);
                     if (mesh == 0)
                     {
                         ++state.skippedCasters;
@@ -325,7 +329,7 @@ namespace nau::render
 
                     shadows::DrawDesc draw;
                     draw.mesh = mesh;
-                    draw.cascade = static_cast<uint32_t>(cascade);
+                    draw.cascade = cascade;
                     draw.startIndex = entity.startIndex;
                     draw.indexCount = (entity.endIndex - entity.startIndex) / 3 * 3;
                     draw.firstMatrix = static_cast<uint32_t>(state.matrices.size() / 16);
@@ -406,9 +410,9 @@ namespace nau::render
         {
             state.hasAtlas = false;
             // Shut down once Nau's copies from the shared heaps have executed; until then nothing new is started.
-            if (state.initAttempted && releaseMgpuShadowSlots())
+            if (state.initAttempted && releaseMgpuShadowSlots(state))
             {
-                releaseMgpuShadows();
+                releaseMgpuShadows(state);
                 publishMgpuStatus();
                 NAU_LOG_INFO("mgpu shadows: switched off, Nau draws the shadow cascades");
             }
@@ -449,7 +453,7 @@ namespace nau::render
 
         const auto workStart = std::chrono::steady_clock::now();
         ++state.framesSinceReport;
-        releaseMgpuShadowSlots();
+        releaseMgpuShadowSlots(state);
 
         const int numCascades = m_csm->getNumCascadesToRender();
         const csm::CascadeShadows::AtlasInfo atlas = m_csm->getAtlasInfo();

@@ -71,4 +71,14 @@ namespace nau::scene
         m_debugDraw = debugDraw;
     }
 
+    bool OmnilightComponent::getCastShadows() const
+    {
+        return m_castShadows;
+    }
+
+    void OmnilightComponent::setCastShadows(bool castShadows)
+    {
+        m_castShadows = castShadows;
+    }
+
 }  // namespace nau::scene
