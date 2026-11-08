@@ -116,7 +116,11 @@ namespace nau::sample
     void JungleLoad::updateComponent(float dt)
     {
         m_elapsed += dt;
-        if (m_automated) updateAutomation();
+        if (m_automated)
+        {
+            updateAutomation();
+            if (m_automationPhase == 3) return;
+        }
         ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x > 1000.f ? 780.f : 260.f,40.f),ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(380.f,350.f),ImGuiCond_FirstUseEver);
         if (ImGui::Begin("JungleRuins load"))
