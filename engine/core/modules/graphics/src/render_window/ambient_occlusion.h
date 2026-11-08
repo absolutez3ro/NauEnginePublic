@@ -54,6 +54,7 @@ namespace nau::render
             bool frameworkTransport = false;
             bool mailboxTransport = false;
             uint32_t transportMode = 1; // Protected, framework, CPU mailbox (2a), GPU mailbox (2b).
+            d3d::mgpu::MailboxDiagnostic mailboxDiagnostic = d3d::mgpu::MailboxDiagnostic::disabled;
             int readyAtConsumer = -1;
             float overlapMs = -1.f, waitMs = -1.f, chainObservedMs = -1.f;
             d3d::mgpu::SsaoGpuTiming gpu1Timing;
@@ -156,6 +157,7 @@ namespace nau::render
         bool m_measureTimings = false;
         bool m_frameworkTransport = true;
         uint32_t m_mailboxMode = 0; // 0 disabled, 1 CPU selection, 2 GPU selection.
+        d3d::mgpu::MailboxDiagnostic m_mailboxDiagnostic = d3d::mgpu::MailboxDiagnostic::disabled;
         bool m_frameworkOutputInitialized = false;
         uint64_t m_frameIndex = 0;
         Measurements m_measurements;

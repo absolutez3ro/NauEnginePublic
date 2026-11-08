@@ -80,7 +80,8 @@ namespace nau::render
                 "gpu0_exchange_frame,gpu0_publish_ms,gpu0_receive_ms,gpu0_blur_frame,gpu0_blur_ms,ao_width,ao_height,input_width,input_height,blur_gpu,normals_reconstructed,linear_depth16,packed_framework_depth,packed_framework_normals,"
                 "ao_transport,ao_readback_frame,ao_readback_source_frame,ao_readback_age_frames,ao_age_samples,ao_age_0,ao_age_1,ao_age_2,ao_age_3,ao_age_4,ao_age_5,ao_age_6,ao_age_7plus,"
                 "mailbox_skip_input,mailbox_skip_output,mailbox_skip_backlog,mailbox_submit_signals,mailbox_bad_ids,mailbox_unavailable_frames,mailbox_dropped_age_samples,"
-                "cpu_load_enabled,cpu_load_target_ms,cpu_load_actual_ms,cpu_load_agents,cpu_load_passes,cpu_load_checksum\n";
+                "cpu_load_enabled,cpu_load_target_ms,cpu_load_actual_ms,cpu_load_agents,cpu_load_passes,cpu_load_checksum,"
+                "mailbox_diagnostic,mailbox_diagnostic_active,gpu0_input_copy_frames,mailbox_frozen_input_frame\n";
             m_measurementsCsv << std::fixed << std::setprecision(6);
             NAU_LOG_INFO("Measurements: CSV {} (frame intervals are CPU render/present cadence; chain latency is a frame-polled upper bound)", path);
         }
@@ -119,7 +120,9 @@ namespace nau::render
             << properties.getValue<float>("sample/cpuLoad/actualMs").value_or(0.f) << ','
             << properties.getValue<uint32_t>("sample/cpuLoad/agents").value_or(0) << ','
             << properties.getValue<uint32_t>("sample/cpuLoad/passes").value_or(0) << ','
-            << properties.getValue<float>("sample/cpuLoad/checksum").value_or(0.f) << '\n';
+            << properties.getValue<float>("sample/cpuLoad/checksum").value_or(0.f) << ','
+            << static_cast<uint32_t>(m.mailboxDiagnostic) << ',' << (m.mailboxTransport ? 1 : 0) << ','
+            << gpu1.primaryInputCopyFrames << ',' << gpu1.frozenInputFrame << '\n';
     }
 
     void RenderWindowImpl::setWorld(nau::Uid worldUid)

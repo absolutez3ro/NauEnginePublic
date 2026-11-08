@@ -41,6 +41,17 @@ namespace nau::render
             if (transport == "protected") return 0;
             return readSetting<bool>("render/ssao/frameworkTransport", true) ? 1u : 0u;
         }
+
+        d3d::mgpu::MailboxDiagnostic readMailboxDiagnostic()
+        {
+            using Mode = d3d::mgpu::MailboxDiagnostic;
+            const auto name = readSetting<eastl::string>("render/ssao/mailboxDiagnostic", "off");
+            if (name == "idle") return Mode::idle;
+            if (name == "split-only") return Mode::splitOnly;
+            if (name == "copy-only") return Mode::copyOnly;
+            if (name == "frozen-inputs") return Mode::frozenInputs;
+            return Mode::disabled;
+        }
     }  // namespace
 
     bool AmbientOcclusion::isRequested()
@@ -240,11 +251,13 @@ namespace nau::render
         const uint32_t transport = readTransportMode();
         const bool framework = transport == 1;
         const uint32_t mailbox = transport >= 2 ? transport - 1 : 0;
-        if (framework != m_frameworkTransport || mailbox != m_mailboxMode)
+        const auto diagnostic = mailbox ? readMailboxDiagnostic() : d3d::mgpu::MailboxDiagnostic::disabled;
+        if (framework != m_frameworkTransport || mailbox != m_mailboxMode || diagnostic != m_mailboxDiagnostic)
         {
             resetSecondary();
             m_frameworkTransport = framework;
             m_mailboxMode = mailbox;
+            m_mailboxDiagnostic = diagnostic;
             ++m_timingGeneration;
             m_waitMilliseconds = -1.f;
             m_logSettings = true;
@@ -313,6 +326,7 @@ namespace nau::render
         m_measurements.frameworkTransport = false;
         m_measurements.mailboxTransport = false;
         m_measurements.transportMode = m_mailboxMode ? m_mailboxMode + 1 : (m_frameworkTransport ? 1u : 0u);
+        m_measurements.mailboxDiagnostic = m_mailboxDiagnostic;
         m_measurements.aoFrame = 0;
         m_currentTiming = nullptr;
         m_normals = normals;
@@ -437,6 +451,12 @@ namespace nau::render
                 }
             }
         }
+        // Explicit diagnostic requests must never turn into an apparently valid GPU0 AO run.
+        if (m_mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled && !m_usingSecondary)
+        {
+            logSettings();
+            return;
+        }
         if (!m_usingSecondary) downsampleInputs(m_drawNormals, m_drawDepth);
         if (m_usingSecondary) beginOverlapTiming();
         logSettings();
@@ -449,9 +469,16 @@ namespace nau::render
         bool rawValid = true;
         d3d::set_render_target();
         d3d::set_depth(nullptr, DepthAccess::RW);
-        if (m_settings.mode == AmbientOcclusionMode::off || !m_jobs[0].result)
+        if (m_settings.mode == AmbientOcclusionMode::off || !m_jobs[0].result ||
+            (m_mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled &&
+             (!m_usingSecondary || d3d::mgpu::mailboxDiagnosticSkipsGpu1(m_mailboxDiagnostic))))
         {
             trace.setPlacement("ao", profiler::Placement::Off);
+            if (m_mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled)
+            {
+                trace.setPlacement(d3d::mgpu::mailboxDiagnosticName(m_mailboxDiagnostic), profiler::Placement::Gpu0);
+                m_measurements.mailboxTransport = m_usingSecondary;
+            }
             d3d::set_render_target(output, 0);
             d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
             d3d::set_render_target();
@@ -823,6 +850,7 @@ namespace nau::render
             desc.frameworkStyle = m_frameworkTransport;
             desc.mailboxStyle = m_mailboxMode != 0;
             desc.gpuMailbox = m_mailboxMode == 2;
+            desc.mailboxDiagnostic = m_mailboxDiagnostic;
             const Shader* filter = m_filterShader->getShader();
             desc.filterBytecode = filter->bytecode.data();
             desc.filterBytecodeSize = filter->bytecode.size();
@@ -1085,6 +1113,7 @@ namespace nau::render
         }
         if (m_usingSecondary)
         {
+            if (m_mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled) return "Mailbox diagnostic";
             if (m_mailboxMode) return m_mailboxMode == 2 ? "MGPU mailbox GPU (2b)" : "MGPU mailbox CPU (2a)";
             if (m_frameworkTransport) return "MGPU framework (unsynchronized)";
             if (m_settings.pipeline.fullResolution) return "MGPU, full AO";
@@ -1118,6 +1147,10 @@ namespace nau::render
             static_cast<uint32_t>(p.algorithm), m_constants.parameters[0], static_cast<uint32_t>(normals), static_cast<uint32_t>(p.normals), static_cast<uint32_t>(p.blur),
             static_cast<uint32_t>(p.blurExecution), static_cast<uint32_t>(p.upsample), p.packedNormals, p.linearDepth16,
             xegtao ? "slices" : (hbao ? "directions" : "samples"), xegtao ? 3 : (hbao ? 16 : (p.eightSamples ? 8 : 14)), p.weightedUpsample, !hbao && !xegtao && p.rejectOutside, p.gatherUpsample, p.waitForSecondary, static_cast<uint32_t>(m_settings.mode));
+        if (m_mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled)
+            NAU_LOG_INFO("Mailbox diagnostic: mode={}, active={}, GPU1 work={}, frozen input data is not current-frame AO",
+                d3d::mgpu::mailboxDiagnosticName(m_mailboxDiagnostic), m_usingSecondary,
+                m_usingSecondary && !d3d::mgpu::mailboxDiagnosticSkipsGpu1(m_mailboxDiagnostic));
         m_logSettings = false;
     }
 

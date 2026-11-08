@@ -178,6 +178,7 @@ namespace d3d::mgpu
                     producer->mailbox = eastl::make_shared<drv3d_dx12::MailboxSsaoState>();
                     result = producer->mailbox->init(static_cast<ID3D12Device*>(get_device(PRIMARY_GPU)),
                         allocator->getDevice(), pass, desc.gpuMailbox);
+                    producer->mailbox->diagnostic = desc.mailboxDiagnostic;
                     if (SUCCEEDED(result))
                     {
                         producer->pass.retainMailboxResources(producer->mailbox);
@@ -307,6 +308,34 @@ namespace d3d::mgpu
         auto* depthImage = image(depth);
         auto* normalImage = producer->reconstructNormals ? nullptr : image(normals);
         if (!depthImage || (!producer->reconstructNormals && !normalImage)) return false;
+        auto& context = drv3d_dx12::get_device().getContext();
+        const auto copyInputs = [&](UINT input)
+        {
+            context.copySharedTexture(depthImage, mailbox.resources.inputDepthPrimary(input), true);
+            if (!producer->reconstructNormals)
+                context.copySharedTexture(normalImage, mailbox.resources.inputNormalsPrimary(input), true);
+        };
+        if (mailboxDiagnosticSkipsGpu1(mailbox.diagnostic))
+        {
+            // All controls keep the same allocations/downsample, but never submit GPU1 work
+            // or read an AO result. No foreign reader exists, so slot zero can be overwritten.
+            if (mailbox.diagnostic == MailboxDiagnostic::copyOnly)
+            {
+                NAU_GPU_TIMER("ao_diagnostic_copy");
+                copyInputs(0);
+                ++mailbox.observations.primaryInputCopyFrames;
+            }
+            if (mailbox.diagnostic != MailboxDiagnostic::idle)
+            {
+                const uint64_t value = mailbox.inputsReady.reserveSignal();
+                if (!value) return false;
+                NAU_GPU_TIMER("ao_diagnostic_split");
+                context.signalForeignFenceAfterSubmit(mailbox.inputsReady.getFence(drv3d_dx12::CrossAdapterFence::Side::SIGNALER), value);
+                ++mailbox.observations.submitOnlySignals;
+            }
+            return true;
+        }
+        const bool frozen = mailbox.diagnostic == MailboxDiagnostic::frozenInputs;
         // Reserve the F0 value before choosing an output: GPU1's input wait also protects
         // reuse of retired output slots whose old GPU0 readers precede this signal.
         const uint64_t v0 = mailbox.inputsReady.reserveSignal();
@@ -328,15 +357,23 @@ namespace d3d::mgpu
                     d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &query.begin, nullptr, nullptr);
                     break;
                 }
-        auto& context = drv3d_dx12::get_device().getContext();
-        if (issue)
+        if (issue && frozen && !mailbox.observations.frozenInputFrame)
+        {
+            // Seed every input slot once, before any GPU1 job can read them. Afterwards no
+            // shared input is overwritten, while the normal output-lifetime fences remain.
+            NAU_GPU_TIMER("ao_diagnostic_seed");
+            for (UINT slot = 0; slot < drv3d_dx12::MAILBOX_IN_SLOTS; ++slot) copyInputs(slot);
+            ++mailbox.observations.primaryInputCopyFrames;
+            mailbox.observations.frozenInputFrame = frame;
+            mailbox.frozenConstants = constants;
+        }
+        else if (issue && !frozen)
         {
             // Both halves of the default window's AO input transfer are recorded in this frame.
             NAU_GPU_TRANSFER_SRC("ao_inputs", profiler::PrimaryGpu, profiler::SecondaryGpu,
                 profiler::FrameToken, profiler::PrimarySource, producer->profiledInputBytes);
-            context.copySharedTexture(depthImage, mailbox.resources.inputDepthPrimary(input), true);
-            if (!producer->reconstructNormals)
-                context.copySharedTexture(normalImage, mailbox.resources.inputNormalsPrimary(input), true);
+            copyInputs(input);
+            ++mailbox.observations.primaryInputCopyFrames;
         }
         if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->published, nullptr, nullptr);
         // Even skipped frames submit one progress signal, allowing retired outputs/readbacks to become reusable.
@@ -352,12 +389,14 @@ namespace d3d::mgpu
         job.outputSlot = output;
         job.publishMailbox = mailbox.gpuSelection;
         job.profiledInputBytes = producer->profiledInputBytes;
+        job.profileInputTransfer = !frozen;
         drv3d_dx12::MailboxSsaoCompletion done;
-        const HRESULT result = producer->pass.executeMailbox(constants, mailbox.resources.shared(input, output), job, frame, done);
+        const HRESULT result = producer->pass.executeMailbox(frozen ? mailbox.frozenConstants : constants,
+            mailbox.resources.shared(input, output), job, frame, done);
         auto& trace = profiler::GpuProfiler::instance();
-        if (result == S_OK)
+        if (result == S_OK && !frozen)
             trace.markTransferConsumed("ao_inputs");
-        else
+        else if (!frozen)
             trace.markTransferDiscarded("ao_inputs", trace.frameIndex());
         if (FAILED(result)) { report_secondary_gpu_failure(static_cast<uint32_t>(result)); return false; }
         if (result == S_FALSE) return true;
@@ -372,6 +411,7 @@ namespace d3d::mgpu
         if (!producer || !producer->mailbox || !destination || !is_multi_gpu_available()) return false;
         auto& mailbox = *producer->mailbox;
         if (!mailbox.poll()) return false;
+        if (mailboxDiagnosticSkipsGpu1(mailbox.diagnostic)) return true;
         auto* target = drv3d_dx12::getbasetex(destination)->getDeviceImage();
         if (!target) return false;
         drv3d_dx12::MailboxReceiveDesc desc;

@@ -56,6 +56,7 @@ namespace drv3d_dx12
         uint32_t outputSlot = 0;
         bool publishMailbox = true;
         uint64_t profiledInputBytes = 0;
+        bool profileInputTransfer = true;
     };
 
     struct MailboxSsaoCompletion

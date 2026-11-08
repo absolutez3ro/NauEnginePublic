@@ -14,6 +14,8 @@ namespace drv3d_dx12
         MailboxSsaoResources resources;
         CrossAdapterFence inputsReady, resultsReady;
         bool gpuSelection = true;
+        d3d::mgpu::MailboxDiagnostic diagnostic = d3d::mgpu::MailboxDiagnostic::disabled;
+        d3d::mgpu::SsaoConstants frozenConstants;
         struct Input { uint64_t readDone = 0; } inputs[MAILBOX_IN_SLOTS];
         struct Output
         {
@@ -59,16 +61,19 @@ namespace drv3d_dx12
                 if (!sample.pending || f0 < sample.ready) continue;
                 uint32_t id = 0;
                 std::memcpy(&id, resources.mappedReadback() + i * MailboxSsaoResources::READBACK_STRIDE, sizeof(id));
+                // Frozen jobs retain increasing publication IDs for slot selection/reuse, but
+                // their data still belongs to the one seed frame. Never report it as fresh AO.
+                const uint64_t sourceFrame = id && observations.frozenInputFrame ? observations.frozenInputFrame : id;
                 if (sample.frame > observations.displayedFrame)
                 {
                     observations.displayedFrame = sample.frame;
-                    observations.displayedAoFrame = id;
+                    observations.displayedAoFrame = sourceFrame;
                 }
                 if (!id) ++observations.unavailableAoFrames;
                 else if (id > sample.frame) ++observations.badFrameIds;
                 else
                 {
-                    const uint64_t age = sample.frame - id;
+                    const uint64_t age = sample.frame - sourceFrame;
                     ++observations.ageHistogram[age < 7 ? age : 7];
                     ++observations.ageSamples;
                 }
@@ -126,6 +131,8 @@ namespace drv3d_dx12
             timing.badFrameIds = observations.badFrameIds;
             timing.unavailableAoFrames = observations.unavailableAoFrames;
             timing.droppedAgeSamples = observations.droppedAgeSamples;
+            timing.primaryInputCopyFrames = observations.primaryInputCopyFrames;
+            timing.frozenInputFrame = observations.frozenInputFrame;
         }
     };
 }

@@ -1099,13 +1099,25 @@ namespace drv3d_dx12
         if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, INPUT_BEGIN);
         if (shared)
         {
-            NAU_GPU_TRANSFER_DST("ao_inputs", profiler::PrimaryGpu, profiler::SecondaryGpu,
-                profiler::FrameToken, mailbox ? source : profiler::InvalidSource, mailbox ? mailbox->profiledInputBytes : 0);
-            NAU_GPU_TIMER_SRC(mailbox ? profiler::InvalidSource : source, "ao_input_copy");
-            // In framework mode the inputs are selected at execution, independently of the GPU0 copies.
-            // Reconstructed normals only sample depth; copying normal pixels wastes cross-adapter bandwidth.
-            if (!m_reconstructNormals) copyShared(m_packedFrameworkNormals ? m_packedNormals.getResource() : resources.normals.getResource(), shared->normals, false);
-            copyShared(m_packedFrameworkDepth ? m_packedDepth.getResource() : resources.depth.getResource(), shared->depth, false);
+            const auto copyInputs = [&]
+            {
+                // Reconstructed normals only sample depth; no normal pixels need transferring.
+                if (!m_reconstructNormals) copyShared(m_packedFrameworkNormals ? m_packedNormals.getResource() : resources.normals.getResource(), shared->normals, false);
+                copyShared(m_packedFrameworkDepth ? m_packedDepth.getResource() : resources.depth.getResource(), shared->depth, false);
+            };
+            if (mailbox && !mailbox->profileInputTransfer)
+            {
+                // Frozen inputs are re-read on GPU1, without a matching per-frame GPU0 send.
+                NAU_GPU_TIMER_SRC(source, "ao_input_copy");
+                copyInputs();
+            }
+            else
+            {
+                NAU_GPU_TRANSFER_DST("ao_inputs", profiler::PrimaryGpu, profiler::SecondaryGpu,
+                    profiler::FrameToken, mailbox ? source : profiler::InvalidSource, mailbox ? mailbox->profiledInputBytes : 0);
+                NAU_GPU_TIMER_SRC(mailbox ? profiler::InvalidSource : source, "ao_input_copy");
+                copyInputs();
+            }
         }
         if (!m_randomUploaded)
         {

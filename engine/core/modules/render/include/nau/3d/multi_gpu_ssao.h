@@ -46,6 +46,7 @@ namespace d3d::mgpu
         bool frameworkStyle = false;
         bool mailboxStyle = false;
         bool gpuMailbox = true;
+        MailboxDiagnostic mailboxDiagnostic = MailboxDiagnostic::disabled;
     };
 
     struct SsaoProducer;
