@@ -121,7 +121,8 @@ namespace nau::render
             << properties.getValue<uint32_t>("sample/cpuLoad/agents").value_or(0) << ','
             << properties.getValue<uint32_t>("sample/cpuLoad/passes").value_or(0) << ','
             << properties.getValue<float>("sample/cpuLoad/checksum").value_or(0.f) << ','
-            << static_cast<uint32_t>(m.mailboxDiagnostic) << ',' << (m.mailboxTransport ? 1 : 0) << ','
+            << static_cast<uint32_t>(m.mailboxDiagnostic) << ','
+            << (m.mailboxTransport && m.mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled ? 1 : 0) << ','
             << gpu1.primaryInputCopyFrames << ',' << gpu1.frozenInputFrame << '\n';
     }
 

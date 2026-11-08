@@ -567,6 +567,8 @@ namespace nau::render
                 const char* transport = m_frameworkTransport ? "framework" : "protected";
                 if (m_mailboxMode) transport = m_mailboxMode == 2 ? "mailbox_2b" : "mailbox_2a";
                 trace.setPlacement(transport, Placement::Gpu1);
+                if (m_mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled)
+                    trace.setPlacement(d3d::mgpu::mailboxDiagnosticName(m_mailboxDiagnostic), Placement::Gpu1);
             }
             if (pipeline.blur != AmbientOcclusionBlur::off && pipeline.blur != AmbientOcclusionBlur::bilateralUpsample)
             {
