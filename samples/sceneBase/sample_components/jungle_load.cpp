@@ -139,8 +139,8 @@ namespace nau::sample
             {
                 int agents = static_cast<int>(m_cpuAgentCount);
                 bool changed = ImGui::Checkbox("CPU workload (simulation)", &m_cpuLoadEnabled);
-                changed |= ImGui::SliderFloat("CPU target ms", &m_cpuLoadTargetMs, 0.f, 32.f, "%.1f");
-                changed |= ImGui::SliderInt("CPU agents", &agents, 256, 65536);
+                changed |= ImGui::SliderFloat("CPU target ms", &m_cpuLoadTargetMs, 0.f, 32.f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+                changed |= ImGui::SliderInt("CPU agents", &agents, 256, 65536, "%d", ImGuiSliderFlags_AlwaysClamp);
                 m_cpuAgentCount = static_cast<uint32_t>(agents);
                 if (changed)
                     NAU_LOG_INFO("JungleRuins CPU load: enabled={}, targetMs={}, agents={}", m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount);
