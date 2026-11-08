@@ -47,8 +47,10 @@ void CSMain(uint2 pixel : SV_DispatchThreadID)
         int2 inputPixel = min(int2((pixel + 0.5) * aoSizes.zw / aoSizes.xy), int2(aoSizes.zw) - 1);
         normal = xeDecodeNormal(xeSourceNormals.Load(int3(inputPixel, 0)));
     }
-    uint seed = pixel.x + (pixel.y << 15);
-    float2 noise = float2(frac(seed * 0.618034), frac(seed * 0.382966));
+    // XeGTAO's Hilbert/R2 noise keeps the index within a 64x64 tile.
+    // Large linear pixel indices lose their fractional bits in float32 and form bands.
+    uint index = HilbertIndex(pixel.x % XE_HILBERT_WIDTH, pixel.y % XE_HILBERT_WIDTH);
+    float2 noise = frac(0.5 + float(index) * float2(0.75487766624669276, 0.56984029099805326));
     XeGTAO_MainPass(pixel, 3, 3, noise, normal, constants,
         xeWorkingDepth, xePointClamp, xeWorkingAo, xeEdges);
 }

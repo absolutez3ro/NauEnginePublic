@@ -21,6 +21,12 @@ namespace nau::sample
         m_originalShadowSize = sun.getShadowMapSize();
         auto& properties = getServiceProvider().get<GlobalProperties>();
         m_automated = properties.getValue<bool>("sample/automation/enabled").value_or(false);
+        m_recordCpuLoad = properties.getValue<bool>("render/measurements/enabled").value_or(false);
+        m_cpuLoadEnabled = properties.getValue<bool>("sample/cpuLoad/enabled").value_or(false);
+        const float targetMs = properties.getValue<float>("sample/cpuLoad/targetMs").value_or(8.f);
+        m_cpuLoadTargetMs = std::isfinite(targetMs) ? eastl::clamp(targetMs, 0.f, 32.f) : 8.f;
+        m_cpuAgentCount = eastl::clamp(properties.getValue<uint32_t>("sample/cpuLoad/agents").value_or(4096), 256u, 65536u);
+        NAU_LOG_INFO("JungleRuins CPU load: enabled={}, targetMs={}, agents={}", m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount);
         if (m_automated)
         {
             // Automated scenarios can use only objects, particles and lights. Never extra shadows.
@@ -112,7 +118,7 @@ namespace nau::sample
         m_elapsed += dt;
         if (m_automated) updateAutomation();
         ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x > 1000.f ? 780.f : 260.f,40.f),ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(350.f,250.f),ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(380.f,350.f),ImGuiCond_FirstUseEver);
         if (ImGui::Begin("JungleRuins load"))
         {
             const char* names[] = {"Moving objects (128)","Particles (1024)","Extra lights (48)","Extra shadows (256 casters, 4096)"};
@@ -126,8 +132,25 @@ namespace nau::sample
             }
             if (m_automated) ImGui::TextUnformatted("Automated run: extra shadows locked OFF.");
             ImGui::TextWrapped("Independent loads spawn in front of the camera. Disable removes the added objects; shadows restore the original map size.");
+            ImGui::Separator();
+            if (m_automated)
+                ImGui::Text("CPU workload: %s, %.1f ms target, %u agents", m_cpuLoadEnabled ? "ON" : "OFF", m_cpuLoadTargetMs, m_cpuAgentCount);
+            else
+            {
+                int agents = static_cast<int>(m_cpuAgentCount);
+                bool changed = ImGui::Checkbox("CPU workload (simulation)", &m_cpuLoadEnabled);
+                changed |= ImGui::SliderFloat("CPU target ms", &m_cpuLoadTargetMs, 0.f, 32.f, "%.1f");
+                changed |= ImGui::SliderInt("CPU agents", &agents, 256, 65536);
+                m_cpuAgentCount = static_cast<uint32_t>(agents);
+                if (changed)
+                    NAU_LOG_INFO("JungleRuins CPU load: enabled={}, targetMs={}, agents={}", m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount);
+            }
+            ImGui::Text("CPU actual: %.2f ms, %u passes", m_cpuLoadActualMs, m_cpuLoadPasses);
+            ImGui::Text("Simulation checksum: %.3f", m_cpuLoadChecksum);
+            ImGui::TextWrapped("Agents move, bounce and build matrices on the scene update thread. Target 0 runs one pass.");
         }
         ImGui::End();
+        updateCpuLoad();
         for (size_t category=0; category<4; ++category)
         {
             if (m_enabled[category] && !m_groups[category]) spawn(category);
@@ -144,6 +167,67 @@ namespace nau::sample
                     if (category == 0 || category == 3)
                         object->setRotation(math::quat::rotationY(m_elapsed+item.phase));
                 }
+        }
+    }
+
+    void JungleLoad::updateCpuLoad()
+    {
+        m_cpuLoadActualMs = 0.f;
+        m_cpuLoadPasses = 0;
+        if (m_cpuLoadEnabled)
+        {
+            if (m_cpuAgents.size() != m_cpuAgentCount)
+            {
+                m_cpuAgents.resize(m_cpuAgentCount);
+                for (uint32_t index = 0; index < m_cpuAgentCount; ++index)
+                {
+                    auto& agent = m_cpuAgents[index];
+                    for (uint32_t axis = 0; axis < 3; ++axis)
+                    {
+                        agent.position[axis] = static_cast<float>((index * (17u + axis * 12u)) % 1009u) / 1009.f * 30.f - 15.f;
+                        agent.velocity[axis] = 0.25f + static_cast<float>((index + axis * 71u) % 127u) / 127.f;
+                    }
+                    agent.angle = static_cast<float>(index % 1024u) * (6.2831853f / 1024.f);
+                }
+            }
+            const auto started = std::chrono::steady_clock::now();
+            do
+            {
+                float checksum = 0.f;
+                for (auto& agent : m_cpuAgents)
+                {
+                    for (uint32_t axis = 0; axis < 3; ++axis)
+                    {
+                        agent.position[axis] += agent.velocity[axis] * (1.f / 120.f);
+                        if (std::abs(agent.position[axis]) > 16.f)
+                        {
+                            agent.position[axis] = eastl::clamp(agent.position[axis], -16.f, 16.f);
+                            agent.velocity[axis] = -agent.velocity[axis];
+                        }
+                    }
+                    agent.angle += 0.01f;
+                    if (agent.angle >= 6.2831853f) agent.angle -= 6.2831853f;
+                    const float sine = std::sin(agent.angle);
+                    const float cosine = std::cos(agent.angle);
+                    agent.world = {cosine, 0.f, -sine, 0.f, 0.f, 1.f, 0.f, 0.f,
+                                   sine, 0.f, cosine, 0.f, agent.position[0], agent.position[1], agent.position[2], 1.f};
+                    checksum += agent.world[0] + agent.world[2] * 0.5f +
+                        agent.world[12] * 0.03125f + agent.world[13] * 0.0625f + agent.world[14] * 0.125f;
+                }
+                m_cpuLoadChecksum = checksum;
+                ++m_cpuLoadPasses;
+                m_cpuLoadActualMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - started).count();
+            } while (m_cpuLoadActualMs < m_cpuLoadTargetMs);
+        }
+        if (m_recordCpuLoad)
+        {
+            auto& properties = getServiceProvider().get<GlobalProperties>();
+            properties.setValue("sample/cpuLoad/enabled", m_cpuLoadEnabled).ignore();
+            properties.setValue("sample/cpuLoad/targetMs", m_cpuLoadTargetMs).ignore();
+            properties.setValue("sample/cpuLoad/actualMs", m_cpuLoadActualMs).ignore();
+            properties.setValue("sample/cpuLoad/agents", m_cpuAgentCount).ignore();
+            properties.setValue("sample/cpuLoad/passes", m_cpuLoadPasses).ignore();
+            properties.setValue("sample/cpuLoad/checksum", m_cpuLoadChecksum).ignore();
         }
     }
 

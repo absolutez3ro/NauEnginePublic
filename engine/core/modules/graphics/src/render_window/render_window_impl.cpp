@@ -79,7 +79,8 @@ namespace nau::render
                 "gpu1_input_ms,gpu1_blur_ms,gpu1_output_ms,gpu1_job_ms,gpu1_submitted,gpu1_completed,gpu1_skipped,gpu1_generation,"
                 "gpu0_exchange_frame,gpu0_publish_ms,gpu0_receive_ms,gpu0_blur_frame,gpu0_blur_ms,ao_width,ao_height,input_width,input_height,blur_gpu,normals_reconstructed,linear_depth16,packed_framework_depth,packed_framework_normals,"
                 "ao_transport,ao_readback_frame,ao_readback_source_frame,ao_readback_age_frames,ao_age_samples,ao_age_0,ao_age_1,ao_age_2,ao_age_3,ao_age_4,ao_age_5,ao_age_6,ao_age_7plus,"
-                "mailbox_skip_input,mailbox_skip_output,mailbox_skip_backlog,mailbox_submit_signals,mailbox_bad_ids,mailbox_unavailable_frames,mailbox_dropped_age_samples\n";
+                "mailbox_skip_input,mailbox_skip_output,mailbox_skip_backlog,mailbox_submit_signals,mailbox_bad_ids,mailbox_unavailable_frames,mailbox_dropped_age_samples,"
+                "cpu_load_enabled,cpu_load_target_ms,cpu_load_actual_ms,cpu_load_agents,cpu_load_passes,cpu_load_checksum\n";
             m_measurementsCsv << std::fixed << std::setprecision(6);
             NAU_LOG_INFO("Measurements: CSV {} (frame intervals are CPU render/present cadence; chain latency is a frame-polled upper bound)", path);
         }
@@ -112,7 +113,13 @@ namespace nau::render
             << m.transportMode << ',' << gpu1.displayedFrame << ',' << gpu1.displayedAoFrame << ',' << readbackAge << ',' << gpu1.ageSamples;
         for (uint64_t count : gpu1.ageHistogram) m_measurementsCsv << ',' << count;
         m_measurementsCsv << ',' << gpu1.skippedInput << ',' << gpu1.skippedOutput << ',' << gpu1.skippedBacklog << ',' << gpu1.submitOnlySignals << ','
-            << gpu1.badFrameIds << ',' << gpu1.unavailableAoFrames << ',' << gpu1.droppedAgeSamples << '\n';
+            << gpu1.badFrameIds << ',' << gpu1.unavailableAoFrames << ',' << gpu1.droppedAgeSamples << ','
+            << (properties.getValue<bool>("sample/cpuLoad/enabled").value_or(false) ? 1 : 0) << ','
+            << properties.getValue<float>("sample/cpuLoad/targetMs").value_or(0.f) << ','
+            << properties.getValue<float>("sample/cpuLoad/actualMs").value_or(0.f) << ','
+            << properties.getValue<uint32_t>("sample/cpuLoad/agents").value_or(0) << ','
+            << properties.getValue<uint32_t>("sample/cpuLoad/passes").value_or(0) << ','
+            << properties.getValue<float>("sample/cpuLoad/checksum").value_or(0.f) << '\n';
     }
 
     void RenderWindowImpl::setWorld(nau::Uid worldUid)
