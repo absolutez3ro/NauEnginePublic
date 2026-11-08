@@ -18,6 +18,7 @@ namespace nau::render
 {
     namespace
     {
+        constexpr uint32_t CpuLoadWorkerColumns = 16;
         async::Task<> setWindowTitle(void* handle, eastl::string title)
         {
             ASYNC_SWITCH_EXECUTOR(getServiceProvider().get<ICoreWindowManager>().getExecutor());
@@ -81,7 +82,11 @@ namespace nau::render
                 "ao_transport,ao_readback_frame,ao_readback_source_frame,ao_readback_age_frames,ao_age_samples,ao_age_0,ao_age_1,ao_age_2,ao_age_3,ao_age_4,ao_age_5,ao_age_6,ao_age_7plus,"
                 "mailbox_skip_input,mailbox_skip_output,mailbox_skip_backlog,mailbox_submit_signals,mailbox_bad_ids,mailbox_unavailable_frames,mailbox_dropped_age_samples,"
                 "cpu_load_enabled,cpu_load_target_ms,cpu_load_actual_ms,cpu_load_agents,cpu_load_passes,cpu_load_checksum,"
-                "mailbox_diagnostic,mailbox_diagnostic_active,gpu0_input_copy_frames,mailbox_frozen_input_frame\n";
+                "mailbox_diagnostic,mailbox_diagnostic_active,gpu0_input_copy_frames,mailbox_frozen_input_frame,"
+                "cpu_load_threads,cpu_load_active_threads,cpu_load_agent_bytes,cpu_load_configured_agent_bytes";
+            for (uint32_t i = 0; i < CpuLoadWorkerColumns; ++i)
+                m_measurementsCsv << ",cpu_worker_" << i << "_wall_ms,cpu_worker_" << i << "_passes";
+            m_measurementsCsv << '\n';
             m_measurementsCsv << std::fixed << std::setprecision(6);
             NAU_LOG_INFO("Measurements: CSV {} (frame intervals are CPU render/present cadence; chain latency is a frame-polled upper bound)", path);
         }
@@ -123,7 +128,20 @@ namespace nau::render
             << properties.getValue<float>("sample/cpuLoad/checksum").value_or(0.f) << ','
             << static_cast<uint32_t>(m.mailboxDiagnostic) << ','
             << (m.mailboxTransport && m.mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled ? 1 : 0) << ','
-            << gpu1.primaryInputCopyFrames << ',' << gpu1.frozenInputFrame << '\n';
+            << gpu1.primaryInputCopyFrames << ',' << gpu1.frozenInputFrame << ','
+            << properties.getValue<uint32_t>("sample/cpuLoad/threads").value_or(1) << ','
+            << properties.getValue<uint32_t>("sample/cpuLoad/activeThreads").value_or(0) << ','
+            << properties.getValue<uint32_t>("sample/cpuLoad/agentBytes").value_or(0) << ','
+            << properties.getValue<uint64_t>("sample/cpuLoad/configuredAgentBytes").value_or(0);
+        for (uint32_t i = 0; i < CpuLoadWorkerColumns; ++i)
+        {
+            char name[64];
+            std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/wallMs", i);
+            m_measurementsCsv << ',' << properties.getValue<float>(name).value_or(0.f);
+            std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/passes", i);
+            m_measurementsCsv << ',' << properties.getValue<uint32_t>(name).value_or(0);
+        }
+        m_measurementsCsv << '\n';
     }
 
     void RenderWindowImpl::setWorld(nau::Uid worldUid)

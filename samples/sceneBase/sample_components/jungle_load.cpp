@@ -2,6 +2,8 @@
 #include "jungle_load.h"
 
 #include <cmath>
+#include <cstdio>
+#include <system_error>
 #include <imgui.h>
 #include "nau/app/application.h"
 #include "nau/app/global_properties.h"
@@ -13,6 +15,16 @@
 namespace nau::sample
 {
     NAU_IMPLEMENT_DYNAMIC_OBJECT(JungleLoad)
+
+    JungleLoad::~JungleLoad()
+    {
+        stopCpuWorkers();
+    }
+
+    void JungleLoad::onComponentDeactivated()
+    {
+        stopCpuWorkers();
+    }
 
     void JungleLoad::initialize(scene::SceneObject& camera, scene::DirectionalLightComponent& sun)
     {
@@ -26,7 +38,10 @@ namespace nau::sample
         const float targetMs = properties.getValue<float>("sample/cpuLoad/targetMs").value_or(8.f);
         m_cpuLoadTargetMs = std::isfinite(targetMs) ? eastl::clamp(targetMs, 0.f, 32.f) : 8.f;
         m_cpuAgentCount = eastl::clamp(properties.getValue<uint32_t>("sample/cpuLoad/agents").value_or(4096), 256u, 65536u);
-        NAU_LOG_INFO("JungleRuins CPU load: enabled={}, targetMs={}, agents={}", m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount);
+        m_cpuThreadLimit = eastl::clamp(std::thread::hardware_concurrency(), 1u, kMaxCpuThreads);
+        m_cpuLoadThreads = eastl::clamp(properties.getValue<uint32_t>("sample/cpuLoad/threads").value_or(1), 1u, m_cpuThreadLimit);
+        NAU_LOG_INFO("JungleRuins CPU load: enabled={}, targetMs={}, agentsPerThread={}, threads={}, agentBytes={}",
+            m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount, m_cpuLoadThreads, sizeof(CpuAgent));
         if (m_automated)
         {
             // Automated scenarios can use only objects, particles and lights. Never extra shadows.
@@ -122,7 +137,7 @@ namespace nau::sample
             if (m_automationPhase == 3) return;
         }
         ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x > 1000.f ? 780.f : 260.f,40.f),ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(380.f,350.f),ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(440.f,410.f),ImGuiCond_FirstUseEver);
         if (ImGui::Begin("JungleRuins load"))
         {
             const char* names[] = {"Moving objects (128)","Particles (1024)","Extra lights (48)","Extra shadows (256 casters, 4096)"};
@@ -138,20 +153,31 @@ namespace nau::sample
             ImGui::TextWrapped("Independent loads spawn in front of the camera. Disable removes the added objects; shadows restore the original map size.");
             ImGui::Separator();
             if (m_automated)
-                ImGui::Text("CPU workload: %s, %.1f ms target, %u agents", m_cpuLoadEnabled ? "ON" : "OFF", m_cpuLoadTargetMs, m_cpuAgentCount);
+            {
+                ImGui::Text("CPU workload: %s, %.1f ms/thread", m_cpuLoadEnabled ? "ON" : "OFF", m_cpuLoadTargetMs);
+                ImGui::Text("%u threads, %u agents/thread", m_cpuLoadThreads, m_cpuAgentCount);
+            }
             else
             {
                 int agents = static_cast<int>(m_cpuAgentCount);
+                int threads = static_cast<int>(m_cpuLoadThreads);
                 bool changed = ImGui::Checkbox("CPU workload (simulation)", &m_cpuLoadEnabled);
                 changed |= ImGui::SliderFloat("CPU target ms", &m_cpuLoadTargetMs, 0.f, 32.f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-                changed |= ImGui::SliderInt("CPU agents", &agents, 256, 65536, "%d", ImGuiSliderFlags_AlwaysClamp);
+                changed |= ImGui::SliderInt("CPU threads (incl. scene)", &threads, 1, static_cast<int>(m_cpuThreadLimit), "%d", ImGuiSliderFlags_AlwaysClamp);
+                changed |= ImGui::SliderInt("CPU agents/thread", &agents, 256, 65536, "%d", ImGuiSliderFlags_AlwaysClamp);
                 m_cpuAgentCount = static_cast<uint32_t>(agents);
+                m_cpuLoadThreads = static_cast<uint32_t>(threads);
                 if (changed)
-                    NAU_LOG_INFO("JungleRuins CPU load: enabled={}, targetMs={}, agents={}", m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount);
+                    NAU_LOG_INFO("JungleRuins CPU load: enabled={}, targetMs={}, agentsPerThread={}, threads={}",
+                        m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount, m_cpuLoadThreads);
             }
             ImGui::Text("CPU actual: %.2f ms, %u passes", m_cpuLoadActualMs, m_cpuLoadPasses);
             ImGui::Text("Simulation checksum: %.3f", m_cpuLoadChecksum);
-            ImGui::TextWrapped("Agents move, bounce and build matrices on the scene update thread. Target 0 runs one pass.");
+            ImGui::Text("Configured agent data: %.2f MiB", sizeof(CpuAgent) * double(m_cpuAgentCount) * m_cpuLoadThreads / (1024.0 * 1024.0));
+            if (ImGui::CollapsingHeader("CPU worker details"))
+                for (uint32_t i = 0; i < m_cpuLoadThreads; ++i)
+                    ImGui::Text("Thread %u: %.2f ms, %u passes", i, m_cpuWorkers[i].result.wallMs, m_cpuWorkers[i].result.passes);
+            ImGui::TextWrapped("Thread 0 is the scene update. Extra workers run in parallel with private agents. Target is wall time per thread; target 0 runs one pass.");
         }
         ImGui::End();
         updateCpuLoad();
@@ -174,55 +200,141 @@ namespace nau::sample
         }
     }
 
+    JungleLoad::CpuResult JungleLoad::runCpuJob(std::vector<CpuAgent>& agents, const CpuJob& job, uint32_t worker)
+    {
+        if (agents.size() != job.agents)
+        {
+            agents.resize(job.agents);
+            for (uint32_t index = 0; index < job.agents; ++index)
+            {
+                auto& agent = agents[index];
+                const uint32_t seed = index + worker * 65536u;
+                for (uint32_t axis = 0; axis < 3; ++axis)
+                {
+                    agent.position[axis] = static_cast<float>((seed * (17u + axis * 12u)) % 1009u) / 1009.f * 30.f - 15.f;
+                    agent.velocity[axis] = 0.25f + static_cast<float>((seed + axis * 71u) % 127u) / 127.f;
+                }
+                agent.angle = static_cast<float>(seed % 1024u) * (6.2831853f / 1024.f);
+            }
+        }
+        CpuResult result;
+        const auto started = std::chrono::steady_clock::now();
+        do
+        {
+            float checksum = 0.f;
+            for (auto& agent : agents)
+            {
+                for (uint32_t axis = 0; axis < 3; ++axis)
+                {
+                    agent.position[axis] += agent.velocity[axis] * (1.f / 120.f);
+                    if (std::abs(agent.position[axis]) > 16.f)
+                    {
+                        agent.position[axis] = eastl::clamp(agent.position[axis], -16.f, 16.f);
+                        agent.velocity[axis] = -agent.velocity[axis];
+                    }
+                }
+                agent.angle += 0.01f;
+                if (agent.angle >= 6.2831853f) agent.angle -= 6.2831853f;
+                const float sine = std::sin(agent.angle), cosine = std::cos(agent.angle);
+                agent.world = {cosine, 0.f, -sine, 0.f, 0.f, 1.f, 0.f, 0.f,
+                               sine, 0.f, cosine, 0.f, agent.position[0], agent.position[1], agent.position[2], 1.f};
+                checksum += agent.world[0] + agent.world[2] * 0.5f +
+                    agent.world[12] * 0.03125f + agent.world[13] * 0.0625f + agent.world[14] * 0.125f;
+            }
+            result.checksum = checksum;
+            ++result.passes;
+            result.wallMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - started).count();
+        } while (result.wallMs < job.targetMs);
+        return result;
+    }
+
+    void JungleLoad::cpuWorkerLoop(uint32_t index)
+    {
+        uint64_t generation = 0;
+        std::unique_lock lock(m_cpuMutex);
+        for (;;)
+        {
+            m_cpuStart.wait(lock, [&] { return m_cpuStopping || generation != m_cpuGeneration; });
+            if (m_cpuStopping) return;
+            generation = m_cpuGeneration;
+            const CpuJob job = m_cpuJob;
+            lock.unlock();
+            const CpuResult result = runCpuJob(m_cpuWorkers[index].agents, job, index);
+            lock.lock();
+            m_cpuWorkers[index].result = result;
+            if (--m_cpuPending == 0) m_cpuDone.notify_one();
+        }
+    }
+
+    void JungleLoad::stopCpuWorkers()
+    {
+        if (!m_cpuWorkerCount) return;
+        {
+            std::lock_guard lock(m_cpuMutex);
+            m_cpuStopping = true;
+        }
+        m_cpuStart.notify_all();
+        for (auto& worker : m_cpuWorkers)
+        {
+            if (worker.thread.joinable()) worker.thread.join();
+            worker.result = {};
+            std::vector<CpuAgent>().swap(worker.agents);
+        }
+        m_cpuWorkerCount = 0;
+        m_cpuPending = 0;
+    }
+
+    void JungleLoad::ensureCpuWorkers(uint32_t threads)
+    {
+        if (m_cpuWorkerCount == threads) return;
+        stopCpuWorkers();
+        m_cpuStopping = false;
+        m_cpuGeneration = 0;
+        m_cpuWorkerCount = threads;
+        try
+        {
+            for (uint32_t i = 1; i < threads; ++i)
+                m_cpuWorkers[i].thread = std::thread([this, i] { cpuWorkerLoop(i); });
+        }
+        catch (const std::system_error& error)
+        {
+            stopCpuWorkers();
+            m_cpuLoadThreads = 1;
+            NAU_LOG_ERROR("CPU workload: cannot start workers: {}. Falling back to one thread.", error.what());
+            ensureCpuWorkers(1);
+        }
+    }
+
     void JungleLoad::updateCpuLoad()
     {
         m_cpuLoadActualMs = 0.f;
         m_cpuLoadPasses = 0;
+        m_cpuLoadChecksum = 0.f;
         if (m_cpuLoadEnabled)
         {
-            if (m_cpuAgents.size() != m_cpuAgentCount)
+            ensureCpuWorkers(m_cpuLoadThreads);
+            const auto started = std::chrono::steady_clock::now();
+            const CpuJob job{m_cpuAgentCount, m_cpuLoadTargetMs};
             {
-                m_cpuAgents.resize(m_cpuAgentCount);
-                for (uint32_t index = 0; index < m_cpuAgentCount; ++index)
+                std::lock_guard lock(m_cpuMutex);
+                m_cpuJob = job;
+                m_cpuPending = m_cpuWorkerCount - 1;
+                ++m_cpuGeneration;
+            }
+            m_cpuStart.notify_all();
+            m_cpuWorkers[0].result = runCpuJob(m_cpuWorkers[0].agents, job, 0);
+            {
+                std::unique_lock lock(m_cpuMutex);
+                m_cpuDone.wait(lock, [&] { return m_cpuPending == 0; });
+                for (uint32_t i = 0; i < m_cpuWorkerCount; ++i)
                 {
-                    auto& agent = m_cpuAgents[index];
-                    for (uint32_t axis = 0; axis < 3; ++axis)
-                    {
-                        agent.position[axis] = static_cast<float>((index * (17u + axis * 12u)) % 1009u) / 1009.f * 30.f - 15.f;
-                        agent.velocity[axis] = 0.25f + static_cast<float>((index + axis * 71u) % 127u) / 127.f;
-                    }
-                    agent.angle = static_cast<float>(index % 1024u) * (6.2831853f / 1024.f);
+                    m_cpuLoadPasses += m_cpuWorkers[i].result.passes;
+                    m_cpuLoadChecksum += m_cpuWorkers[i].result.checksum;
                 }
             }
-            const auto started = std::chrono::steady_clock::now();
-            do
-            {
-                float checksum = 0.f;
-                for (auto& agent : m_cpuAgents)
-                {
-                    for (uint32_t axis = 0; axis < 3; ++axis)
-                    {
-                        agent.position[axis] += agent.velocity[axis] * (1.f / 120.f);
-                        if (std::abs(agent.position[axis]) > 16.f)
-                        {
-                            agent.position[axis] = eastl::clamp(agent.position[axis], -16.f, 16.f);
-                            agent.velocity[axis] = -agent.velocity[axis];
-                        }
-                    }
-                    agent.angle += 0.01f;
-                    if (agent.angle >= 6.2831853f) agent.angle -= 6.2831853f;
-                    const float sine = std::sin(agent.angle);
-                    const float cosine = std::cos(agent.angle);
-                    agent.world = {cosine, 0.f, -sine, 0.f, 0.f, 1.f, 0.f, 0.f,
-                                   sine, 0.f, cosine, 0.f, agent.position[0], agent.position[1], agent.position[2], 1.f};
-                    checksum += agent.world[0] + agent.world[2] * 0.5f +
-                        agent.world[12] * 0.03125f + agent.world[13] * 0.0625f + agent.world[14] * 0.125f;
-                }
-                m_cpuLoadChecksum = checksum;
-                ++m_cpuLoadPasses;
-                m_cpuLoadActualMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - started).count();
-            } while (m_cpuLoadActualMs < m_cpuLoadTargetMs);
+            m_cpuLoadActualMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - started).count();
         }
+        else stopCpuWorkers();
         if (m_recordCpuLoad)
         {
             auto& properties = getServiceProvider().get<GlobalProperties>();
@@ -232,6 +344,18 @@ namespace nau::sample
             properties.setValue("sample/cpuLoad/agents", m_cpuAgentCount).ignore();
             properties.setValue("sample/cpuLoad/passes", m_cpuLoadPasses).ignore();
             properties.setValue("sample/cpuLoad/checksum", m_cpuLoadChecksum).ignore();
+            properties.setValue("sample/cpuLoad/threads", m_cpuLoadThreads).ignore();
+            properties.setValue("sample/cpuLoad/activeThreads", m_cpuWorkerCount).ignore();
+            properties.setValue("sample/cpuLoad/agentBytes", static_cast<uint32_t>(sizeof(CpuAgent))).ignore();
+            properties.setValue("sample/cpuLoad/configuredAgentBytes", uint64_t(sizeof(CpuAgent)) * m_cpuAgentCount * m_cpuLoadThreads).ignore();
+            for (uint32_t i = 0; i < kMaxCpuThreads; ++i)
+            {
+                char name[64];
+                std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/wallMs", i);
+                properties.setValue(name, m_cpuWorkers[i].result.wallMs).ignore();
+                std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/passes", i);
+                properties.setValue(name, m_cpuWorkers[i].result.passes).ignore();
+            }
         }
     }
 
@@ -257,6 +381,7 @@ namespace nau::sample
         }
         if (phase == 3)
         {
+            stopCpuWorkers();
             getApplication().stop();
             return;
         }
