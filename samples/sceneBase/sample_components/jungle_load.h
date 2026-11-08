@@ -79,6 +79,7 @@ namespace nau::sample
         bool m_cpuStopping = false;
         bool m_cpuLoadEnabled = false;
         bool m_recordCpuLoad = false;
+        uint64_t m_cpuTelemetrySequence = 0;
         uint32_t m_cpuAgentCount = 4096;
         uint32_t m_cpuLoadThreads = 1, m_cpuThreadLimit = 1;
         uint32_t m_cpuLoadPasses = 0;

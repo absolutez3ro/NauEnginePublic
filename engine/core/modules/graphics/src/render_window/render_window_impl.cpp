@@ -5,6 +5,7 @@
 #include "render_window_impl.h"
 
 #include <cstdio>
+#include <array>
 #include <iomanip>
 #include <locale>
 
@@ -19,6 +20,51 @@ namespace nau::render
     namespace
     {
         constexpr uint32_t CpuLoadWorkerColumns = 16;
+
+        struct CpuLoadSnapshot
+        {
+            bool enabled = false;
+            float targetMs = 0.f, actualMs = 0.f, checksum = 0.f;
+            uint32_t agents = 4096, threads = 1, activeThreads = 0, agentBytes = 0, passes = 0;
+            uint64_t configuredBytes = 0, sequence = 0;
+            std::array<float, CpuLoadWorkerColumns> wallMs{};
+            std::array<uint32_t, CpuLoadWorkerColumns> workerPasses{};
+        };
+
+        CpuLoadSnapshot readCpuLoadSnapshot(GlobalProperties& properties)
+        {
+            static thread_local CpuLoadSnapshot last;
+            for (unsigned attempt = 0; attempt < 2; ++attempt)
+            {
+                CpuLoadSnapshot next;
+                next.sequence = properties.getValue<uint64_t>("sample/cpuLoad/sequence").value_or(0);
+                if (next.sequence & 1u) continue;
+                next.enabled = properties.getValue<bool>("sample/cpuLoad/enabled").value_or(false);
+                next.targetMs = properties.getValue<float>("sample/cpuLoad/targetMs").value_or(0.f);
+                next.actualMs = properties.getValue<float>("sample/cpuLoad/actualMs").value_or(0.f);
+                next.agents = properties.getValue<uint32_t>("sample/cpuLoad/agents").value_or(4096);
+                next.passes = properties.getValue<uint32_t>("sample/cpuLoad/passes").value_or(0);
+                next.checksum = properties.getValue<float>("sample/cpuLoad/checksum").value_or(0.f);
+                next.threads = properties.getValue<uint32_t>("sample/cpuLoad/threads").value_or(1);
+                next.activeThreads = properties.getValue<uint32_t>("sample/cpuLoad/activeThreads").value_or(0);
+                next.agentBytes = properties.getValue<uint32_t>("sample/cpuLoad/agentBytes").value_or(0);
+                next.configuredBytes = properties.getValue<uint64_t>("sample/cpuLoad/configuredAgentBytes").value_or(0);
+                for (uint32_t i = 0; i < CpuLoadWorkerColumns; ++i)
+                {
+                    char name[64];
+                    std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/wallMs", i);
+                    next.wallMs[i] = properties.getValue<float>(name).value_or(0.f);
+                    std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/passes", i);
+                    next.workerPasses[i] = properties.getValue<uint32_t>(name).value_or(0);
+                }
+                if (properties.getValue<uint64_t>("sample/cpuLoad/sequence").value_or(0) == next.sequence)
+                {
+                    last = next;
+                    break;
+                }
+            }
+            return last;
+        }
         async::Task<> setWindowTitle(void* handle, eastl::string title)
         {
             ASYNC_SWITCH_EXECUTOR(getServiceProvider().get<ICoreWindowManager>().getExecutor());
@@ -83,7 +129,7 @@ namespace nau::render
                 "mailbox_skip_input,mailbox_skip_output,mailbox_skip_backlog,mailbox_submit_signals,mailbox_bad_ids,mailbox_unavailable_frames,mailbox_dropped_age_samples,"
                 "cpu_load_enabled,cpu_load_target_ms,cpu_load_actual_ms,cpu_load_agents,cpu_load_passes,cpu_load_checksum,"
                 "mailbox_diagnostic,mailbox_diagnostic_active,gpu0_input_copy_frames,mailbox_frozen_input_frame,"
-                "cpu_load_threads,cpu_load_active_threads,cpu_load_agent_bytes,cpu_load_configured_agent_bytes";
+                "cpu_load_threads,cpu_load_active_threads,cpu_load_agent_bytes,cpu_load_configured_agent_bytes,cpu_load_snapshot_sequence";
             for (uint32_t i = 0; i < CpuLoadWorkerColumns; ++i)
                 m_measurementsCsv << ",cpu_worker_" << i << "_wall_ms,cpu_worker_" << i << "_passes";
             m_measurementsCsv << '\n';
@@ -99,6 +145,7 @@ namespace nau::render
         const auto pipeline = getAmbientOcclusionPipeline();
         const int64_t age = m.aoValid && m.aoFrame ? static_cast<int64_t>(m.frame - m.aoFrame) : -1;
         const auto& gpu1 = m.gpu1Timing;
+        const auto cpu = readCpuLoadSnapshot(properties);
         const int64_t readbackAge = m.mailboxTransport && gpu1.displayedAoFrame && gpu1.displayedAoFrame <= gpu1.displayedFrame
             ? static_cast<int64_t>(gpu1.displayedFrame - gpu1.displayedAoFrame) : -1;
         m_measurementsCsv << m.frame << ',' << std::chrono::duration<double, std::milli>(now - m_measurementsOrigin).count() << ',' << dt << ','
@@ -120,26 +167,15 @@ namespace nau::render
         for (uint64_t count : gpu1.ageHistogram) m_measurementsCsv << ',' << count;
         m_measurementsCsv << ',' << gpu1.skippedInput << ',' << gpu1.skippedOutput << ',' << gpu1.skippedBacklog << ',' << gpu1.submitOnlySignals << ','
             << gpu1.badFrameIds << ',' << gpu1.unavailableAoFrames << ',' << gpu1.droppedAgeSamples << ','
-            << (properties.getValue<bool>("sample/cpuLoad/enabled").value_or(false) ? 1 : 0) << ','
-            << properties.getValue<float>("sample/cpuLoad/targetMs").value_or(0.f) << ','
-            << properties.getValue<float>("sample/cpuLoad/actualMs").value_or(0.f) << ','
-            << properties.getValue<uint32_t>("sample/cpuLoad/agents").value_or(0) << ','
-            << properties.getValue<uint32_t>("sample/cpuLoad/passes").value_or(0) << ','
-            << properties.getValue<float>("sample/cpuLoad/checksum").value_or(0.f) << ','
+            << (cpu.enabled ? 1 : 0) << ',' << cpu.targetMs << ',' << cpu.actualMs << ','
+            << cpu.agents << ',' << cpu.passes << ',' << cpu.checksum << ','
             << static_cast<uint32_t>(m.mailboxDiagnostic) << ','
             << (m.mailboxTransport && m.mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled ? 1 : 0) << ','
             << gpu1.primaryInputCopyFrames << ',' << gpu1.frozenInputFrame << ','
-            << properties.getValue<uint32_t>("sample/cpuLoad/threads").value_or(1) << ','
-            << properties.getValue<uint32_t>("sample/cpuLoad/activeThreads").value_or(0) << ','
-            << properties.getValue<uint32_t>("sample/cpuLoad/agentBytes").value_or(0) << ','
-            << properties.getValue<uint64_t>("sample/cpuLoad/configuredAgentBytes").value_or(0);
+            << cpu.threads << ',' << cpu.activeThreads << ',' << cpu.agentBytes << ',' << cpu.configuredBytes << ',' << cpu.sequence;
         for (uint32_t i = 0; i < CpuLoadWorkerColumns; ++i)
         {
-            char name[64];
-            std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/wallMs", i);
-            m_measurementsCsv << ',' << properties.getValue<float>(name).value_or(0.f);
-            std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/passes", i);
-            m_measurementsCsv << ',' << properties.getValue<uint32_t>(name).value_or(0);
+            m_measurementsCsv << ',' << cpu.wallMs[i] << ',' << cpu.workerPasses[i];
         }
         m_measurementsCsv << '\n';
     }

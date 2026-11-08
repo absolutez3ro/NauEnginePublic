@@ -338,6 +338,9 @@ namespace nau::sample
         if (m_recordCpuLoad)
         {
             auto& properties = getServiceProvider().get<GlobalProperties>();
+            // The render thread can sample during publication. Odd/even sequence values
+            // let it keep the last complete snapshot rather than mix workers from two frames.
+            properties.setValue("sample/cpuLoad/sequence", ++m_cpuTelemetrySequence).ignore();
             properties.setValue("sample/cpuLoad/enabled", m_cpuLoadEnabled).ignore();
             properties.setValue("sample/cpuLoad/targetMs", m_cpuLoadTargetMs).ignore();
             properties.setValue("sample/cpuLoad/actualMs", m_cpuLoadActualMs).ignore();
@@ -356,6 +359,7 @@ namespace nau::sample
                 std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/passes", i);
                 properties.setValue(name, m_cpuWorkers[i].result.passes).ignore();
             }
+            properties.setValue("sample/cpuLoad/sequence", ++m_cpuTelemetrySequence).ignore();
         }
     }
 
