@@ -94,7 +94,7 @@ namespace nau
         {
             if (const auto& group = weakGroup.lock())
             {
-                lists.emplace_back(group->createRenderList({}, filterFunc, materialFilter));
+                lists.emplace_back(group->createRenderList(viewerPosition, filterFunc, materialFilter));
             }
             else
             {
@@ -144,7 +144,7 @@ namespace nau
 
     void MeshHandle::setWorldTransform(const nau::math::Transform& transform)
     {
-        m_instInfo.worldMatrix = transform.getMatrix();
+        m_instInfo.setWorldMatrix(transform.getMatrix());
 
         float maxScale = maxElem(transform.getScale());
         // update aabb, bounding sphere, etc.
@@ -222,7 +222,7 @@ namespace nau
             {
             case static_cast<uint32_t>(DirtyFlags::WorldPos):
                 setWorldTransform(component.getWorldTransform());
-                info.worldMatrix = m_instInfo.worldMatrix;
+                info.setWorldMatrix(m_instInfo.worldMatrix);
                 info.worldSphere = m_instInfo.worldSphere;
                 break;
             //case static_cast<uint32_t>(DirtyFlags::Material):

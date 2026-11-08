@@ -22,6 +22,12 @@ permutations {
         }
     }
     permutation {
+        name:t="masked"
+        defines {
+            define_masked:t="ALPHA_MASK=1"
+        }
+    }
+    permutation {
         name:t="emissive"
         defines {
             define_emissive:t="EMISSIVE=1"

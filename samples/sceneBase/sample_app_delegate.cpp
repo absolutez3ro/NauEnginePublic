@@ -6,6 +6,7 @@
 #include "./sample_components/asset_reloader.h"
 #include "./sample_components/light_control.h"
 #include "./sample_components/mgpu_toggle.h"
+#include "./sample_components/scene_switcher.h"
 #include "./sample_components/scene_reloader.h"
 #include "./sample_components/window_maker.h"
 #include "./texture_import_settings.h"
@@ -74,6 +75,7 @@ namespace nau::sample
             getServiceProvider().addClass<nau::sample::SceneReloader>();
             getServiceProvider().addClass<nau::sample::WindowMaker>();
             getServiceProvider().addClass<nau::sample::MgpuToggle>();
+            getServiceProvider().addClass<nau::sample::SceneSwitcher>();
             getServiceProvider().addClass<nau::sample::LightControl>();
 
             return ResultSuccess;

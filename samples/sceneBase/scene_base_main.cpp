@@ -9,6 +9,7 @@
 #include "./sample_components/light_control.h"
 #include "./sample_components/mgpu_toggle.h"
 #include "./sample_components/scene_reloader.h"
+#include "./sample_components/scene_switcher.h"
 #include "./sample_components/window_maker.h"
 #include "./scene_loaders.h"
 #include "nau/animation/animation_manager.h"
@@ -240,90 +241,121 @@ namespace nau::sample
         builder.writeAssetToStream(stream, asset).ignore();
     }
 
-    async::Task<> startupDemo()
+    // The scenes of key 1 of SceneSwitcher.
+    async::Task<SceneSwitcher::ActiveScenes> activateDefaultScenes()
     {
-        using namespace nau::async;
         using namespace nau::scene;
-#if 1
+
         IScene::Ptr mainScene = co_await loadGltfScene("file:/content/scenes/scene_demo.gltf", true);
         IScene::Ptr helmetScene = co_await loadGltfScene("file:/content/scenes/damaged_helmet/DamagedHelmet.gltf", false);
         IScene::Ptr shadowScene = co_await loadGltfScene("file:/content/scenes/shadow_test.gltf", true);
-        IScene::Ptr helmetTranslucentScene = co_await loadGltfScene("file:/content/scenes/damaged_helmet_translucent/DamagedHelmet_Translucent.gltf", false);
 
         IScene::Ptr skeletalAnimScene = co_await loadGltfScene("file:/content/scenes/robot/robot_skeletal_pbr.gltf", false);
-#else
-        auto scene = co_await loadDemoScene("file:/content/scenes/scene_demo.nscene_json");
-#endif
 
         mainScene->setName("Main");
 
         auto& sceneManager = getServiceProvider().get<scene::ISceneManager>();
+
+        SceneSwitcher::ActiveScenes active;
+        active.push_back(co_await sceneManager.activateScene(std::move(mainScene)));
+        active.push_back(co_await sceneManager.activateScene(std::move(shadowScene)));
+        active.push_back(co_await sceneManager.activateScene(std::move(helmetScene)));
+        // todo: NAU-1295 add scene to scene when API is present
+        active.push_back(co_await sceneManager.activateScene(std::move(skeletalAnimScene)));
+
+        active.push_back(co_await sceneManager.activateScene(sample::makeTransformDemoScene({30.f, 0, 0}, false)));
+        active.push_back(co_await sceneManager.activateScene(sample::makeTransformDemoScene({42.f, 0, 0}, false)));
+        active.push_back(co_await sceneManager.activateScene(sample::makeInstancingDemoScene({40.0f, 0, 40.0f}, false)));
+        active.push_back(co_await sceneManager.activateScene(sample::makeBillboardsScene({-10.0f, 0, 40.0f}, false)));
+
+        co_return active;
+    }
+
+    // The scene of key 2 of SceneSwitcher, made by tools/convert_jungle_ruins.py. The glTF import does not read materials:
+    // the converter names every node after its material.
+    async::Task<SceneSwitcher::ActiveScenes> activateJungleRuinsScene()
+    {
+        using namespace nau::scene;
+
+        AssetRef<> sceneAssetRef{"file:/content/scenes/jungle_ruins/jungle_ruins.gltf"};
+        SceneAsset::Ptr sceneAsset = co_await sceneAssetRef.getAssetViewTyped<SceneAsset>();
+        IScene::Ptr scene = getServiceProvider().get<scene::ISceneFactory>().createSceneFromAsset(*sceneAsset);
+        scene->setName("JungleRuins");
+
+        for (SceneObject* const object : scene->getRoot().getChildObjects(true))
+        {
+            if (auto* const mesh = object->findFirstComponent<StaticMeshComponent>(); mesh)
+            {
+                const eastl::string materialPath = ::fmt::format("file:/content/scenes/jungle_ruins/materials/{}.nmat_inst_json", object->getName()).c_str();
+                mesh->setMaterial(MaterialAssetRef{AssetPath{materialPath}});
+            }
+        }
+
+        SceneSwitcher::ActiveScenes active;
+        active.push_back(co_await getServiceProvider().get<scene::ISceneManager>().activateScene(std::move(scene)));
+        co_return active;
+    }
+
+    async::Task<> startupDemo()
+    {
+        using namespace nau::async;
+        using namespace nau::scene;
+
+        auto& sceneManager = getServiceProvider().get<scene::ISceneManager>();
         auto& sceneFactory = getServiceProvider().get<scene::ISceneFactory>();
 
-        {  // choose camera control kind: from scene object or standalone detached camera (from cam. manager):
-            constexpr CamControlKind CameraControlKind = CamControlKind::UseCameraManager;
+        // choose camera control kind: from scene object or standalone detached camera (from cam. manager):
+        constexpr CamControlKind CameraControlKind = CamControlKind::UseCameraManager;
 
-            auto scene_00 = sceneFactory.createEmptyScene();
-            scene_00->setName("scene_00");
+        auto scene_00 = sceneFactory.createEmptyScene();
+        scene_00->setName("scene_00");
 
-            ObjectWeakRef<SceneObject> cameraObject;
-            if (CameraControlKind == CamControlKind::UseSceneObject)
-            {
-                cameraObject = scene_00->getRoot().attachChild(sceneFactory.createSceneObject<scene::CameraComponent>());
-            }
-            else
-            {
-                cameraObject = scene_00->getRoot().attachChild(sceneFactory.createSceneObject());
-            }
-            cameraObject->setName("Camera.Main");
-            cameraObject->addComponent<CameraControl>().setCamControlKind(CameraControlKind);
-
-            scene_00->getRoot().addComponent<SceneReloader>();
-            scene_00->getRoot().addComponent<AssetReloader>();
-            scene_00->getRoot().addComponent<MgpuToggle>();
-            scene_00->getRoot().addComponent<LightControl>();
-
-            // Shadows on, so that the cascades (drawn by the second GPU in an Mgpu build, see MgpuToggle) are visible.
-            // Direction: the default of the DirectionalLightControl window of WindowMaker, (0.5, -0.5, 0): the light
-            // travels down. DirectionalLightComponent::getDirection() is the rotation applied to (1, 0, 0), so the
-            // rotation turns (1, 0, 0) into that direction.
-            // Do not build it with Matrix4::lookAtRH(Point3(), ...): Point3() does not initialize its value, the
-            // random eye turned the light direction into garbage (even NaN) at every start and the cascades broke.
-            auto& light = scene_00->getRoot().addComponent<DirectionalLightComponent>();
-            light.setCastShadows(true);
-            {
-                using namespace nau::math;
-                const Vector3 direction = normalize(Vector3(0.5f, -0.5f, 0.0f));
-                light.setRotation(Quat::rotation(Vector3(1.0f, 0.0f, 0.0f), direction));
-            }
-
-            auto& env = scene_00->getRoot().addComponent<EnvironmentComponent>();
-            env.setIntensity(0.5f);
-            TextureAssetRef panoramaTex = TextureAssetRef("file:/content/textures/environment/SunnyHills_2k.hdr");
-            env.setTextureAsset(panoramaTex);
-
-
-            // Uncomment to add ability to create new system windows (from the UI)
-            // scene_00->getRoot().addComponent<WindowMaker>();
-            
-
-            co_await sceneManager.activateScene(std::move(scene_00));
+        ObjectWeakRef<SceneObject> cameraObject;
+        if (CameraControlKind == CamControlKind::UseSceneObject)
+        {
+            cameraObject = scene_00->getRoot().attachChild(sceneFactory.createSceneObject<scene::CameraComponent>());
         }
-        nau::async::TaskCollection sceneLoaders;
+        else
+        {
+            cameraObject = scene_00->getRoot().attachChild(sceneFactory.createSceneObject());
+        }
+        cameraObject->setName("Camera.Main");
+        cameraObject->addComponent<CameraControl>().setCamControlKind(CameraControlKind);
 
-        sceneLoaders.push(sceneManager.activateScene(std::move(mainScene)));
-        sceneLoaders.push(sceneManager.activateScene(std::move(shadowScene)));
-        sceneLoaders.push(sceneManager.activateScene(std::move(helmetScene)));
-        //sceneLoaders.push(sceneManager.activateScene(std::move(helmetTranslucentScene)));
-        // todo: NAU-1295 add scene to scene when API is present
-        sceneLoaders.push(getServiceProvider().get<scene::ISceneManager>().activateScene(std::move(skeletalAnimScene)));
+        scene_00->getRoot().addComponent<SceneReloader>();
+        scene_00->getRoot().addComponent<AssetReloader>();
+        scene_00->getRoot().addComponent<MgpuToggle>();
+        scene_00->getRoot().addComponent<LightControl>();
 
-        sceneLoaders.push(sceneManager.activateScene(sample::makeTransformDemoScene({30.f, 0, 0}, false)));
-        sceneLoaders.push(sceneManager.activateScene(sample::makeTransformDemoScene({42.f, 0, 0}, false)));
-        sceneLoaders.push(sceneManager.activateScene(sample::makeInstancingDemoScene({40.0f, 0, 40.0f}, false)));
-        sceneLoaders.push(sceneManager.activateScene(sample::makeBillboardsScene({-10.0f, 0, 40.0f}, false)));
+        auto& sceneSwitcher = scene_00->getRoot().addComponent<SceneSwitcher>();
+        sceneSwitcher.setFactories(&activateDefaultScenes, &activateJungleRuinsScene);
 
-        co_await sceneLoaders.awaitCompletion();
+        // Shadows on, so that the cascades (drawn by the second GPU in an Mgpu build, see MgpuToggle) are visible.
+        // Direction: the default of the DirectionalLightControl window of WindowMaker, (0.5, -0.5, 0): the light
+        // travels down. DirectionalLightComponent::getDirection() is the rotation applied to (1, 0, 0), so the
+        // rotation turns (1, 0, 0) into that direction.
+        // Do not build it with Matrix4::lookAtRH(Point3(), ...): Point3() does not initialize its value, the
+        // random eye turned the light direction into garbage (even NaN) at every start and the cascades broke.
+        auto& light = scene_00->getRoot().addComponent<DirectionalLightComponent>();
+        light.setCastShadows(true);
+        {
+            using namespace nau::math;
+            const Vector3 direction = normalize(Vector3(0.5f, -0.5f, 0.0f));
+            light.setRotation(Quat::rotation(Vector3(1.0f, 0.0f, 0.0f), direction));
+        }
+
+        auto& env = scene_00->getRoot().addComponent<EnvironmentComponent>();
+        env.setIntensity(0.5f);
+        TextureAssetRef panoramaTex = TextureAssetRef("file:/content/textures/environment/SunnyHills_2k.hdr");
+        env.setTextureAsset(panoramaTex);
+
+
+        // Uncomment to add ability to create new system windows (from the UI)
+        // scene_00->getRoot().addComponent<WindowMaker>();
+
+        co_await sceneManager.activateScene(std::move(scene_00));
+
+        co_await sceneSwitcher.switchTo(SceneSwitcher::SceneSet::Default);
     }
 
     // ./sample_app_delegate.cpp

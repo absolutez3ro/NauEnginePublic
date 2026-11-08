@@ -59,6 +59,30 @@ namespace nau::mgpu::bridge
         uint64_t atlasesCompleted = 0;
         uint64_t skippedBusy = 0; // frames that found the second GPU still busy with the previous atlases
         uint64_t failed = 0;
+
+        // Where the time of a frame goes (stage 0 of the MGPU optimisation): averages over the last report period. CPU:
+        // render thread, milliseconds per frame. GPU: milliseconds per measured pass, -1 when nothing was measured.
+        struct Timings
+        {
+            float cpuFrameMs = 0; // the whole frame (1000 / sceneFramesPerSecond)
+            float cpuRenderMs = 0; // the render thread's own work in a frame: the views and the frame graph, without present
+            float cpuListsMainMs = 0; // render lists of the camera view
+            float cpuListsCascadesMs = 0; // of the cascade views
+            float cpuListsOmniMs = 0; // of the point light views
+            uint32_t instancesMain = 0; // instances in the lists of a frame
+            uint32_t instancesCascades = 0;
+            uint32_t instancesOmni = 0;
+            uint32_t instancesPerCascade[6] = {}; // by cascade view (csm::CascadeShadows::MAX_CASCADES)
+            float cpuCollectMs = 0; // the casters for the second GPU, per frame
+            float cpuSubmitMs = 0; // recording and submitting its atlas, per frame
+            float gpuFrameMs = -1; // Nau's frame graph on the scene GPU
+            float gpuNauCascadesMs = -1; // Nau's own cascade pass
+            float gpuAtlasCopyMs = -1; // an atlas of the second GPU into Nau's atlas
+            float gpu2DrawMs = -1; // the cascades on the second GPU, per atlas
+            float gpu2SharedCopyMs = -1; // the atlas into the shared heap on the second GPU
+            float gpuTransferMs = -1; // shared heap -> the scene GPU on its copy queue, per atlas
+        };
+        Timings timings;
     };
 
 #if defined(NAU_ENABLE_MGPU)
@@ -66,6 +90,14 @@ namespace nau::mgpu::bridge
     /// Manual switch of the Mgpu path. Default: false.
     void setEnabled(bool enabled);
     bool isEnabled();
+
+    /// Vsync of Nau's swap chain (SceneBaseSample: key V). With it on the frame rate is the one of the display.
+    void setVsyncEnabled(bool enabled);
+    bool isVsyncEnabled();
+
+    /// Nau has replaced its meshes (another scene): the second GPU forgets its copies. Every call changes the generation.
+    void notifyMeshesChanged();
+    uint64_t getMeshGeneration();
 
     /// linked and enabled are filled in by getStatus() itself.
     void publishStatus(const Status& status);
@@ -114,6 +146,10 @@ namespace nau::mgpu::bridge
 
     inline void setEnabled(bool) {}
     inline bool isEnabled() { return false; }
+    inline void setVsyncEnabled(bool) {}
+    inline bool isVsyncEnabled() { return true; }
+    inline void notifyMeshesChanged() {}
+    inline uint64_t getMeshGeneration() { return 0; }
     inline void publishStatus(const Status&) {}
     inline Status getStatus() { return {}; }
 

@@ -48,7 +48,31 @@ namespace nau
 
         nau::Ptr<BillboardsManager> getBillboardsManager();
 
-        void updateViews(const nau::math::Matrix4& vp);
+        // Time and instances of the last updateViews by kind of view (the timing report of the render window).
+        struct ViewsStats
+        {
+            enum Kind
+            {
+                Main,
+                Cascade,
+                Omni,
+                KindCount
+            };
+            double seconds[KindCount] = {};
+            uint64_t instances[KindCount] = {};
+            uint64_t cascadeInstances[csm::CascadeShadows::MAX_CASCADES] = {}; // by the cascade of the view
+        };
+
+        const ViewsStats& getViewsStats() const
+        {
+            return m_viewsStats;
+        }
+
+        // viewerPosition: the main camera, for the levels of detail of every view (the shadows too). An inactive view only
+        // drops its lists.
+        void updateViews(const nau::math::Matrix4& vp, const nau::math::Vector3& viewerPosition);
+        // The active views with the tag only: their lists were skipped earlier in the frame and are needed after all.
+        void updateViewsWithTag(RenderTag tag, const nau::math::Vector3& viewerPosition);
         void updateManagers();
         void renderScene(const nau::math::Matrix4& vp);
         void renderDepth(const nau::math::Matrix4& vp);
@@ -70,6 +94,9 @@ namespace nau
     private:
         eastl::vector<nau::Ptr<IRenderManager>> m_managers;
         eastl::vector<eastl::shared_ptr<RenderView>> m_views;
+        ViewsStats m_viewsStats;
+
+        void updateView(RenderView& view, const nau::math::Vector3& viewerPosition);
 
         nau::Ptr<BillboardsManager> m_billboardsManager;
 

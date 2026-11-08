@@ -98,9 +98,52 @@ namespace nau
             return 4;
         }
 
+        eastl::optional<double> numberOf(const RuntimeValue::Ptr& value)
+        {
+            if (!value)
+            {
+                return eastl::nullopt;
+            }
+            if (auto* const floatValue = value->as<RuntimeFloatValue*>())
+            {
+                return floatValue->getDouble();
+            }
+            if (auto* const integerValue = value->as<RuntimeIntegerValue*>())
+            {
+                return static_cast<double>(integerValue->getInt64());
+            }
+            return eastl::nullopt;
+        }
+
+        // An array of numbers in the extras of a glTF object; empty if there is no such key.
+        eastl::vector<double> numbersOf(const eastl::map<eastl::string, RuntimeValue::Ptr>& extras, const char* key)
+        {
+            eastl::vector<double> numbers;
+            const auto found = extras.find(key);
+            if (found == extras.end() || !found->second)
+            {
+                return numbers;
+            }
+
+            auto* const collection = found->second->as<RuntimeReadonlyCollection*>();
+            if (!collection)
+            {
+                return numbers;
+            }
+
+            for (size_t i = 0; i < collection->getSize(); ++i)
+            {
+                if (const eastl::optional<double> number = numberOf(collection->getAt(i)))
+                {
+                    numbers.push_back(*number);
+                }
+            }
+            return numbers;
+        }
+
     }  // namespace
 
-    GltfMeshAssetAccessor::GltfMeshAssetAccessor(const GltfFile& file, size_t meshIndex, const eastl::vector<io::IFile::Ptr>& bufferFiles)
+    GltfMeshAssetAccessor::GltfMeshAssetAccessor(const GltfFile& file, size_t meshIndex, const eastl::vector<io::IFile::Ptr>& bufferFiles, bool withLods)
     {
         NAU_ASSERT(meshIndex < file.meshes.size());
 
@@ -108,6 +151,30 @@ namespace nau
         if(mesh.primitives.empty())
         {
             return;
+        }
+
+        if (withLods)
+        {
+            // The meshes of the levels are read without levels of their own: no chains, no cycles.
+            const eastl::vector<double> lodMeshes = numbersOf(mesh.extras, "nau_lod_meshes");
+            const eastl::vector<double> lodDistances = numbersOf(mesh.extras, "nau_lod_distances");
+            NAU_ASSERT(lodMeshes.size() == lodDistances.size(), "Mesh ({}): nau_lod_meshes and nau_lod_distances differ in size", mesh.name);
+
+            const size_t count = eastl::min(lodMeshes.size(), lodDistances.size());
+            m_lods.reserve(count);
+            for (size_t i = 0; i < count; ++i)
+            {
+                const size_t lodMeshIndex = static_cast<size_t>(lodMeshes[i]);
+                if (lodMeshIndex >= file.meshes.size() || lodMeshIndex == meshIndex || file.meshes[lodMeshIndex].primitives.empty())
+                {
+                    NAU_ASSERT(false, "Mesh ({}): invalid level of detail mesh {}", mesh.name, lodMeshIndex);
+                    continue;
+                }
+
+                Lod& lod = m_lods.emplace_back();
+                lod.accessor = rtti::createInstance<GltfMeshAssetAccessor, IMeshAssetAccessor>(file, lodMeshIndex, bufferFiles, false);
+                lod.distance = static_cast<float>(lodDistances[i]);
+            }
         }
 
         const auto& subMesh = mesh.primitives.front();
@@ -162,6 +229,11 @@ namespace nau
             binaryAccessor.offset = bufferView.byteOffset;
             binaryAccessor.size = bufferView.byteLength;
         }
+    }
+
+    eastl::vector<IMeshLodsAccessor::Lod> GltfMeshAssetAccessor::getLods() const
+    {
+        return m_lods;
     }
 
     ElementFormatFlag GltfMeshAssetAccessor::getSupportedIndexTypes() const
@@ -268,7 +340,7 @@ namespace nau
         auto* reader = stream->as<io::IStreamReader*>();
         NAU_ASSERT(reader);
 
-        NAU_ASSERT(outputIndexFormat == ElementFormat::Uint16); // todo: NAU-1797 Fully support 32 bit indices up to drawing stage
+        NAU_ASSERT(outputIndexFormat == ElementFormat::Uint16 || outputIndexFormat == m_meshDescription.indexFormat);
 
         const size_t expectedBufferLength = formatByteSize(m_meshDescription.indexFormat) * m_meshDescription.indexCount;
 

@@ -68,6 +68,22 @@ void nau::RenderView::clearLists()
     m_lists.clear();
 }
 
+namespace
+{
+    // Static meshes take the instanced pipelines even with a single instance. The depth prepass reads the instance buffer
+    // in both of its paths, while the non-instanced gbuffer pipeline transforms with the mvp computed on the CPU: the depth
+    // came out slightly different and failed the depth test of the gbuffer pass in places (black pixels). Levels of detail
+    // split the instances of a mesh by distance, so entities with one instance are common.
+    bool drawInstanced(const nau::RenderEntity& ent)
+    {
+        if (!ent.instancingSupported)
+        {
+            return false;
+        }
+        return ent.instancesCount != 1 || (ent.material && ent.material->hasPipeline("instanced"));
+    }
+}  // namespace
+
 void nau::RenderView::render(const nau::math::Matrix4& vp) const
 {
     for (auto& list : m_lists)
@@ -92,7 +108,7 @@ void nau::RenderView::renderInstanced(const nau::math::Matrix4& vp) const
     {
         for (auto& ent : list->getEntities())
         {
-            if (!ent.instancingSupported || ent.instancesCount == 1)
+            if (!drawInstanced(ent))
             {
                 ent.render(vp);
             }
@@ -114,12 +130,16 @@ void nau::RenderView::renderZPrepass(const nau::math::Matrix4& vp, nau::Material
     NAU_ASSERT(zPrepassMat);
     zPrepassMat->setRoBuffer("default", "instanceBuffer", m_instanceData);
     zPrepassMat->setRoBuffer("skinned", "instanceBuffer", m_instanceData);
+    if (zPrepassMat->hasPipeline("masked"))
+    {
+        zPrepassMat->setRoBuffer("masked", "instanceBuffer", m_instanceData);
+    }
 
     for (auto& list : m_lists)
     {
         for (auto& ent : list->getEntities())
         {
-            if (!ent.instancingSupported || ent.instancesCount == 1)
+            if (!drawInstanced(ent))
             {
                 ent.renderZPrepass(vp, zPrepassMat);
             }
@@ -154,7 +174,7 @@ void nau::RenderView::renderOutlineMask(const nau::math::Matrix4& vp, nau::Mater
             {
                 continue;
             }
-            if (!ent.instancingSupported || ent.instancesCount == 1)
+            if (!drawInstanced(ent))
             {
                 ent.renderZPrepass(vp, zPrepassMat);
             }

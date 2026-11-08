@@ -63,6 +63,12 @@ struct VsInputZPrepassSkinned
     uint4 boneIndices : BLENDINDICES;
 };
 
+struct VsInputZPrepassMasked
+{
+    float3 position : POSITION;
+    float2 texCoord : TEXCOORD0;
+};
+
 struct VsOutputGBuff
 {
     float4 position : SV_Position;
@@ -76,6 +82,13 @@ struct VsOutputZPrepass
 {
     float4 position : SV_Position;
     nointerpolation uint4 uid : TEXCOORD0;
+};
+
+struct VsOutputZPrepassMasked
+{
+    float4 position : SV_Position;
+    nointerpolation uint4 uid : TEXCOORD0;
+    float2 texCoord : TEXCOORD1;
 };
 
 struct VsOutputResolve

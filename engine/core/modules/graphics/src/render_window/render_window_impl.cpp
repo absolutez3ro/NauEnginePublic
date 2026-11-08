@@ -92,6 +92,9 @@ namespace nau::render
 
     void RenderWindowImpl::render()
     {
+#if defined(NAU_ENABLE_MGPU)
+        m_mgpuShadows.timings.renderStart = std::chrono::steady_clock::now();
+#endif
         for (auto& [_, nodeGroup] : m_graphStages)
         {
             nodeGroup.resetState();
@@ -121,6 +124,21 @@ namespace nau::render
             {
                 nau::math::Matrix4 vp = m_graphicsScene->getMainCamera().getProjMatrix() * m_graphicsScene->getMainCamera().getViewMatrix();
                 const eastl::vector<render::OmniShadowCaster> omniCasters = m_graphicsScene->getOmniShadowCasters();
+
+                // Views without anything to do build no lists (renderOptimizationsEnabled; otherwise every view is active).
+                const bool optimized = renderOptimizationsEnabled();
+                const int cascadesInUse = m_csm->getNumCascadesToRender();
+#if defined(NAU_ENABLE_MGPU)
+                m_mgpuShadows.cascadeListsSkipped = optimized && nau::mgpu::bridge::isEnabled() && m_mgpuShadows.renderer.isReady() &&
+                                                    m_mgpuShadows.hasAtlas && !m_mgpuShadows.renderer.canSubmit();
+                const bool skipCascades = m_mgpuShadows.cascadeListsSkipped;
+                if (skipCascades)
+                {
+                    ++m_mgpuShadows.skippedListFrames;
+                }
+#else
+                const bool skipCascades = false;
+#endif
                 for (auto& view : m_graphicsScene->getRenderScene()->getViews())
                 {
                     if (view->containsTag(nau::RenderScene::Tags::shadowCascadeTag))
@@ -128,6 +146,8 @@ namespace nau::render
                         int cascade = (int)view->getUserData();
                         NAU_ASSERT(cascade < nau::csm::CascadeShadows::MAX_CASCADES);
                         view->updateFrustum(m_csm->getWorldRenderMatrix(cascade));
+                        // Before the first frame of the cascades their count is not known yet: all are kept.
+                        view->setActive(!optimized || (!skipCascades && (cascadesInUse <= 0 || cascade < cascadesInUse)));
                     }
                     else if (view->containsTag(nau::RenderScene::Tags::shadowOmniTag))
                     {
@@ -138,13 +158,35 @@ namespace nau::render
                         {
                             view->updateFrustum(omniCasters[slot].faceViewProj[index % render::omni_shadow::FACES]);
                         }
+                        view->setActive(!optimized || slot < omniCasters.size());
                     }
                     else
                     {
                         view->updateFrustum(vp);
+                        view->setActive(true);
                     }
                 }
-                m_graphicsScene->getRenderScene()->updateViews(vp);
+                const nau::math::Vector3 viewerPosition = inverse(m_graphicsScene->getMainCamera().getViewMatrix()).getTranslation();
+#if defined(NAU_ENABLE_MGPU)
+                m_viewerPosition = viewerPosition;
+#endif
+                m_graphicsScene->getRenderScene()->updateViews(vp, viewerPosition);
+#if defined(NAU_ENABLE_MGPU)
+                {
+                    auto& timings = m_mgpuShadows.timings;
+                    const nau::RenderScene::ViewsStats& views = m_graphicsScene->getRenderScene()->getViewsStats();
+                    for (int kind = 0; kind < nau::RenderScene::ViewsStats::KindCount; ++kind)
+                    {
+                        timings.listSeconds[kind] += views.seconds[kind];
+                        timings.listInstances[kind] += views.instances[kind];
+                    }
+                    for (size_t cascade = 0; cascade < timings.cascadeInstances.size(); ++cascade)
+                    {
+                        timings.cascadeInstances[cascade] += views.cascadeInstances[cascade];
+                    }
+                    ++timings.listFrames;
+                }
+#endif
             }
 
         }

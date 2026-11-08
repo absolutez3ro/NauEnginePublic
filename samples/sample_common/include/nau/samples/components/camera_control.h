@@ -37,6 +37,14 @@ namespace nau::sample
         void setCamControlKind(CamControlKind kind);
         void setStepFactor(float stepFactor);
 
+        // Where the camera is, for a sample with several scenes.
+        void setPose(const math::vec3& translation, const math::quat& rotation);
+        math::vec3 getPoseTranslation();
+        math::quat getPoseRotation();
+
+        // The test point and spot lights that follow the camera, with their windows.
+        void setTestLightsEnabled(bool enabled);
+
     private:
         void updateComponent(float dt) override;
 
@@ -53,6 +61,7 @@ namespace nau::sample
         eastl::u8string m_name = u8"Default Name";
         float m_motionFactor = 1.0f;
         float m_stepFactor = 10.0f;
+        bool m_testLightsEnabled = true;
 
         CamControlKind m_cameraKind = CamControlKind::UseCameraManager;
         nau::Ptr<scene::ICameraControl> m_camera;

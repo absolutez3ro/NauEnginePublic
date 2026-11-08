@@ -24,6 +24,7 @@
 #include "nau/mgpu/bridge/mgpu_bridge.h"
 #include "nau/mgpu/bridge/mgpu_shadows.h"
 #include "nau/mgpu/bridge/dof_bridge.h"
+#include "gpu_timer.h"
 #include "nau/osApiWrappers/dag_events.h"
 #endif
 
@@ -72,6 +73,12 @@ namespace nau::render
         async::Task<> createRenderGraph();
 
         void render();
+
+#if defined(NAU_ENABLE_MGPU)
+        // Around Nau's frame graph (GraphicsImpl::renderMainScene): the GPU time of the frame, the render thread's work.
+        void beginFrameTiming();
+        void endFrameTiming();
+#endif
 
         virtual async::Task<nau::Uid> requestUidByCoords(int32_t viewportX, int32_t viewportY) override;
 
@@ -147,6 +154,13 @@ namespace nau::render
             eastl::map<eastl::pair<const Sbuffer*, const Sbuffer*>, MeshRecord> meshes;
             uint64_t nextMeshKey = 1;
 
+            // Alpha masks of masked casters on the second GPU, by the texture they come from (key 0: not registered).
+            eastl::map<const void*, uint64_t> masks;
+            uint64_t nextMaskKey = 1;
+
+            uint64_t meshGeneration = 0; // nau::mgpu::bridge::getMeshGeneration() the meshes were registered in
+            bool vsyncApplied = true; // the driver starts with vsync
+
             // Shader constants of the frames whose atlases are still on the second GPU, by FrameDesc::userToken.
             struct PendingFrame
             {
@@ -190,6 +204,38 @@ namespace nau::render
             uint32_t renderFrames = 0;
             float renderFramesPerSecond = 0;
             std::chrono::steady_clock::time_point renderFramesStart;
+
+            // Stage 0 of the MGPU optimisation: where the time of a frame goes (m_mgpuShadows only). Sums since the last
+            // report, which turns them into averages (nau::mgpu::bridge::Status::Timings).
+            struct Timings
+            {
+                GpuTimer gpuFrame; // Nau's frame graph on the scene GPU
+                GpuTimer gpuNauCascades; // Nau's own cascade pass (MGPU off, or no atlas of the second GPU yet)
+                GpuTimer gpuAtlasCopy; // an atlas of the second GPU into Nau's atlas
+                std::chrono::steady_clock::time_point renderStart;
+                uint32_t frames = 0;
+                double renderSeconds = 0; // the window's views and the frame graph on the render thread, without present
+                uint32_t listFrames = 0;
+                eastl::array<double, nau::RenderScene::ViewsStats::KindCount> listSeconds = {};
+                eastl::array<uint64_t, nau::RenderScene::ViewsStats::KindCount> listInstances = {};
+                eastl::array<uint64_t, nau::csm::CascadeShadows::MAX_CASCADES> cascadeInstances = {};
+                double collectSeconds = 0; // the casters for the second GPU
+                double submitSeconds = 0; // recording and submitting an atlas of the second GPU
+                // Sums of the renderer at the last report: the GPU times of the second GPU are differences.
+                double drawGpuMs = 0;
+                double sharedCopyGpuMs = 0;
+                uint64_t drawGpuSamples = 0;
+                double transferGpuMs = 0;
+                uint64_t transferGpuSamples = 0;
+                nau::mgpu::bridge::Status::Timings published;
+            };
+            Timings timings;
+
+            // This frame's cascade lists were skipped (renderOptimizationsEnabled): the second GPU is busy and Nau keeps the
+            // atlas it has. renderMgpuShadows submits nothing then; Nau rebuilds them if it draws the cascades after all.
+            bool cascadeListsSkipped = false;
+            uint32_t skippedListFrames = 0; // since the last report
+            uint32_t listFallbacks = 0;
         };
 
         // Log line and status update for the UI (atlases per second, latency, failures).
@@ -198,12 +244,18 @@ namespace nau::render
         // Called by the CSM node after prepareShadowCascades. Returns true when Nau's atlas holds an atlas of the second
         // GPU for this frame: Nau then does not draw the cascades, and gbuffer_resolve uses m_mgpuShadows.atlasSnapshot.
         bool renderMgpuShadows();
+        // Averages of the timings since the last report: the status and a log line.
+        void reportMgpuTimings();
+        // The cascade lists were skipped this frame but Nau draws the cascades: builds them now.
+        void rebuildSkippedCascadeLists();
+        nau::math::Vector3 m_viewerPosition = nau::math::Vector3::zero();
         void releaseMgpuShadows(MgpuShadowsState& state);
         // Releases the slots whose copy has executed; returns true when no slot is waiting any more.
         bool releaseMgpuShadowSlots(MgpuShadowsState& state);
         void collectMgpuShadowCasters(int numCascades);
         void appendMgpuViewCasters(MgpuShadowsState& state, nau::RenderView& view, uint32_t cascade);
         uint64_t registerMgpuShadowMesh(MgpuShadowsState& state, const nau::RenderEntity& entity);
+        uint64_t registerMgpuShadowMask(MgpuShadowsState& state, const nau::RenderEntity& entity);
         void publishMgpuStatus() const;
 
         MgpuShadowsState m_mgpuShadows;

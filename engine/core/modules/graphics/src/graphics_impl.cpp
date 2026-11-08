@@ -361,7 +361,19 @@ namespace nau
 #endif
 
         dabfg::update_external_state(dabfg::ExternalState{false, false});
+#if defined(NAU_ENABLE_MGPU)
+        for (auto& [swapId, renderWindow] : m_renderWindows)
+        {
+            renderWindow->beginFrameTiming();
+        }
+#endif
         dabfg::run_nodes();
+#if defined(NAU_ENABLE_MGPU)
+        for (auto& [swapId, renderWindow] : m_renderWindows)
+        {
+            renderWindow->endFrameTiming();
+        }
+#endif
 
         d3d::update_screen();
         d3d::driver_command(DRV3D_COMMAND_RELEASE_OWNERSHIP, NULL, NULL, NULL);

@@ -9,6 +9,14 @@ compile_configs {
     }
     config {
         stage:t="vs"
+        entry:t="zprepassMaskedVSMain"
+    }
+    config {
+        stage:t="ps"
+        entry:t="zprepassMaskedPSMain"
+    }
+    config {
+        stage:t="vs"
         entry:t="outlineMaskSkinnedVSMain"
     }
     config {

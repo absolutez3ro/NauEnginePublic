@@ -188,16 +188,18 @@ namespace nau
 
         if (needToFabricateAssetView)
         {
-            NAU_ASSERT(m_assetViewRef.isDead());
             assetView = co_await fabricateAssetView(container);
-            m_assetViewRef = assetView;
+            {
+                // WeakPtr is not atomic: other requests read it under this lock.
+                lock_(m_mutex);
+                m_assetViewRef = assetView;
+            }
             m_assetViewCreationState.resolve(assetView);
         }
         else
         {
             // this is subsequent request for the asset view (which is already fabricating): just need to wait for the result of operation.
             assetView = co_await m_assetViewCreationState.getNextTask();
-            NAU_ASSERT(!m_assetViewRef.isDead() && assetView.get() == m_assetViewRef.lock().get());
         }
 
         co_return assetView;
@@ -214,9 +216,19 @@ namespace nau
         }
 
         auto assetView = co_await getAssetView(container);
-        auto reloadableAssetViewPtr = rtti::createInstance<ReloadableAssetView>();
-        reloadableAssetViewPtr->reloadAssetView(assetView);
-        m_reloadableAssetViewRef = reloadableAssetViewPtr;
+
+        ReloadableAssetView::Ptr reloadableAssetViewPtr;
+        {
+            // Several requests can wait for the same view (two materials with one texture): they share one wrapper.
+            lock_(m_mutex);
+            reloadableAssetViewPtr = m_reloadableAssetViewRef.lock();
+            if (!reloadableAssetViewPtr)
+            {
+                reloadableAssetViewPtr = rtti::createInstance<ReloadableAssetView>();
+                reloadableAssetViewPtr->reloadAssetView(assetView);
+                m_reloadableAssetViewRef = reloadableAssetViewPtr;
+            }
+        }
 
         co_return reloadableAssetViewPtr;
     }
@@ -250,7 +262,10 @@ namespace nau
             m_assetViewCreationState.resolve(newAssetView);
         };
 
-        m_assetViewRef = newAssetView;
+        {
+            lock_(m_mutex);
+            m_assetViewRef = newAssetView;
+        }
         if (oldAssetView)
         {
             co_await AssetManagerImpl::getInstance().updateAssetView(assetId, *m_viewType, oldAssetView, newAssetView);

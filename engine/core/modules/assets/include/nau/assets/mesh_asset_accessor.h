@@ -69,4 +69,24 @@ namespace nau
         virtual Result<> copyIndices(void* outputBuffer, size_t outputBufferSize, ElementFormat outputIndexFormat) const = 0;
     };
 
+    /**
+     * @brief Optional interface of a mesh accessor: simplified versions of the mesh (levels of detail).
+     *
+     * The levels follow the mesh itself (level 0), each one coarser than the previous. A level replaces the previous one
+     * when the viewer is farther than its distance from the origin of an instance; the distance is in the units of the mesh,
+     * that is, it grows with the scale of the instance.
+     */
+    struct NAU_ABSTRACT_TYPE IMeshLodsAccessor : IRefCounted
+    {
+        NAU_INTERFACE(nau::IMeshLodsAccessor, IRefCounted)
+
+        struct Lod
+        {
+            nau::Ptr<IMeshAssetAccessor> accessor;
+            float distance = 0.0f;
+        };
+
+        virtual eastl::vector<Lod> getLods() const = 0;
+    };
+
 }  // namespace nau

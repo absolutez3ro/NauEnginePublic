@@ -1,0 +1,39 @@
+{
+  "name": "standard_masked",
+  "pipelines": {
+    "default": {
+      "properties": {
+        "albedoTex": "file:/content/textures/default_1k_albedo.jpg",
+        "normalTex": "file:/content/textures/default_normal_8x8.png",
+        "metalRoughnessAoTex": "file:/content/textures/default_1k_ORM.jpg"
+      },
+      "shaders": [
+        "file:/res/shaders/cache/shader_cache.nsbc+[standard.vs.vsmain]",
+        "file:/res/shaders/cache/shader_cache.nsbc+[standard.masked.ps.psmain]"
+      ],
+      "cullMode": "None",
+      "depthMode": "Default",
+      "blendMode": "Masked"
+    },
+    "instanced": {
+      "properties": {
+        "instanceBaseID": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "albedoTex": "file:/content/textures/default_1k_albedo.jpg",
+        "normalTex": "file:/content/textures/default_normal_8x8.png",
+        "metalRoughnessAoTex": "file:/content/textures/default_1k_ORM.jpg"
+      },
+      "shaders": [
+        "file:/res/shaders/cache/shader_cache.nsbc+[standard.instanced.vs.vsmain]",
+        "file:/res/shaders/cache/shader_cache.nsbc+[standard.masked.ps.psmain]"
+      ],
+      "cullMode": "None",
+      "depthMode": "Default",
+      "blendMode": "Masked"
+    }
+  }
+}

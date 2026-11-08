@@ -4,6 +4,8 @@
 
 #include "render_scene.h"
 
+#include <chrono>
+
 #include "nau/utils/performance_profiling.h"
 
 #include "nau/render/cascadeShadows.h"
@@ -59,16 +61,63 @@ namespace nau
         return m_billboardsManager;
     }
 
-    void RenderScene::updateViews(const nau::math::Matrix4& vp)
+    void RenderScene::updateView(RenderView& view, const nau::math::Vector3& viewerPosition)
+    {
+        const auto start = std::chrono::steady_clock::now();
+
+        view.clearLists();
+        for (auto& manager : m_managers)
+        {
+            view.addRenderList(manager->getRenderList(viewerPosition, view.getInstanceFilter(), view.getMaterialFilter()));
+        }
+        view.prepareInstanceData();
+
+        uint64_t instances = 0;
+        for (const auto& list : view.getLists())
+        {
+            for (const auto& entity : list->getEntities())
+            {
+                instances += entity.instancesCount;
+            }
+        }
+        const ViewsStats::Kind kind = view.containsTag(Tags::shadowCascadeTag) ? ViewsStats::Cascade
+                                      : view.containsTag(Tags::shadowOmniTag)  ? ViewsStats::Omni
+                                                                                : ViewsStats::Main;
+        m_viewsStats.seconds[kind] += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        m_viewsStats.instances[kind] += instances;
+        if (kind == ViewsStats::Cascade)
+        {
+            const intptr_t cascade = reinterpret_cast<intptr_t>(view.getUserData());
+            if (cascade >= 0 && cascade < static_cast<intptr_t>(csm::CascadeShadows::MAX_CASCADES))
+            {
+                m_viewsStats.cascadeInstances[cascade] += instances;
+            }
+        }
+    }
+
+    void RenderScene::updateViews(const nau::math::Matrix4& vp, const nau::math::Vector3& viewerPosition)
+    {
+        m_viewsStats = {};
+        for (auto& view : m_views)
+        {
+            if (!view->isActive())
+            {
+                // Its lists of an earlier frame must not be drawn.
+                view->clearLists();
+                continue;
+            }
+            updateView(*view, viewerPosition);
+        }
+    }
+
+    void RenderScene::updateViewsWithTag(RenderTag tag, const nau::math::Vector3& viewerPosition)
     {
         for (auto& view : m_views)
         {
-            view->clearLists();
-            for (auto& manager : m_managers)
+            if (view->isActive() && view->containsTag(tag))
             {
-                view->addRenderList(manager->getRenderList({}, view->getInstanceFilter(), view->getMaterialFilter()));
+                updateView(*view, viewerPosition);
             }
-            view->prepareInstanceData();
         }
     }
 

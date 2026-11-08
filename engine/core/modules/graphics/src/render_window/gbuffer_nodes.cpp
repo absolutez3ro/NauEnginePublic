@@ -134,7 +134,14 @@ namespace nau::render
 #endif
                 if (!atlasFromSecondGpu)
                 {
+#if defined(NAU_ENABLE_MGPU)
+                    rebuildSkippedCascadeLists();
+                    m_mgpuShadows.timings.gpuNauCascades.begin();
+#endif
                     m_csm->renderShadowsCascades();
+#if defined(NAU_ENABLE_MGPU)
+                    m_mgpuShadows.timings.gpuNauCascades.end();
+#endif
                 }
 
                 // Shadow maps of the point lights (before the resolve node draws the lights).

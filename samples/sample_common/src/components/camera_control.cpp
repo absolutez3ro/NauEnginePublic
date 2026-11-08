@@ -48,6 +48,28 @@ namespace nau::sample
         m_stepFactor = stepFactor;
     }
 
+    void CameraControl::setPose(const math::vec3& translation, const math::quat& rotation)
+    {
+        auto& control = getControlledTransform();
+        control.setTranslation(translation);
+        control.setRotation(rotation);
+    }
+
+    math::vec3 CameraControl::getPoseTranslation()
+    {
+        return getControlledTransform().getTranslation();
+    }
+
+    math::quat CameraControl::getPoseRotation()
+    {
+        return getControlledTransform().getRotation();
+    }
+
+    void CameraControl::setTestLightsEnabled(bool enabled)
+    {
+        m_testLightsEnabled = enabled;
+    }
+
     scene::ICameraControl& CameraControl::getDetachedCamera()
     {
         if (!m_camera)
@@ -127,7 +149,7 @@ namespace nau::sample
             m_omnilightComponent = &omnilight;
         }
 
-        if (m_omnilightComponent)
+        if (m_omnilightComponent && m_testLightsEnabled)
         {
             ImGui::Begin("TestOmnilight");
 
@@ -179,7 +201,7 @@ namespace nau::sample
             m_spotlightComponent = &spotlight;
         }
 
-        if (m_spotlightComponent)
+        if (m_spotlightComponent && m_testLightsEnabled)
         {
             ImGui::Begin("TestSpotlight");
 
@@ -222,6 +244,14 @@ namespace nau::sample
             ImGui::End();
         }
 
+        if (!m_testLightsEnabled)
+        {
+            m_omnilightComponent->setIntensity(0.0f);
+            m_omnilightComponent->setCastShadows(false);
+            m_omnilightComponent->setDebugDraw(false);
+            m_spotlightComponent->setIntensity(0.0f);
+            m_spotlightComponent->setDebugDraw(false);
+        }
     }
 
     void CameraControl::onComponentCreated()

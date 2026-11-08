@@ -34,6 +34,24 @@
       "cullMode": "CounterClockwise",
       "depthMode": "Default",
       "blendMode": "Opaque"
+    },
+    "masked": {
+      "properties": {
+        "instanceBaseID": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "tex": "file:/content/textures/default_1k_albedo.jpg"
+      },
+      "shaders": [
+        "file:/res/shaders/cache/shader_cache.nsbc+[texturedInstanced.vs.zprepassmaskedvsmain]",
+        "file:/res/shaders/cache/shader_cache.nsbc+[texturedInstanced.ps.zprepassmaskedpsmain]"
+      ],
+      "cullMode": "None",
+      "depthMode": "Default",
+      "blendMode": "Opaque"
     }
   }
 }

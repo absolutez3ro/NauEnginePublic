@@ -42,6 +42,13 @@ namespace nau
         uint32_t m_indexCount;
         uint32_t m_vertexCount;
 
+        // The GPU buffers live in video memory and are not read back. Copies for the code that needs the geometry on the
+        // CPU (physics, the shadow casters of the second GPU).
+        eastl::vector<nau::math::float3> m_cpuPositions;
+        eastl::vector<nau::math::float2> m_cpuTexCoords;
+        eastl::vector<uint8_t> m_cpuIndices; // uint16_t, or uint32_t when m_indices32
+        bool m_indices32 = false;
+
         nau::math::BBox3 m_localBBox;
 
         eastl::vector<MaterialSlot> m_materialSlots;
@@ -61,6 +68,10 @@ namespace nau
         const nau::StaticMeshLod& getLod(uint32_t lodInd) const;
         uint32_t getLodsCount() const;
 
+        // The level of detail for a viewer at this distance from the origin of an instance, in the units of the mesh
+        // (the distance divided by the scale of the instance). See IMeshLodsAccessor.
+        uint32_t selectLod(float distance) const;
+
         inline const nau::math::BSphere3& getLod0BSphere() const
         {
             return m_localBSphere;
@@ -77,6 +88,7 @@ namespace nau
         nau::math::BSphere3 m_localBSphere;
 
         eastl::vector<StaticMeshLod> lods;
+        eastl::vector<float> m_lodDistances; // of the levels 1, 2, ...
         eastl::vector<float> m_lodsScreenSpaceError;
         float cullDistance;
     };

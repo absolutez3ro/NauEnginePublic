@@ -84,8 +84,14 @@ void nau::RenderEntity::renderZPrepass(const math::Matrix4& viewProj, MaterialAs
     {
         auto mvp = viewProj * worldTransform;
         shader_globals::setVariable("vp", &mvp);
-        prepareZPrepass("default", viewProj, zPrepassMat);
+        BaseTexture* const mask = getDepthMask(zPrepassMat);
+        prepareZPrepass(mask != nullptr ? "masked" : "default", viewProj, zPrepassMat);
         d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
+        if (mask != nullptr)
+        {
+            d3d::set_tex(STAGE_PS, 0, mask);
+            d3d::setvsrc(1, texcoordsBuffer, sizeof(math::float2));
+        }
     }
 
     d3d::setind(indexBuffer);
@@ -95,11 +101,26 @@ void nau::RenderEntity::renderZPrepass(const math::Matrix4& viewProj, MaterialAs
 void nau::RenderEntity::renderZPrepassInstanced(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const
 {
     shader_globals::setVariable("vp", &viewProj);
-    prepareZPrepass("default", viewProj, zPrepassMat);
+    BaseTexture* const mask = getDepthMask(zPrepassMat);
+    prepareZPrepass(mask != nullptr ? "masked" : "default", viewProj, zPrepassMat);
 
     d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
+    if (mask != nullptr)
+    {
+        d3d::set_tex(STAGE_PS, 0, mask);
+        d3d::setvsrc(1, texcoordsBuffer, sizeof(math::float2));
+    }
     d3d::setind(indexBuffer);
     d3d::drawind_instanced(PRIM_TRILIST, startIndex, (endIndex - startIndex) / 3, 0, instancesCount, 0);
+}
+
+BaseTexture* nau::RenderEntity::getDepthMask(MaterialAssetView* zPrepassMat) const
+{
+    if (!material || texcoordsBuffer == nullptr || !zPrepassMat->hasPipeline("masked") || material->getBlendMode("default") != nau::BlendMode::Masked)
+    {
+        return nullptr;
+    }
+    return material->findTexture("default", "albedoTex");
 }
 
 void nau::RenderEntity::prepareZPrepass(eastl::string_view pipeline, const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const

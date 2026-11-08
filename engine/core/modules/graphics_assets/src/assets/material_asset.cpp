@@ -92,6 +92,37 @@ namespace nau
         co_return asset;
     }
 
+    bool MaterialAssetView::hasPipeline(eastl::string_view pipelineName) const
+    {
+        return m_pipelines.contains(pipelineName);
+    }
+
+    BaseTexture* MaterialAssetView::findTexture(eastl::string_view pipelineName, eastl::string_view propertyName)
+    {
+        const auto pipeline = m_pipelines.find(pipelineName.data());
+        if (pipeline == m_pipelines.end())
+        {
+            return nullptr;
+        }
+        const auto texture = pipeline->second.samplerTextures.find(propertyName.data());
+        return texture != pipeline->second.samplerTextures.end() ? texture->second.getTexture() : nullptr;
+    }
+
+    nau::Ptr<TextureAssetView> MaterialAssetView::findTextureView(eastl::string_view pipelineName, eastl::string_view propertyName)
+    {
+        nau::Ptr<TextureAssetView> view;
+        const auto pipeline = m_pipelines.find(pipelineName.data());
+        if (pipeline != m_pipelines.end())
+        {
+            const auto texture = pipeline->second.samplerTextures.find(propertyName.data());
+            if (texture != pipeline->second.samplerTextures.end() && texture->second.textureView != nullptr)
+            {
+                texture->second.textureView->getTyped<TextureAssetView>(view);
+            }
+        }
+        return view;
+    }
+
     eastl::unordered_set<eastl::string> MaterialAssetView::getPipelineNames() const
     {
         eastl::unordered_set<eastl::string> names;

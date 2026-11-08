@@ -62,58 +62,29 @@ namespace nau
     void StaticMeshAssetView::enumerateMeshTriangles(
         Functor<void(const nau::math::vec3&, const nau::math::vec3&, const nau::math::vec3&)> sink) const
     {
-        Sbuffer* positionBuffer = getPositionsBuffer();
-        Sbuffer* indexBuffer = getIndexBuffer();
+        const StaticMeshLod& lod = m_mesh->getLod(0);
 
-        const unsigned vertexCount = getVertexCount();
-        const auto indexCount = getIndexCount();
-
-        const size_t posBufferSize = vertexCount * sizeof(float[3]);
-
-        std::byte* positionMemory = nullptr;
-        positionBuffer->lock(0, posBufferSize, reinterpret_cast<void**>(&positionMemory), VBLOCK_READONLY);
-
-        // todo: NAU-1797 Remove hardcode, support 32 bit indices geometry
-        // todo: NAU-1797 Stop readback, get geometry data from asset instead
-        const size_t indexBufferSize = indexCount * sizeof(uint16_t); 
-        std::byte* indexMemory = nullptr;
-        indexBuffer->lock(0, indexBufferSize, reinterpret_cast<void**>(&indexMemory), VBLOCK_READONLY);
-
-        auto indices = reinterpret_cast<uint16_t const*>(indexMemory);
-        auto points = reinterpret_cast<float const*>(positionMemory);
-
-        const std::size_t trVertCount = 3;
-        const auto readPoint3 = 
-            [&posBufferSize, &trVertCount, points](uint16_t const* indexPtr) -> eastl::optional<nau::math::vec3>
+        const auto enumerate = [&lod, &sink](const auto* indices)
         {
-            unsigned index = *indexPtr;
-            if (index + trVertCount - 1 >= posBufferSize) 
+            const auto point = [&lod](const size_t index)
             {
-                return eastl::nullopt;
-            }
-
-            return nau::math::vec3{
-                    points[trVertCount * index + 0],
-                    points[trVertCount * index + 1],
-                    points[trVertCount * index + 2]
+                const nau::math::float3& p = lod.m_cpuPositions[index];
+                return nau::math::vec3{p.x, p.y, p.z};
             };
+
+            for (size_t i = 0; i + 2 < lod.m_indexCount; i += 3)
+            {
+                eastl::invoke(sink, point(indices[i]), point(indices[i + 1]), point(indices[i + 2]));
+            }
         };
 
-        auto begin = indices;
-        auto end = indices + indexCount;
-
-        for (auto it = begin; it != std::prev(end, trVertCount); it += trVertCount)
+        if (lod.m_indices32)
         {
-            auto p1 = readPoint3(it);
-            auto p2 = readPoint3(std::next(it));
-            auto p3 = readPoint3(std::next(std::next(it)));
-
-            if (!p1 || !p2 || !p3)
-            {
-                break;
-            }
-
-            eastl::invoke(sink, *p1, *p2, *p3);
+            enumerate(reinterpret_cast<const uint32_t*>(lod.m_cpuIndices.data()));
+        }
+        else
+        {
+            enumerate(reinterpret_cast<const uint16_t*>(lod.m_cpuIndices.data()));
         }
     }
 

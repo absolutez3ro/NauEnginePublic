@@ -62,9 +62,9 @@ namespace nau::render
             return a.width == b.width && a.height == b.height && a.format == b.format;
         }
 
-        // Read-only lock of a Nau mesh buffer. Mesh buffers are SBCF_DYNAMIC and filled on the CPU once, so this reads
-        // their mapped memory without waiting for the GPU (StaticMesh::createFromStaticMeshAccessor reads them back the
-        // same way).
+        // Read-only lock of a Nau skinned mesh buffer. These buffers are SBCF_DYNAMIC and filled on the CPU once, so this
+        // reads their mapped memory without waiting for the GPU. Static meshes are in video memory, their geometry is kept
+        // on the CPU (StaticMeshLod).
         class BufferRead
         {
         public:
@@ -153,7 +153,139 @@ namespace nau::render
         status.atlasesCompleted = stats.completed;
         status.skippedBusy = stats.skippedBusy;
         status.failed = stats.failed + state.copyFailures;
+        status.timings = state.timings.published;
         nau::mgpu::bridge::publishStatus(status);
+    }
+
+    void RenderWindowImpl::rebuildSkippedCascadeLists()
+    {
+        if (!m_mgpuShadows.cascadeListsSkipped || !m_graphicsScene)
+        {
+            return;
+        }
+        m_mgpuShadows.cascadeListsSkipped = false;
+        ++m_mgpuShadows.listFallbacks;
+
+        const int cascadesInUse = m_csm->getNumCascadesToRender();
+        for (auto& view : m_graphicsScene->getRenderScene()->getViews())
+        {
+            if (view->containsTag(nau::RenderScene::Tags::shadowCascadeTag))
+            {
+                const int cascade = static_cast<int>(reinterpret_cast<intptr_t>(view->getUserData()));
+                view->setActive(cascadesInUse <= 0 || cascade < cascadesInUse);
+            }
+        }
+        m_graphicsScene->getRenderScene()->updateViewsWithTag(nau::RenderScene::Tags::shadowCascadeTag, m_viewerPosition);
+    }
+
+    void RenderWindowImpl::beginFrameTiming()
+    {
+        m_mgpuShadows.timings.gpuFrame.begin();
+    }
+
+    void RenderWindowImpl::endFrameTiming()
+    {
+        auto& timings = m_mgpuShadows.timings;
+        timings.gpuFrame.end();
+        if (timings.renderStart != std::chrono::steady_clock::time_point{})
+        {
+            timings.renderSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - timings.renderStart).count();
+            ++timings.frames;
+        }
+    }
+
+    void RenderWindowImpl::reportMgpuTimings()
+    {
+        using Views = nau::RenderScene::ViewsStats;
+        static_assert(sizeof(nau::mgpu::bridge::Status::Timings::instancesPerCascade) / sizeof(uint32_t) == csm::CascadeShadows::MAX_CASCADES);
+
+        auto& state = m_mgpuShadows;
+        auto& timings = state.timings;
+        nau::mgpu::bridge::Status::Timings& out = timings.published;
+        out = {};
+
+        const double frames = std::max<uint32_t>(timings.frames, 1);
+        const double listFrames = std::max<uint32_t>(timings.listFrames, 1);
+        out.cpuFrameMs = state.renderFramesPerSecond > 0 ? 1000.0f / state.renderFramesPerSecond : 0.0f;
+        out.cpuRenderMs = static_cast<float>(timings.renderSeconds * 1000.0 / frames);
+        out.cpuListsMainMs = static_cast<float>(timings.listSeconds[Views::Main] * 1000.0 / listFrames);
+        out.cpuListsCascadesMs = static_cast<float>(timings.listSeconds[Views::Cascade] * 1000.0 / listFrames);
+        out.cpuListsOmniMs = static_cast<float>(timings.listSeconds[Views::Omni] * 1000.0 / listFrames);
+        out.instancesMain = static_cast<uint32_t>(timings.listInstances[Views::Main] / listFrames);
+        out.instancesCascades = static_cast<uint32_t>(timings.listInstances[Views::Cascade] / listFrames);
+        out.instancesOmni = static_cast<uint32_t>(timings.listInstances[Views::Omni] / listFrames);
+        for (size_t cascade = 0; cascade < timings.cascadeInstances.size(); ++cascade)
+        {
+            out.instancesPerCascade[cascade] = static_cast<uint32_t>(timings.cascadeInstances[cascade] / listFrames);
+        }
+        out.cpuCollectMs = static_cast<float>(timings.collectSeconds * 1000.0 / frames);
+        out.cpuSubmitMs = static_cast<float>(timings.submitSeconds * 1000.0 / frames);
+
+        const auto average = [](GpuTimer& timer) -> float
+        {
+            double milliseconds = 0;
+            uint32_t count = 0;
+            timer.collect(milliseconds, count);
+            return count != 0 ? static_cast<float>(milliseconds / count) : -1.0f;
+        };
+        out.gpuFrameMs = average(timings.gpuFrame);
+        out.gpuNauCascadesMs = average(timings.gpuNauCascades);
+        out.gpuAtlasCopyMs = average(timings.gpuAtlasCopy);
+
+        // The renderer sums since its initialization; another initialization starts from zero.
+        const shadows::RendererStats& stats = state.renderer.stats();
+        if (stats.drawGpuSamples < timings.drawGpuSamples || stats.transferGpuSamples < timings.transferGpuSamples)
+        {
+            timings.drawGpuMs = 0;
+            timings.sharedCopyGpuMs = 0;
+            timings.drawGpuSamples = 0;
+            timings.transferGpuMs = 0;
+            timings.transferGpuSamples = 0;
+        }
+        if (const uint64_t samples = stats.drawGpuSamples - timings.drawGpuSamples; samples != 0)
+        {
+            out.gpu2DrawMs = static_cast<float>((stats.drawGpuMsTotal - timings.drawGpuMs) / samples);
+            out.gpu2SharedCopyMs = static_cast<float>((stats.sharedCopyGpuMsTotal - timings.sharedCopyGpuMs) / samples);
+        }
+        if (const uint64_t samples = stats.transferGpuSamples - timings.transferGpuSamples; samples != 0)
+        {
+            out.gpuTransferMs = static_cast<float>((stats.transferGpuMsTotal - timings.transferGpuMs) / samples);
+        }
+        timings.drawGpuMs = stats.drawGpuMsTotal;
+        timings.sharedCopyGpuMs = stats.sharedCopyGpuMsTotal;
+        timings.drawGpuSamples = stats.drawGpuSamples;
+        timings.transferGpuMs = stats.transferGpuMsTotal;
+        timings.transferGpuSamples = stats.transferGpuSamples;
+
+        const auto ms = [](const float value) -> std::string
+        {
+            return value < 0 ? std::string("n/a") : ::fmt::format("{:.2f} ms", value);
+        };
+        NAU_LOG_INFO("mgpu timing: frame {:.2f} ms, render thread {:.2f} ms, scene GPU {}; lists: main {:.2f} ms ({} instances), "
+                     "cascades {:.2f} ms ({}: {}/{}/{}/{}/{}/{}), omni {:.2f} ms ({}); second GPU path on the CPU: collect {:.3f} ms, "
+                     "submit {:.3f} ms per frame; GPU: Nau cascades {}, atlas copy {}, second GPU draw {}, to shared heap {}, transfer {}",
+                     out.cpuFrameMs, out.cpuRenderMs, ms(out.gpuFrameMs), out.cpuListsMainMs, out.instancesMain, out.cpuListsCascadesMs,
+                     out.instancesCascades, out.instancesPerCascade[0], out.instancesPerCascade[1], out.instancesPerCascade[2],
+                     out.instancesPerCascade[3], out.instancesPerCascade[4], out.instancesPerCascade[5], out.cpuListsOmniMs,
+                     out.instancesOmni, out.cpuCollectMs, out.cpuSubmitMs, ms(out.gpuNauCascadesMs), ms(out.gpuAtlasCopyMs),
+                     ms(out.gpu2DrawMs), ms(out.gpu2SharedCopyMs), ms(out.gpuTransferMs));
+
+        if (state.skippedListFrames != 0 || state.listFallbacks != 0)
+        {
+            NAU_LOG_INFO("mgpu timing: cascade lists skipped in {} frames (the second GPU was busy), rebuilt in {}",
+                         state.skippedListFrames, state.listFallbacks);
+        }
+        state.skippedListFrames = 0;
+        state.listFallbacks = 0;
+
+        timings.frames = 0;
+        timings.renderSeconds = 0;
+        timings.listFrames = 0;
+        timings.listSeconds = {};
+        timings.listInstances = {};
+        timings.cascadeInstances = {};
+        timings.collectSeconds = 0;
+        timings.submitSeconds = 0;
     }
 
     bool RenderWindowImpl::releaseMgpuShadowSlots(MgpuShadowsState& state)
@@ -217,18 +349,23 @@ namespace nau::render
         MgpuShadowsState::MeshRecord& record = state.meshes[bufferKey];
         record = {0, positionsSize, indicesSize};
 
-        const bool skinned = entity.boneWeightsBuffer != nullptr && entity.boneIndicesBuffer != nullptr;
-        const BufferRead positions(entity.positionBuffer);
-        const BufferRead indices(entity.indexBuffer);
+        const StaticMeshLod* const lod = entity.meshLod;
+        const bool skinned = lod == nullptr && entity.boneWeightsBuffer != nullptr && entity.boneIndicesBuffer != nullptr;
+        const BufferRead positions(lod == nullptr ? entity.positionBuffer : nullptr);
+        const BufferRead indices(lod == nullptr ? entity.indexBuffer : nullptr);
         const BufferRead boneWeights(skinned ? entity.boneWeightsBuffer : nullptr);
         const BufferRead boneIndices(skinned ? entity.boneIndicesBuffer : nullptr);
 
         shadows::MeshDesc mesh;
-        mesh.positions = static_cast<const float*>(positions.data());
+        mesh.positions = lod != nullptr ? reinterpret_cast<const float*>(lod->m_cpuPositions.data()) : static_cast<const float*>(positions.data());
         mesh.vertexCount = static_cast<uint32_t>(positionsSize / (3 * sizeof(float)));
-        mesh.indices = indices.data();
+        mesh.indices = lod != nullptr ? static_cast<const void*>(lod->m_cpuIndices.data()) : indices.data();
         mesh.indices32 = (entity.indexBuffer->getFlags() & SBCF_INDEX32) != 0;
         mesh.indexCount = static_cast<uint32_t>(indicesSize / (mesh.indices32 ? sizeof(uint32_t) : sizeof(uint16_t)));
+        if (lod != nullptr)
+        {
+            mesh.texCoords = reinterpret_cast<const float*>(lod->m_cpuTexCoords.data());
+        }
         if (skinned)
         {
             // Nau's skinned vertices: float4 weights + uint4 joints.
@@ -259,6 +396,51 @@ namespace nau::render
         }
 
         record.key = key;
+        return key;
+    }
+
+    uint64_t RenderWindowImpl::registerMgpuShadowMask(MgpuShadowsState& state, const RenderEntity& entity)
+    {
+        if (!entity.material || entity.meshLod == nullptr || entity.material->getBlendMode("default") != nau::BlendMode::Masked)
+        {
+            return 0;
+        }
+
+        const nau::Ptr<TextureAssetView> view = entity.material->findTextureView("default", "albedoTex");
+        if (!view || view->getCpuMips().empty())
+        {
+            return 0;
+        }
+
+        const void* const texture = view.get();
+        if (const auto found = state.masks.find(texture); found != state.masks.end())
+        {
+            return found->second;
+        }
+
+        eastl::vector<shadows::MaskMip> mips;
+        mips.reserve(view->getCpuMips().size());
+        for (const TextureAssetView::CpuMip& mip : view->getCpuMips())
+        {
+            mips.push_back({mip.data.data(), mip.rowPitch, mip.rowCount});
+        }
+
+        shadows::MaskDesc mask;
+        mask.width = view->getCpuMipsWidth();
+        mask.height = view->getCpuMipsHeight();
+        mask.dxgiFormat = view->getCpuMipsDxgiFormat();
+        mask.mips = mips.data();
+        mask.mipCount = static_cast<uint32_t>(mips.size());
+
+        const uint64_t key = state.nextMaskKey++;
+        if (!state.renderer.registerMask(key, mask))
+        {
+            NAU_LOG_ERROR("mgpu shadows: could not register a shadow mask on the second GPU, the caster is drawn without it: {}", state.renderer.lastError());
+            state.masks[texture] = 0;
+            return 0;
+        }
+
+        state.masks[texture] = key;
         return key;
     }
 
@@ -310,6 +492,15 @@ namespace nau::render
     // The shadow casters of one view (a cascade or a face of a point light shadow map) as draws of the frame description.
     void RenderWindowImpl::appendMgpuViewCasters(MgpuShadowsState& state, nau::RenderView& view, const uint32_t cascade)
     {
+        // Another scene: a buffer or a texture of the old meshes can be replaced by a new one at the same address.
+        if (const uint64_t generation = nau::mgpu::bridge::getMeshGeneration(); generation != state.meshGeneration)
+        {
+            state.renderer.forgetMeshes();
+            state.meshes.clear();
+            state.masks.clear();
+            state.meshGeneration = generation;
+        }
+
         {
             for (const auto& list : view.getLists())
             {
@@ -333,6 +524,7 @@ namespace nau::render
                     draw.startIndex = entity.startIndex;
                     draw.indexCount = (entity.endIndex - entity.startIndex) / 3 * 3;
                     draw.firstMatrix = static_cast<uint32_t>(state.matrices.size() / 16);
+                    draw.mask = registerMgpuShadowMask(state, entity);
 
                     // RenderView::renderZPrepass: instanced entities use the "default" pipeline, the others are skinned
                     // when they have bone buffers.
@@ -391,6 +583,13 @@ namespace nau::render
         auto& state = m_mgpuShadows;
         ++state.frame;
 
+        // On the render thread, between the commands of a frame.
+        if (const bool vsync = nau::mgpu::bridge::isVsyncEnabled(); vsync != state.vsyncApplied)
+        {
+            d3d::enable_vsync(vsync);
+            state.vsyncApplied = vsync;
+        }
+
         // Render frame rate for the UI, in every mode.
         const auto frameTime = std::chrono::steady_clock::now();
         if (state.renderFrames++ == 0)
@@ -403,7 +602,11 @@ namespace nau::render
             state.renderFramesPerSecond = static_cast<float>(state.renderFrames - 1) / elapsed;
             state.renderFrames = 1;
             state.renderFramesStart = frameTime;
+            reportMgpuTimings();
             publishMgpuStatus();
+            NAU_LOG_INFO("mgpu frame rate: {:.1f} fps, {:.2f} ms (cascades: {}, vsync {})", state.renderFramesPerSecond,
+                         1000.0f / std::max(state.renderFramesPerSecond, 0.001f), state.hasAtlas ? "second GPU" : "Nau",
+                         state.vsyncApplied ? "on" : "off");
         }
 
         if (!nau::mgpu::bridge::isEnabled())
@@ -482,7 +685,9 @@ namespace nau::render
             if (pending != state.pendingFrames.end() && sameAtlas(pending->snapshot.atlas, atlas))
             {
                 BaseTexture* target = m_csm->getShadowsCascade();
+                state.timings.gpuAtlasCopy.begin();
                 copied = d3d::driver_command(DRV3D_COMMAND_D3D12_COPY_FROM_EXTERNAL_RESOURCE, ready.resource, target, nullptr) != 0;
+                state.timings.gpuAtlasCopy.end();
                 if (copied)
                 {
                     // Same state Nau leaves its atlas in after drawing it (CascadeShadows::renderShadowsCascadesCb).
@@ -515,7 +720,17 @@ namespace nau::render
         }
 
         // 2. The cascades of this frame go to the second GPU if it has a free slot; it never waits.
+        // Without this frame's cascade lists (skipped while the second GPU was busy) nothing is submitted: the casters
+        // would be missing from the atlas.
+        if (state.cascadeListsSkipped)
+        {
+            return state.hasAtlas;
+        }
+
+        const auto collectStart = std::chrono::steady_clock::now();
         collectMgpuShadowCasters(numCascades);
+        const auto submitStart = std::chrono::steady_clock::now();
+        state.timings.collectSeconds += std::chrono::duration<double>(submitStart - collectStart).count();
 
         shadows::FrameDesc frame;
         frame.atlasWidth = static_cast<uint32_t>(atlas.width);
@@ -528,7 +743,9 @@ namespace nau::render
         frame.matrices = state.matrices.data();
         frame.matrixCount = static_cast<uint32_t>(state.matrices.size() / 16);
         frame.userToken = state.frame;
-        if (state.renderer.submit(frame))
+        const bool submitted = state.renderer.submit(frame);
+        state.timings.submitSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - submitStart).count();
+        if (submitted)
         {
             state.pendingFrames.push_back({state.frame, state.frame, m_csm->snapshotShaderConstants()});
         }

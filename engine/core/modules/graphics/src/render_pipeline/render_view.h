@@ -50,6 +50,17 @@ namespace nau
         void setUserData(void* userData);
         void* getUserData();
 
+        // An inactive view builds no lists and draws nothing (RenderScene::updateViews): a cascade beyond the ones in use, a
+        // face of a point light slot without a light, the cascades while the second GPU is busy (renderOptimizationsEnabled).
+        void setActive(bool active)
+        {
+            m_active = active;
+        }
+        bool isActive() const
+        {
+            return m_active;
+        }
+
 
         eastl::function<bool(const InstanceInfo&)>& getInstanceFilter();
         void setInstanceFilter(eastl::function<bool(const InstanceInfo&)>& filter);
@@ -68,6 +79,7 @@ namespace nau
         eastl::function<bool(const MaterialAssetView::Ptr)> m_materialFilter;
 
         RenderTags m_tags;
+        bool m_active = true;
 
         void* m_userData = nullptr;
     };

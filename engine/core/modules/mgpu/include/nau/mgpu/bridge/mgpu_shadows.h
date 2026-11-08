@@ -37,6 +37,24 @@ namespace nau::mgpu::shadows
         bool indices32 = false;
         const float* boneWeights = nullptr; // skinned meshes only: 4 floats per vertex
         const uint32_t* boneIndices = nullptr; // skinned meshes only: 4 uints per vertex
+        const float* texCoords = nullptr; // masked casters only: 2 floats per vertex
+    };
+
+    // Alpha mask of masked casters (foliage): mip levels in a DXGI format with alpha, copied by registerMask().
+    struct MaskMip
+    {
+        const void* data = nullptr;
+        uint32_t rowPitch = 0;
+        uint32_t rowCount = 0;
+    };
+
+    struct MaskDesc
+    {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t dxgiFormat = 0;
+        const MaskMip* mips = nullptr;
+        uint32_t mipCount = 0;
     };
 
     struct CascadeDesc
@@ -62,6 +80,7 @@ namespace nau::mgpu::shadows
         uint32_t firstMatrix = 0;
         uint32_t instanceCount = 1;
         uint32_t boneCount = 0; // 0 = static mesh
+        uint64_t mask = 0; // key passed to registerMask(), 0 = no mask. Static meshes with texCoords only.
     };
 
     struct FrameDesc
@@ -101,6 +120,14 @@ namespace nau::mgpu::shadows
         uint32_t meshCount = 0;
         float lastLatencyMs = 0;
         float lastTransferMs = 0; // shared heap -> local memory of the first GPU (its copy queue)
+
+        // GPU time from timestamp queries, summed since initialize(): the average over a period is the difference of two
+        // reads divided by the difference of the sample counts. No samples: that queue gives no timestamps.
+        double drawGpuMsTotal = 0; // the cascades, graphics queue of the second GPU
+        double sharedCopyGpuMsTotal = 0; // the atlas into the shared heap, graphics queue of the second GPU
+        uint64_t drawGpuSamples = 0;
+        double transferGpuMsTotal = 0; // shared heap -> local memory, copy queue of the first GPU
+        uint64_t transferGpuSamples = 0;
     };
 
 #if defined(NAU_ENABLE_MGPU)
@@ -122,11 +149,16 @@ namespace nau::mgpu::shadows
 
         bool hasMesh(uint64_t key) const;
         bool registerMesh(uint64_t key, const MeshDesc& mesh);
+        /// Waits for the upload on the second GPU: once per texture.
+        bool registerMask(uint64_t key, const MaskDesc& mask);
+        /// Forgets the meshes and the masks.
         void forgetMeshes();
 
         /// Non-blocking. Starts drawing the atlas on the second GPU if it has finished the previous one and a slot is free;
         /// returns false (nothing submitted) while the second GPU is still busy.
         bool submit(const FrameDesc& frame);
+        /// true when submit() would take a frame now (the second GPU is not drawing and a slot is free).
+        bool canSubmit();
 
         /// Non-blocking. The newest atlas that has finished on the second GPU and was not handed out yet; older finished
         /// ones are dropped. The slot stays reserved until release(): the caller's copy must have executed by then.
@@ -157,8 +189,10 @@ namespace nau::mgpu::shadows
         void shutdown() {}
         bool hasMesh(uint64_t) const { return false; }
         bool registerMesh(uint64_t, const MeshDesc&) { return false; }
+        bool registerMask(uint64_t, const MaskDesc&) { return false; }
         void forgetMeshes() {}
         bool submit(const FrameDesc&) { return false; }
+        bool canSubmit() { return false; }
         bool takeReady(ReadyAtlas&) { return false; }
         void release(uint32_t) {}
         bool waitAndReadBack(std::vector<float>&, uint32_t&, uint32_t&) { return false; }

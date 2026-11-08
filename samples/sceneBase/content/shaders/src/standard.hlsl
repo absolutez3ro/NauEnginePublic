@@ -70,9 +70,22 @@ VsOutputGBuff VSMain(VsInputLit input, uint instID : SV_InstanceID)
 
 #endif // !INSTANCED
 
-GBUFFER_OUTPUT PSMain(VsOutputGBuff input)
+GBUFFER_OUTPUT PSMain(VsOutputGBuff input
+#ifdef ALPHA_MASK
+                      , bool isFrontFace : SV_IsFrontFace
+#endif
+                      )
 {
-    half3 albedo = albedoTex.Sample(albedoSampler, input.texCoord).rgb;
+    const half4 albedoAlpha = albedoTex.Sample(albedoSampler, input.texCoord);
+    half3 albedo = albedoAlpha.rgb;
+#ifdef ALPHA_MASK
+    clip(albedoAlpha.a - 0.5f);
+    // Masked materials are two-sided.
+    if (!isFrontFace)
+    {
+        input.norm = -input.norm;
+    }
+#endif
     half4 metalRoughnessAo = metalRoughnessAoTex.Sample(metalRoughnessAoSampler, input.texCoord);
 
     float3 tangentNormal = normalTex.Sample(normalSampler, input.texCoord).xyz * 2.0f - 1.0f;

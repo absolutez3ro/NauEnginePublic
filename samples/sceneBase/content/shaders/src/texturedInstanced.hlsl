@@ -71,6 +71,25 @@ uint4 zprepassPSMain(VsOutputZPrepass input) : SV_Target
     return input.uid;
 }
 
+// Masked materials (foliage): the alpha of the albedo texture cuts the depth, in the z-prepass and in the shadow maps.
+VsOutputZPrepassMasked zprepassMaskedVSMain(VsInputZPrepassMasked input, uint instID : SV_InstanceID)
+{
+    VsOutputZPrepassMasked output;
+
+    const uint instIdx = instanceBaseID.x + instID;
+    output.uid = instanceBuffer[instIdx].uid;
+    output.position = mul(mul(vp, instanceBuffer[instIdx].worldMatrix), float4(input.position, 1.0f));
+    output.texCoord = float2(input.texCoord.x, 1.0f - input.texCoord.y);
+
+    return output;
+}
+
+uint4 zprepassMaskedPSMain(VsOutputZPrepassMasked input) : SV_Target
+{
+    clip(tex.Sample(sampl, input.texCoord).a - 0.5f);
+    return input.uid;
+}
+
 VsOutputZPrepass outlineMaskVSMain(VsInputZPrepass input, uint instID : SV_InstanceID)
 {
     VsOutputZPrepass output;

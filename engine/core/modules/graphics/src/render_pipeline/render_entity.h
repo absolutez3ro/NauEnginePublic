@@ -13,6 +13,8 @@
 
 namespace nau
 {
+    struct StaticMeshLod;
+
     using RenderTag = size_t;
     using RenderTags = eastl::set<RenderTag>;
 
@@ -42,6 +44,8 @@ namespace nau
 
         Sbuffer* indexBuffer = nullptr;
 
+        const StaticMeshLod* meshLod = nullptr; // static meshes: where the geometry is on the CPU
+
         bool instancingSupported = true;
 
         uint32_t startInstance;
@@ -63,6 +67,9 @@ namespace nau
 
         void renderZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const;
         void renderZPrepassInstanced(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const;
+
+        // The texture whose alpha cuts this entity in a depth pass (a masked material, foliage), or nullptr.
+        BaseTexture* getDepthMask(MaterialAssetView* zPrepassMat) const;
     private:
         void prepareZPrepass(eastl::string_view pipeline, const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const;
     };

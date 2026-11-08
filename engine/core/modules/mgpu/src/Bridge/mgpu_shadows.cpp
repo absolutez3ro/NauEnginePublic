@@ -39,11 +39,14 @@ namespace nau::mgpu::shadows
         // one is ready for the next frame, Nau copies the last one.
         constexpr uint32_t kSlotCount = SLOT_COUNT;
 
-        // Root signature: b0 = 18 root constants (DrawParams), t0 = root SRV with the matrices of the frame.
+        // Root signature: b0 = 18 root constants (DrawParams), t0 = root SRV with the matrices of the frame, t1 = the mask
+        // of a masked caster (a table in the shader-visible heap of the masks), s0 = its sampler.
         constexpr uint32_t kViewProjConstants = 16;
         constexpr uint32_t kDrawConstants = 2;
         constexpr UINT kConstantsParameter = 0;
         constexpr UINT kMatricesParameter = 1;
+        constexpr UINT kMaskParameter = 2;
+        constexpr UINT kMaxMasks = 1024;
 
         // The vertex shaders repeat Nau's z-prepass (texturedInstanced.hlsl: zprepassInstancedVSMain and
         // zprepassSkinnedVSMain) that Nau uses for its cascades. Matrices keep Nau's memory layout (column-major
@@ -77,6 +80,29 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
         }
     }
     return mul(vp, skinned);
+}
+
+// Masked casters repeat zprepassMaskedVSMain and zprepassMaskedPSMain of texturedInstanced.hlsl.
+struct MaskedVertex
+{
+    float4 position : SV_Position;
+    float2 texCoord : TEXCOORD0;
+};
+
+Texture2D maskTexture : register(t1);
+SamplerState maskSampler : register(s0);
+
+MaskedVertex ShadowMaskedVS(float3 position : POSITION, float2 texCoord : TEXCOORD0, uint instance : SV_InstanceID)
+{
+    MaskedVertex output;
+    output.position = mul(mul(vp, matrices[matrixOffset + instance]), float4(position, 1.0));
+    output.texCoord = float2(texCoord.x, 1.0 - texCoord.y);
+    return output;
+}
+
+void ShadowMaskedPS(MaskedVertex input)
+{
+    clip(maskTexture.Sample(maskSampler, input.texCoord).a - 0.5);
 }
 )";
 
@@ -124,7 +150,9 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
             std::shared_ptr<gfx::GResource> boneWeights;
             std::shared_ptr<gfx::GResource> boneIndices;
             std::shared_ptr<gfx::GResource> indices;
+            std::shared_ptr<gfx::GResource> texCoords;
             std::array<D3D12_VERTEX_BUFFER_VIEW, 3> vertexViews = {};
+            std::array<D3D12_VERTEX_BUFFER_VIEW, 2> maskedViews = {}; // positions, texture coordinates
             D3D12_INDEX_BUFFER_VIEW indexView = {};
             bool skinned = false;
         };
@@ -158,7 +186,14 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
             float latencyMs = 0;
         };
 
-        using PsoKey = std::tuple<bool, AtlasFormat, int32_t, float, bool>; // skinned, format, depth bias, slope bias, depth clip
+        // Mask texture on the second GPU and its place in the shader-visible heap.
+        struct Mask
+        {
+            ComPtr<ID3D12Resource> texture;
+            D3D12_GPU_DESCRIPTOR_HANDLE descriptor = {};
+        };
+
+        using PsoKey = std::tuple<bool, bool, AtlasFormat, int32_t, float, bool>; // skinned, masked, format, depth bias, slope bias, depth clip
 
         bool ready = false;
         std::string error;
@@ -178,12 +213,32 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
         std::shared_ptr<gfx::GRootSignature> signature;
         std::shared_ptr<SourceShader> staticVS;
         std::shared_ptr<SourceShader> skinnedVS;
+        std::shared_ptr<SourceShader> maskedVS;
+        std::shared_ptr<SourceShader> maskedPS;
+        ComPtr<ID3D12DescriptorHeap> maskHeap;
+        UINT maskDescriptorSize = 0;
+        UINT maskCount = 0;
+        std::unordered_map<uint64_t, Mask> masks;
         std::map<PsoKey, std::shared_ptr<gfx::GraphicPSO>> psos;
 
         std::unordered_map<uint64_t, Mesh> meshes;
         std::array<Slot, kSlotCount> slots;
         uint64_t nextSequence = 0;
         RendererStats stats;
+
+        // GPU timings: three timestamps per slot on the second GPU (start, cascades drawn, atlas in the shared heap) and
+        // two on the copy queue of the first GPU (around the transfer). The readback buffers stay mapped. Optional: a
+        // queue without timestamps leaves its heap null and the renderer works as without them.
+        static constexpr UINT kDrawStamps = 3;
+        static constexpr UINT kTransferStamps = 2;
+        ComPtr<ID3D12QueryHeap> drawQueries;
+        ComPtr<ID3D12Resource> drawReadback;
+        UINT64* drawStamps = nullptr;
+        double drawTicksPerMs = 0;
+        ComPtr<ID3D12QueryHeap> transferQueries;
+        ComPtr<ID3D12Resource> transferReadback;
+        UINT64* transferStamps = nullptr;
+        double transferTicksPerMs = 0;
 
         std::shared_ptr<gfx::GCommandQueue>& GraphicsQueue2() const
         {
@@ -209,14 +264,29 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
                 signature = std::make_shared<gfx::GRootSignature>();
                 signature->AddConstantParameter(kViewProjConstants + kDrawConstants, 0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
                 signature->AddShaderResourceView(0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+                const CD3DX12_DESCRIPTOR_RANGE maskRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1);
+                signature->AddDescriptorParameter(&maskRange, 1, D3D12_SHADER_VISIBILITY_PIXEL);
+                signature->AddStaticSampler(CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR));
                 signature->Initialize(secondaryDevice);
 
                 staticVS = std::make_shared<SourceShader>(kShadowShaderSource, gfx::VertexShader, "ShadowStaticVS", "vs_5_1");
                 staticVS->LoadAndCompile();
                 skinnedVS = std::make_shared<SourceShader>(kShadowShaderSource, gfx::VertexShader, "ShadowSkinnedVS", "vs_5_1");
                 skinnedVS->LoadAndCompile();
+                maskedVS = std::make_shared<SourceShader>(kShadowShaderSource, gfx::VertexShader, "ShadowMaskedVS", "vs_5_1");
+                maskedVS->LoadAndCompile();
+                maskedPS = std::make_shared<SourceShader>(kShadowShaderSource, gfx::PixelShader, "ShadowMaskedPS", "ps_5_1");
+                maskedPS->LoadAndCompile();
+
+                D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+                heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+                heapDesc.NumDescriptors = kMaxMasks;
+                heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+                ThrowIfFailed(secondaryDevice->GetDXDevice()->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&maskHeap)));
+                maskDescriptorSize = secondaryDevice->GetDXDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
                 stats = {};
+                InitializeTimings();
                 ready = true;
                 error.clear();
                 return true;
@@ -234,12 +304,128 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
             return false;
         }
 
+        static ComPtr<ID3D12Resource> CreateReadback(ID3D12Device* device, const UINT64 size)
+        {
+            const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_READBACK);
+            const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(size);
+            ComPtr<ID3D12Resource> buffer;
+            ThrowIfFailed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                          IID_PPV_ARGS(&buffer)));
+            return buffer;
+        }
+
+        void ReleaseTimings()
+        {
+            if (drawReadback && drawStamps)
+            {
+                drawReadback->Unmap(0, nullptr);
+            }
+            if (transferReadback && transferStamps)
+            {
+                transferReadback->Unmap(0, nullptr);
+            }
+            drawStamps = nullptr;
+            transferStamps = nullptr;
+            drawReadback.Reset();
+            transferReadback.Reset();
+            drawQueries.Reset();
+            transferQueries.Reset();
+            drawTicksPerMs = 0;
+            transferTicksPerMs = 0;
+        }
+
+        void InitializeTimings()
+        {
+            try
+            {
+                ID3D12Device* const device = secondaryDevice->GetDXDevice().Get();
+                D3D12_QUERY_HEAP_DESC desc = {};
+                desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+                desc.Count = kDrawStamps * kSlotCount;
+                ThrowIfFailed(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&drawQueries)));
+                drawReadback = CreateReadback(device, desc.Count * sizeof(UINT64));
+                ThrowIfFailed(drawReadback->Map(0, nullptr, reinterpret_cast<void**>(&drawStamps)));
+                UINT64 frequency = 0;
+                ThrowIfFailed(GraphicsQueue2()->GetD3D12CommandQueue()->GetTimestampFrequency(&frequency));
+                drawTicksPerMs = static_cast<double>(frequency) / 1000.0;
+            }
+            catch (...)
+            {
+                drawStamps = nullptr;
+                drawReadback.Reset();
+                drawQueries.Reset();
+                drawTicksPerMs = 0;
+            }
+
+            try
+            {
+                ID3D12Device* const device = primaryDevice->GetDXDevice().Get();
+                D3D12_FEATURE_DATA_D3D12_OPTIONS3 options = {};
+                if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options, sizeof(options))) &&
+                    options.CopyQueueTimestampQueriesSupported)
+                {
+                    D3D12_QUERY_HEAP_DESC desc = {};
+                    desc.Type = D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP;
+                    desc.Count = kTransferStamps * kSlotCount;
+                    ThrowIfFailed(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&transferQueries)));
+                    transferReadback = CreateReadback(device, desc.Count * sizeof(UINT64));
+                    ThrowIfFailed(transferReadback->Map(0, nullptr, reinterpret_cast<void**>(&transferStamps)));
+                    UINT64 frequency = 0;
+                    ThrowIfFailed(CopyQueue1()->GetD3D12CommandQueue()->GetTimestampFrequency(&frequency));
+                    transferTicksPerMs = static_cast<double>(frequency) / 1000.0;
+                }
+            }
+            catch (...)
+            {
+                transferStamps = nullptr;
+                transferReadback.Reset();
+                transferQueries.Reset();
+                transferTicksPerMs = 0;
+            }
+        }
+
+        UINT SlotIndex(const Slot& slot) const
+        {
+            return static_cast<UINT>(&slot - slots.data());
+        }
+
+        void ReadDrawTimings(const Slot& slot)
+        {
+            if (drawStamps == nullptr || drawTicksPerMs <= 0)
+            {
+                return;
+            }
+            const UINT64* const stamps = drawStamps + SlotIndex(slot) * kDrawStamps;
+            if (stamps[1] < stamps[0] || stamps[2] < stamps[1])
+            {
+                return;
+            }
+            stats.drawGpuMsTotal += static_cast<double>(stamps[1] - stamps[0]) / drawTicksPerMs;
+            stats.sharedCopyGpuMsTotal += static_cast<double>(stamps[2] - stamps[1]) / drawTicksPerMs;
+            ++stats.drawGpuSamples;
+        }
+
+        void ReadTransferTimings(const Slot& slot)
+        {
+            if (transferStamps == nullptr || transferTicksPerMs <= 0)
+            {
+                return;
+            }
+            const UINT64* const stamps = transferStamps + SlotIndex(slot) * kTransferStamps;
+            if (stamps[1] < stamps[0])
+            {
+                return;
+            }
+            stats.transferGpuMsTotal += static_cast<double>(stamps[1] - stamps[0]) / transferTicksPerMs;
+            ++stats.transferGpuSamples;
+        }
+
         // Depth-only pipeline with the render state Nau uses for its cascades: the cull mode of the z-prepass material
         // (static "Clockwise" -> D3D12 FRONT, skinned "CounterClockwise" -> BACK, FrontCounterClockwise = TRUE in
         // drv3d_DX12) and the cascade override (depth bias, Z_CLAMP_ENABLED -> no depth clip, LESS_EQUAL).
-        gfx::GraphicPSO& GetPso(const bool skinned, const AtlasFormat format, const int32_t depthBias, const float slopeBias, const bool depthClip)
+        gfx::GraphicPSO& GetPso(const bool skinned, const bool masked, const AtlasFormat format, const int32_t depthBias, const float slopeBias, const bool depthClip)
         {
-            const PsoKey key{skinned, format, depthBias, slopeBias, depthClip};
+            const PsoKey key{skinned, masked, format, depthBias, slopeBias, depthClip};
             if (auto found = psos.find(key); found != psos.end())
             {
                 return *found->second;
@@ -256,10 +442,16 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
 
             D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
             desc.pRootSignature = signature->GetNativeSignature().Get();
-            desc.InputLayout = skinned ? D3D12_INPUT_LAYOUT_DESC{skinnedLayout, _countof(skinnedLayout)}
-                                       : D3D12_INPUT_LAYOUT_DESC{staticLayout, _countof(staticLayout)};
+            static const D3D12_INPUT_ELEMENT_DESC maskedLayout[] = {
+                {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+                {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            };
+            desc.InputLayout = masked    ? D3D12_INPUT_LAYOUT_DESC{maskedLayout, _countof(maskedLayout)}
+                               : skinned ? D3D12_INPUT_LAYOUT_DESC{skinnedLayout, _countof(skinnedLayout)}
+                                         : D3D12_INPUT_LAYOUT_DESC{staticLayout, _countof(staticLayout)};
             desc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-            desc.RasterizerState.CullMode = skinned ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_FRONT;
+            // Masked materials are two-sided, as the "masked" pipeline of the z-prepass material.
+            desc.RasterizerState.CullMode = masked ? D3D12_CULL_MODE_NONE : skinned ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_FRONT;
             desc.RasterizerState.FrontCounterClockwise = TRUE;
             desc.RasterizerState.DepthBias = depthBias;
             desc.RasterizerState.DepthBiasClamp = 0.0f;
@@ -277,7 +469,11 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
 
             auto pso = std::make_shared<gfx::GraphicPSO>(*signature);
             pso->SetPsoDesc(desc);
-            pso->SetShader(skinned ? skinnedVS.get() : staticVS.get());
+            pso->SetShader(masked ? maskedVS.get() : skinned ? skinnedVS.get() : staticVS.get());
+            if (masked)
+            {
+                pso->SetShader(maskedPS.get());
+            }
             pso->Initialize(secondaryDevice);
             return *psos.emplace(key, std::move(pso)).first->second;
         }
@@ -317,6 +513,16 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
                                            static_cast<UINT>(indicesSize), 4 * sizeof(uint32_t)};
                 }
 
+                mesh.maskedViews[0] = mesh.vertexViews[0];
+                if (desc.texCoords != nullptr)
+                {
+                    const size_t texCoordsSize = static_cast<size_t>(desc.vertexCount) * 2 * sizeof(float);
+                    mesh.texCoords = CreateUploadBuffer(secondaryDevice, texCoordsSize, name + L" Texture Coordinates");
+                    Upload(*mesh.texCoords, desc.texCoords, texCoordsSize);
+                    mesh.maskedViews[1] = {mesh.texCoords->GetD3D12Resource()->GetGPUVirtualAddress(),
+                                           static_cast<UINT>(texCoordsSize), 2 * sizeof(float)};
+                }
+
                 const size_t indexSize = desc.indices32 ? sizeof(uint32_t) : sizeof(uint16_t);
                 const size_t indicesSize = static_cast<size_t>(desc.indexCount) * indexSize;
                 mesh.indices = CreateUploadBuffer(secondaryDevice, indicesSize, name + L" Indices");
@@ -345,6 +551,82 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
             return false;
         }
 
+        bool RegisterMask(const uint64_t key, const MaskDesc& desc)
+        {
+            if (!ready || desc.mips == nullptr || desc.mipCount == 0 || maskCount >= kMaxMasks)
+            {
+                return false;
+            }
+
+            try
+            {
+                auto device = secondaryDevice->GetDXDevice();
+                const auto mipCount = static_cast<UINT16>(desc.mipCount);
+                const D3D12_RESOURCE_DESC textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(static_cast<DXGI_FORMAT>(desc.dxgiFormat), desc.width,
+                                                                                     desc.height, 1, mipCount);
+                const CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
+                Mask mask;
+                ThrowIfFailed(device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &textureDesc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                              nullptr, IID_PPV_ARGS(&mask.texture)));
+
+                std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(desc.mipCount);
+                UINT64 uploadSize = 0;
+                device->GetCopyableFootprints(&textureDesc, 0, desc.mipCount, 0, footprints.data(), nullptr, nullptr, &uploadSize);
+
+                const auto upload = CreateUploadBuffer(secondaryDevice, static_cast<size_t>(uploadSize), L"MgpuShadows Mask Upload");
+                uint8_t* mapped = nullptr;
+                const D3D12_RANGE noRead = {0, 0};
+                ThrowIfFailed(upload->GetD3D12Resource()->Map(0, &noRead, reinterpret_cast<void**>(&mapped)));
+                for (uint32_t mip = 0; mip < desc.mipCount; ++mip)
+                {
+                    const MaskMip& source = desc.mips[mip];
+                    const auto rowSize = std::min<size_t>(source.rowPitch, footprints[mip].Footprint.RowPitch);
+                    for (uint32_t row = 0; row < source.rowCount; ++row)
+                    {
+                        std::memcpy(mapped + footprints[mip].Offset + static_cast<size_t>(row) * footprints[mip].Footprint.RowPitch,
+                                    static_cast<const uint8_t*>(source.data) + static_cast<size_t>(row) * source.rowPitch, rowSize);
+                    }
+                }
+                upload->GetD3D12Resource()->Unmap(0, nullptr);
+
+                auto queue = GraphicsQueue2();
+                auto cmdList = queue->GetCommandList();
+                auto* raw = cmdList->GetGraphicsCommandList().Get();
+                for (uint32_t mip = 0; mip < desc.mipCount; ++mip)
+                {
+                    const CD3DX12_TEXTURE_COPY_LOCATION dst(mask.texture.Get(), mip);
+                    const CD3DX12_TEXTURE_COPY_LOCATION src(upload->GetD3D12Resource().Get(), footprints[mip]);
+                    raw->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+                }
+                const auto toShaderResource = CD3DX12_RESOURCE_BARRIER::Transition(mask.texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                                                   D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                raw->ResourceBarrier(1, &toShaderResource);
+                queue->WaitForFenceValue(queue->ExecuteCommandList(cmdList));
+
+                D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+                srv.Format = static_cast<DXGI_FORMAT>(desc.dxgiFormat);
+                srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                srv.Texture2D.MipLevels = desc.mipCount;
+                const CD3DX12_CPU_DESCRIPTOR_HANDLE cpu(maskHeap->GetCPUDescriptorHandleForHeapStart(), static_cast<INT>(maskCount), maskDescriptorSize);
+                device->CreateShaderResourceView(mask.texture.Get(), &srv, cpu);
+                mask.descriptor = CD3DX12_GPU_DESCRIPTOR_HANDLE(maskHeap->GetGPUDescriptorHandleForHeapStart(), static_cast<INT>(maskCount), maskDescriptorSize);
+                ++maskCount;
+
+                masks[key] = std::move(mask);
+                return true;
+            }
+            catch (const std::exception& e)
+            {
+                error = std::string("exception during registerMask: ") + e.what();
+            }
+            catch (...)
+            {
+                error = "unknown exception during registerMask";
+            }
+            return false;
+        }
+
         void ForgetMeshes()
         {
             if (ready)
@@ -352,6 +634,8 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
                 GraphicsQueue2()->Flush();
             }
             meshes.clear();
+            masks.clear();
+            maskCount = 0;
             stats.meshCount = 0;
         }
 
@@ -438,6 +722,20 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
             return nullptr;
         }
 
+        bool CanSubmit()
+        {
+            if (!ready)
+            {
+                return false;
+            }
+            CollectFinished();
+            const bool rendering = std::any_of(slots.begin(), slots.end(), [](const Slot& item)
+            {
+                return item.state == SlotState::Rendering;
+            });
+            return !rendering && FreeSlot() != nullptr;
+        }
+
         bool Submit(const FrameDesc& frame)
         {
             if (!ready || frame.atlasWidth == 0 || frame.atlasHeight == 0)
@@ -468,6 +766,11 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
                 auto queue = GraphicsQueue2();
                 auto cmdList = queue->GetCommandList();
                 auto* raw = cmdList->GetGraphicsCommandList().Get();
+                const UINT firstStamp = SlotIndex(*slot) * kDrawStamps;
+                if (drawQueries)
+                {
+                    raw->EndQuery(drawQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp);
+                }
 
                 cmdList->TransitionBarrier(*atlas, D3D12_RESOURCE_STATE_DEPTH_WRITE);
                 cmdList->FlushResourceBarriers();
@@ -477,6 +780,8 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
                 cmdList->SetRootSignature(*signature);
                 raw->SetGraphicsRootShaderResourceView(kMatricesParameter,
                                                        slot->matrices->GetD3D12Resource()->GetGPUVirtualAddress());
+                ID3D12DescriptorHeap* const descriptorHeaps[] = {maskHeap.Get()};
+                raw->SetDescriptorHeaps(1, descriptorHeaps);
                 cmdList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
                 uint32_t drawn = 0;
@@ -515,17 +820,36 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
                             continue;
                         }
 
-                        cmdList->SetPipelineState(GetPso(skinned, frame.format, cascade.depthBias,
+                        const auto foundMask = draw.mask != 0 && !skinned && mesh.texCoords ? masks.find(draw.mask) : masks.end();
+                        const bool masked = foundMask != masks.end();
+
+                        cmdList->SetPipelineState(GetPso(skinned, masked, frame.format, cascade.depthBias,
                                                          cascade.slopeScaledDepthBias, cascade.depthClip));
+                        if (masked)
+                        {
+                            raw->SetGraphicsRootDescriptorTable(kMaskParameter, foundMask->second.descriptor);
+                        }
                         const uint32_t drawConstants[kDrawConstants] = {draw.firstMatrix, draw.boneCount};
                         raw->SetGraphicsRoot32BitConstants(kConstantsParameter, kDrawConstants, drawConstants,
                                                            kViewProjConstants);
 
-                        cmdList->SetVBuffer(0, skinned ? 3u : 1u, mesh.vertexViews.data());
+                        if (masked)
+                        {
+                            cmdList->SetVBuffer(0, 2u, mesh.maskedViews.data());
+                        }
+                        else
+                        {
+                            cmdList->SetVBuffer(0, skinned ? 3u : 1u, mesh.vertexViews.data());
+                        }
                         cmdList->SetIBuffer(&mesh.indexView);
                         cmdList->DrawIndexed(draw.indexCount, skinned ? 1u : draw.instanceCount, draw.startIndex, 0, 0);
                         ++drawn;
                     }
+                }
+
+                if (drawQueries)
+                {
+                    raw->EndQuery(drawQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp + 1);
                 }
 
                 // Depth atlas -> shared heap, then both back to COMMON (PopulateCopyResource of HybridShadowApp).
@@ -533,6 +857,12 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
                 cmdList->TransitionBarrier(slot->shared->GetSharedResource(), D3D12_RESOURCE_STATE_COMMON);
                 cmdList->TransitionBarrier(*atlas, D3D12_RESOURCE_STATE_COMMON);
                 cmdList->FlushResourceBarriers();
+                if (drawQueries)
+                {
+                    raw->EndQuery(drawQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp + 2);
+                    raw->ResolveQueryData(drawQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp, kDrawStamps, drawReadback.Get(),
+                                          firstStamp * sizeof(UINT64));
+                }
 
                 slot->fenceValue = queue->ExecuteCommandList(cmdList);
                 slot->state = SlotState::Rendering;
@@ -564,11 +894,23 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
             {
                 auto queue = CopyQueue1();
                 auto cmdList = queue->GetCommandList();
+                auto* raw = cmdList->GetGraphicsCommandList().Get();
+                const UINT firstStamp = SlotIndex(slot) * kTransferStamps;
+                if (transferQueries)
+                {
+                    raw->EndQuery(transferQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp);
+                }
                 const gfx::GResource& prime = slot.shared->GetPrimeResource();
                 cmdList->CopyResource(*slot.local, prime);
                 cmdList->TransitionBarrier(*slot.local, D3D12_RESOURCE_STATE_COMMON);
                 cmdList->TransitionBarrier(prime, D3D12_RESOURCE_STATE_COMMON);
                 cmdList->FlushResourceBarriers();
+                if (transferQueries)
+                {
+                    raw->EndQuery(transferQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp + 1);
+                    raw->ResolveQueryData(transferQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp, kTransferStamps,
+                                          transferReadback.Get(), firstStamp * sizeof(UINT64));
+                }
                 slot.transferFenceValue = queue->ExecuteCommandList(cmdList);
                 slot.state = SlotState::Transferring;
                 slot.drawn = Clock::now();
@@ -591,6 +933,7 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
                 if (slot.state == SlotState::Rendering && graphics2->IsFinish(slot.fenceValue))
                 {
                     slot.state = SlotState::Drawn;
+                    ReadDrawTimings(slot);
                 }
                 else if (slot.state == SlotState::Transferring)
                 {
@@ -602,6 +945,7 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
                         stats.lastLatencyMs = slot.latencyMs;
                         stats.lastTransferMs = std::chrono::duration<float, std::milli>(now - slot.drawn).count();
                         ++stats.completed;
+                        ReadTransferTimings(slot);
                     }
                     else
                     {
@@ -815,10 +1159,16 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
             {
                 slot = Slot();
             }
+            ReleaseTimings();
             meshes.clear();
             psos.clear();
             staticVS.reset();
             skinnedVS.reset();
+            maskedVS.reset();
+            maskedPS.reset();
+            masks.clear();
+            maskCount = 0;
+            maskHeap.Reset();
             signature.reset();
             atlasDsv = gfx::GDescriptor();
             atlas.reset();
@@ -871,6 +1221,11 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
         return m_impl->RegisterMesh(key, mesh);
     }
 
+    bool CascadeRenderer::registerMask(const uint64_t key, const MaskDesc& mask)
+    {
+        return m_impl->RegisterMask(key, mask);
+    }
+
     void CascadeRenderer::forgetMeshes()
     {
         m_impl->ForgetMeshes();
@@ -879,6 +1234,11 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
     bool CascadeRenderer::submit(const FrameDesc& frame)
     {
         return m_impl->Submit(frame);
+    }
+
+    bool CascadeRenderer::canSubmit()
+    {
+        return m_impl->CanSubmit();
     }
 
     bool CascadeRenderer::takeReady(ReadyAtlas& out)

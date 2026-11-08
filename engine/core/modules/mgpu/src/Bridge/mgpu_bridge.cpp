@@ -40,6 +40,8 @@ namespace nau::mgpu::bridge
     namespace
     {
         std::atomic<bool> g_enabled{false};
+        std::atomic<bool> g_vsyncEnabled{true};
+        std::atomic<uint64_t> g_meshGeneration{0};
 
         std::mutex g_statusMutex;
         Status g_status; // guarded by g_statusMutex
@@ -135,6 +137,26 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
     bool isEnabled()
     {
         return g_enabled.load();
+    }
+
+    void setVsyncEnabled(const bool enabled)
+    {
+        g_vsyncEnabled.store(enabled);
+    }
+
+    bool isVsyncEnabled()
+    {
+        return g_vsyncEnabled.load();
+    }
+
+    void notifyMeshesChanged()
+    {
+        g_meshGeneration.fetch_add(1);
+    }
+
+    uint64_t getMeshGeneration()
+    {
+        return g_meshGeneration.load();
     }
 
     void publishStatus(const Status& status)
