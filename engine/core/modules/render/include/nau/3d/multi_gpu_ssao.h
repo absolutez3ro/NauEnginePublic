@@ -71,7 +71,7 @@ namespace d3d::mgpu
     // Mailbox publishes frame-owned inputs early; reception is explicitly recorded later, before resolve.
     // Neither function waits for GPU1 on the CPU or GPU0. Busy slots skip submission, preserving the old AO.
     // GPU selection is experimental: mailbox metadata is read concurrently with GPU1 publication.
-    NAU_RENDER_EXPORT bool submitMailboxSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, uint64_t frame, bool& submitted);
+    NAU_RENDER_EXPORT bool submitMailboxSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, uint64_t frame, bool& submitted, bool freezeInputsReady = false);
     NAU_RENDER_EXPORT bool receiveMailboxSsao(SsaoProducer* producer, BaseTexture* destination, uint64_t frame);
     /** @brief Latest completed GPU 1 timestamps, read without waiting; frame zero means unavailable. */
     NAU_RENDER_EXPORT SsaoGpuTiming pollSsaoTiming(SsaoProducer* producer);

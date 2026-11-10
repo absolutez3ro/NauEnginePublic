@@ -296,7 +296,7 @@ namespace d3d::mgpu
         return SUCCEEDED(result);
     }
 
-    bool submitMailboxSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, uint64_t frame, bool& submitted)
+    bool submitMailboxSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, uint64_t frame, bool& submitted, bool freezeInputsReady)
     {
         submitted = false;
         if (!producer || !producer->mailbox || !depth || (!producer->reconstructNormals && !normals) ||
@@ -335,12 +335,16 @@ namespace d3d::mgpu
             }
             return true;
         }
-        const bool frozen = mailbox.diagnostic == MailboxDiagnostic::frozenInputs;
+        // Warm up the real pipeline on loaded inputs. Freeze only when the scene has
+        // completed its warm-up; pin one free slot instead of overwriting readers.
+        const bool frozen = mailbox.diagnostic == MailboxDiagnostic::frozenInputs &&
+            (freezeInputsReady || mailbox.frozenInputSlot >= 0);
         // Reserve the F0 value before choosing an output: GPU1's input wait also protects
         // reuse of retired output slots whose old GPU0 readers precede this signal.
         const uint64_t v0 = mailbox.inputsReady.reserveSignal();
         if (!v0) return false;
-        const int input = mailbox.freeInput(), output = mailbox.reusableOutput(v0);
+        const int input = mailbox.frozenInputSlot >= 0 ? mailbox.frozenInputSlot : mailbox.freeInput();
+        const int output = mailbox.reusableOutput(v0);
         bool issue = true;
         if (input < 0) { ++mailbox.observations.skippedInput; issue = false; }
         else if (output < 0) { ++mailbox.observations.skippedOutput; issue = false; }
@@ -359,11 +363,12 @@ namespace d3d::mgpu
                 }
         if (issue && frozen && !mailbox.observations.frozenInputFrame)
         {
-            // Seed every input slot once, before any GPU1 job can read them. Afterwards no
-            // shared input is overwritten, while the normal output-lifetime fences remain.
+            // freeInput confirmed completion of this slot's old GPU1 readers. Other
+            // slots may still be in flight and must not be seeded or overwritten.
             NAU_GPU_TIMER("ao_diagnostic_seed");
-            for (UINT slot = 0; slot < drv3d_dx12::MAILBOX_IN_SLOTS; ++slot) copyInputs(slot);
+            copyInputs(input);
             ++mailbox.observations.primaryInputCopyFrames;
+            mailbox.frozenInputSlot = input;
             mailbox.observations.frozenInputFrame = frame;
             mailbox.frozenConstants = constants;
         }

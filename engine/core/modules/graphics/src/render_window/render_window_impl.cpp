@@ -23,7 +23,8 @@ namespace nau::render
 
         struct CpuLoadSnapshot
         {
-            bool enabled = false;
+            bool enabled = false, continuous = false;
+            uint32_t level = 0;
             float targetMs = 0.f, actualMs = 0.f, checksum = 0.f;
             uint32_t agents = 4096, threads = 1, activeThreads = 0, agentBytes = 0, passes = 0;
             uint64_t configuredBytes = 0, sequence = 0;
@@ -40,6 +41,8 @@ namespace nau::render
                 next.sequence = properties.getValue<uint64_t>("sample/cpuLoad/sequence").value_or(0);
                 if (next.sequence & 1u) continue;
                 next.enabled = properties.getValue<bool>("sample/cpuLoad/enabled").value_or(false);
+                next.continuous = properties.getValue<bool>("sample/cpuLoad/continuous").value_or(false);
+                next.level = properties.getValue<uint32_t>("sample/cpuLoad/level").value_or(0);
                 next.targetMs = properties.getValue<float>("sample/cpuLoad/targetMs").value_or(0.f);
                 next.actualMs = properties.getValue<float>("sample/cpuLoad/actualMs").value_or(0.f);
                 next.agents = properties.getValue<uint32_t>("sample/cpuLoad/agents").value_or(4096);
@@ -132,7 +135,7 @@ namespace nau::render
                 "cpu_load_threads,cpu_load_active_threads,cpu_load_agent_bytes,cpu_load_configured_agent_bytes,cpu_load_snapshot_sequence";
             for (uint32_t i = 0; i < CpuLoadWorkerColumns; ++i)
                 m_measurementsCsv << ",cpu_worker_" << i << "_wall_ms,cpu_worker_" << i << "_passes";
-            m_measurementsCsv << '\n';
+            m_measurementsCsv << ",cpu_load_continuous,cpu_load_level,freeze_inputs_ready,system_uptime_ms\n";
             m_measurementsCsv << std::fixed << std::setprecision(6);
             NAU_LOG_INFO("Measurements: CSV {} (frame intervals are CPU render/present cadence; chain latency is a frame-polled upper bound)", path);
         }
@@ -177,7 +180,8 @@ namespace nau::render
         {
             m_measurementsCsv << ',' << cpu.wallMs[i] << ',' << cpu.workerPasses[i];
         }
-        m_measurementsCsv << '\n';
+        m_measurementsCsv << ',' << (cpu.continuous ? 1 : 0) << ',' << cpu.level << ','
+            << (properties.getValue<bool>("sample/automation/freezeInputsReady").value_or(false) ? 1 : 0) << ',' << GetTickCount64() << '\n';
     }
 
     void RenderWindowImpl::setWorld(nau::Uid worldUid)

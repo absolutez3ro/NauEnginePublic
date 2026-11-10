@@ -393,7 +393,8 @@ namespace nau::render
                 bool submitted = false;
                 if (m_mailboxMode)
                     m_usingSecondary = d3d::mgpu::submitMailboxSsao(m_secondary, m_constants,
-                        m_jobs[0].normals, m_jobs[0].depth, m_frameIndex, submitted);
+                        m_jobs[0].normals, m_jobs[0].depth, m_frameIndex, submitted,
+                        readSetting<bool>("sample/automation/freezeInputsReady", false));
                 else
                     m_usingSecondary = d3d::mgpu::exchangeFrameworkSsao(m_secondary, m_constants,
                         m_jobs[0].normals, m_jobs[0].depth, m_jobs[0].result, m_frameIndex, submitted);

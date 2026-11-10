@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -35,7 +36,8 @@ namespace nau::sample
         void ensureCpuWorkers(uint32_t threads);
         void stopCpuWorkers();
         void cpuWorkerLoop(uint32_t index);
-        static constexpr uint32_t kMaxCpuThreads = 16;
+        static constexpr uint32_t kMaxCpuThreads = 64;
+        static constexpr uint32_t kTelemetryWorkers = 16;
         struct CpuAgent
         {
             std::array<float, 3> position{};
@@ -67,16 +69,20 @@ namespace nau::sample
         uint32_t m_originalShadowSize = 2048;
         bool m_automated = false, m_automationReady = false, m_cameraMotion = true, m_pulseLoads = false;
         uint32_t m_automationMask = 0, m_automationPhase = 0;
-        float m_warmupSeconds = 5.f, m_measureSeconds = 15.f;
+        float m_warmupSeconds = 5.f, m_measureSeconds = 15.f, m_settleSeconds = 0.f;
         math::Transform m_cameraStart;
         std::chrono::steady_clock::time_point m_automationStart;
         std::array<CpuWorker, kMaxCpuThreads> m_cpuWorkers;
+        std::array<CpuResult, kMaxCpuThreads> m_cpuSnapshots{};
         std::mutex m_cpuMutex;
         std::condition_variable m_cpuStart, m_cpuDone;
         CpuJob m_cpuJob;
         uint64_t m_cpuGeneration = 0;
         uint32_t m_cpuWorkerCount = 0, m_cpuPending = 0;
-        bool m_cpuStopping = false;
+        std::atomic<bool> m_cpuStopping{false};
+        bool m_cpuContinuous = false, m_cpuWorkersContinuous = false;
+        uint32_t m_cpuLevel = 0, m_cpuMaximumThreads = 1;
+        std::chrono::steady_clock::time_point m_cpuContinuousStart;
         bool m_cpuLoadEnabled = false;
         bool m_recordCpuLoad = false;
         uint64_t m_cpuTelemetrySequence = 0;

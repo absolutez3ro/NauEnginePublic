@@ -35,11 +35,15 @@ namespace nau::sample
         m_automated = properties.getValue<bool>("sample/automation/enabled").value_or(false);
         m_recordCpuLoad = properties.getValue<bool>("render/measurements/enabled").value_or(false);
         m_cpuLoadEnabled = properties.getValue<bool>("sample/cpuLoad/enabled").value_or(false);
+        m_cpuContinuous = properties.getValue<bool>("sample/cpuLoad/continuous").value_or(false);
+        m_cpuLevel = eastl::clamp(properties.getValue<uint32_t>("sample/cpuLoad/level").value_or(m_cpuLoadEnabled ? 3u : 0u), 0u, 3u);
         const float targetMs = properties.getValue<float>("sample/cpuLoad/targetMs").value_or(8.f);
         m_cpuLoadTargetMs = std::isfinite(targetMs) ? eastl::clamp(targetMs, 0.f, 32.f) : 8.f;
         m_cpuAgentCount = eastl::clamp(properties.getValue<uint32_t>("sample/cpuLoad/agents").value_or(4096), 256u, 65536u);
-        m_cpuThreadLimit = eastl::clamp(std::thread::hardware_concurrency(), 1u, kMaxCpuThreads);
-        m_cpuLoadThreads = eastl::clamp(properties.getValue<uint32_t>("sample/cpuLoad/threads").value_or(1), 1u, m_cpuThreadLimit);
+        const uint32_t logicalCpus = eastl::max(std::thread::hardware_concurrency(), 1u);
+        m_cpuThreadLimit = eastl::min(logicalCpus, kMaxCpuThreads);
+        m_cpuMaximumThreads = eastl::min(logicalCpus > 2 ? logicalCpus - 2 : 1u, kMaxCpuThreads);
+        m_cpuLoadThreads = eastl::clamp(properties.getValue<uint32_t>("sample/cpuLoad/threads").value_or(m_cpuContinuous ? m_cpuMaximumThreads : 1u), 1u, m_cpuThreadLimit);
         NAU_LOG_INFO("JungleRuins CPU load: enabled={}, targetMs={}, agentsPerThread={}, threads={}, agentBytes={}",
             m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount, m_cpuLoadThreads, sizeof(CpuAgent));
         if (m_automated)
@@ -48,6 +52,8 @@ namespace nau::sample
             m_automationMask = properties.getValue<uint32_t>("sample/automation/loadMask").value_or(0) & 7u;
             m_warmupSeconds = eastl::clamp(properties.getValue<float>("sample/automation/warmupSeconds").value_or(5.f), 1.f, 120.f);
             m_measureSeconds = eastl::clamp(properties.getValue<float>("sample/automation/measureSeconds").value_or(15.f), 1.f, 300.f);
+            m_settleSeconds = eastl::clamp(properties.getValue<float>("sample/automation/settleSeconds").value_or(0.f), 0.f, 30.f);
+            properties.setValue("sample/automation/freezeInputsReady", false).ignore();
             m_cameraMotion = properties.getValue<bool>("sample/automation/cameraMotion").value_or(true);
             m_pulseLoads = properties.getValue<bool>("sample/automation/pulseLoads").value_or(false);
             m_cameraStart = camera.getWorldTransform();
@@ -154,7 +160,7 @@ namespace nau::sample
             ImGui::Separator();
             if (m_automated)
             {
-                ImGui::Text("CPU workload: %s, %.1f ms/thread", m_cpuLoadEnabled ? "ON" : "OFF", m_cpuLoadTargetMs);
+                ImGui::Text("CPU workload: %s, %s", m_cpuLoadEnabled ? "ON" : "OFF", m_cpuContinuous ? "continuous background" : "timed scene update");
                 ImGui::Text("%u threads, %u agents/thread", m_cpuLoadThreads, m_cpuAgentCount);
             }
             else
@@ -162,8 +168,25 @@ namespace nau::sample
                 int agents = static_cast<int>(m_cpuAgentCount);
                 int threads = static_cast<int>(m_cpuLoadThreads);
                 bool changed = ImGui::Checkbox("CPU workload (simulation)", &m_cpuLoadEnabled);
-                changed |= ImGui::SliderFloat("CPU target ms", &m_cpuLoadTargetMs, 0.f, 32.f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-                changed |= ImGui::SliderInt("CPU threads (incl. scene)", &threads, 1, static_cast<int>(m_cpuThreadLimit), "%d", ImGuiSliderFlags_AlwaysClamp);
+                changed |= ImGui::Checkbox("Continuous CPU workload", &m_cpuContinuous);
+                if (m_cpuContinuous)
+                {
+                    int level = m_cpuLoadEnabled ? static_cast<int>(m_cpuLevel ? m_cpuLevel : 3u) : 0;
+                    if (ImGui::Combo("CPU load level", &level, "Off\0Half\0Maximum (logical CPUs - 2)\0Custom threads\0"))
+                    {
+                        m_cpuLevel = static_cast<uint32_t>(level);
+                        m_cpuLoadEnabled = level != 0;
+                        if (level == 1) threads = static_cast<int>((m_cpuMaximumThreads + 1u) / 2u);
+                        if (level == 2) threads = static_cast<int>(m_cpuMaximumThreads);
+                        changed = true;
+                    }
+                }
+                else changed |= ImGui::SliderFloat("CPU target ms", &m_cpuLoadTargetMs, 0.f, 32.f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+                if (ImGui::SliderInt(m_cpuContinuous ? "CPU background threads" : "CPU threads (incl. scene)", &threads, 1, static_cast<int>(m_cpuThreadLimit), "%d", ImGuiSliderFlags_AlwaysClamp))
+                {
+                    m_cpuLevel = 3;
+                    changed = true;
+                }
                 changed |= ImGui::SliderInt("CPU agents/thread", &agents, 256, 65536, "%d", ImGuiSliderFlags_AlwaysClamp);
                 m_cpuAgentCount = static_cast<uint32_t>(agents);
                 m_cpuLoadThreads = static_cast<uint32_t>(threads);
@@ -171,13 +194,13 @@ namespace nau::sample
                     NAU_LOG_INFO("JungleRuins CPU load: enabled={}, targetMs={}, agentsPerThread={}, threads={}",
                         m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount, m_cpuLoadThreads);
             }
-            ImGui::Text("CPU actual: %.2f ms, %u passes", m_cpuLoadActualMs, m_cpuLoadPasses);
+            ImGui::Text(m_cpuContinuous ? "CPU cumulative: %.0f ms, %u passes" : "CPU actual: %.2f ms, %u passes", m_cpuLoadActualMs, m_cpuLoadPasses);
             ImGui::Text("Simulation checksum: %.3f", m_cpuLoadChecksum);
             ImGui::Text("Configured agent data: %.2f MiB", sizeof(CpuAgent) * double(m_cpuAgentCount) * m_cpuLoadThreads / (1024.0 * 1024.0));
             if (ImGui::CollapsingHeader("CPU worker details"))
                 for (uint32_t i = 0; i < m_cpuLoadThreads; ++i)
-                    ImGui::Text("Thread %u: %.2f ms, %u passes", i, m_cpuWorkers[i].result.wallMs, m_cpuWorkers[i].result.passes);
-            ImGui::TextWrapped("Thread 0 is the scene update. Extra workers run in parallel with private agents. Target is wall time per thread; target 0 runs one pass.");
+                    ImGui::Text("Thread %u: %.2f ms, %u passes", i, m_cpuSnapshots[i].wallMs, m_cpuSnapshots[i].passes);
+            ImGui::TextWrapped(m_cpuContinuous ? "All workload threads run continuously in the background with private agents. The scene does not join them each frame. Actual system/process CPU use is recorded by the benchmark telemetry collector." : "Thread 0 is the scene update. Extra workers run in parallel with private agents. Target is wall time per thread; target 0 runs one pass.");
         }
         ImGui::End();
         updateCpuLoad();
@@ -250,11 +273,33 @@ namespace nau::sample
 
     void JungleLoad::cpuWorkerLoop(uint32_t index)
     {
+        if (m_cpuWorkersContinuous)
+        {
+            const CpuJob job{m_cpuJob.agents, 0.f};
+            const auto started = std::chrono::steady_clock::now();
+            auto published = started;
+            CpuResult total;
+            while (!m_cpuStopping.load(std::memory_order_relaxed))
+            {
+                const CpuResult batch = runCpuJob(m_cpuWorkers[index].agents, job, index);
+                total.passes += batch.passes;
+                total.checksum = batch.checksum;
+                const auto now = std::chrono::steady_clock::now();
+                if (now - published >= std::chrono::milliseconds(200))
+                {
+                    total.wallMs = std::chrono::duration<float, std::milli>(now - started).count();
+                    std::lock_guard lock(m_cpuMutex);
+                    m_cpuWorkers[index].result = total;
+                    published = now;
+                }
+            }
+            return;
+        }
         uint64_t generation = 0;
         std::unique_lock lock(m_cpuMutex);
         for (;;)
         {
-            m_cpuStart.wait(lock, [&] { return m_cpuStopping || generation != m_cpuGeneration; });
+            m_cpuStart.wait(lock, [&] { return m_cpuStopping.load() || generation != m_cpuGeneration; });
             if (m_cpuStopping) return;
             generation = m_cpuGeneration;
             const CpuJob job = m_cpuJob;
@@ -282,18 +327,23 @@ namespace nau::sample
         }
         m_cpuWorkerCount = 0;
         m_cpuPending = 0;
+        m_cpuSnapshots = {};
     }
 
     void JungleLoad::ensureCpuWorkers(uint32_t threads)
     {
-        if (m_cpuWorkerCount == threads) return;
+        if (m_cpuWorkerCount == threads && m_cpuWorkersContinuous == m_cpuContinuous &&
+            (!m_cpuContinuous || m_cpuJob.agents == m_cpuAgentCount)) return;
         stopCpuWorkers();
         m_cpuStopping = false;
         m_cpuGeneration = 0;
         m_cpuWorkerCount = threads;
+        m_cpuWorkersContinuous = m_cpuContinuous;
+        m_cpuJob = {m_cpuAgentCount, m_cpuLoadTargetMs};
+        m_cpuContinuousStart = std::chrono::steady_clock::now();
         try
         {
-            for (uint32_t i = 1; i < threads; ++i)
+            for (uint32_t i = m_cpuContinuous ? 0u : 1u; i < threads; ++i)
                 m_cpuWorkers[i].thread = std::thread([this, i] { cpuWorkerLoop(i); });
         }
         catch (const std::system_error& error)
@@ -313,26 +363,41 @@ namespace nau::sample
         if (m_cpuLoadEnabled)
         {
             ensureCpuWorkers(m_cpuLoadThreads);
-            const auto started = std::chrono::steady_clock::now();
-            const CpuJob job{m_cpuAgentCount, m_cpuLoadTargetMs};
+            if (m_cpuContinuous)
             {
                 std::lock_guard lock(m_cpuMutex);
-                m_cpuJob = job;
-                m_cpuPending = m_cpuWorkerCount - 1;
-                ++m_cpuGeneration;
-            }
-            m_cpuStart.notify_all();
-            m_cpuWorkers[0].result = runCpuJob(m_cpuWorkers[0].agents, job, 0);
-            {
-                std::unique_lock lock(m_cpuMutex);
-                m_cpuDone.wait(lock, [&] { return m_cpuPending == 0; });
                 for (uint32_t i = 0; i < m_cpuWorkerCount; ++i)
                 {
-                    m_cpuLoadPasses += m_cpuWorkers[i].result.passes;
-                    m_cpuLoadChecksum += m_cpuWorkers[i].result.checksum;
+                    m_cpuSnapshots[i] = m_cpuWorkers[i].result;
+                    m_cpuLoadPasses += m_cpuSnapshots[i].passes;
+                    m_cpuLoadChecksum += m_cpuSnapshots[i].checksum;
                 }
+                m_cpuLoadActualMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - m_cpuContinuousStart).count();
             }
-            m_cpuLoadActualMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - started).count();
+            else
+            {
+                const auto started = std::chrono::steady_clock::now();
+                const CpuJob job{m_cpuAgentCount, m_cpuLoadTargetMs};
+                {
+                    std::lock_guard lock(m_cpuMutex);
+                    m_cpuJob = job;
+                    m_cpuPending = m_cpuWorkerCount - 1;
+                    ++m_cpuGeneration;
+                }
+                m_cpuStart.notify_all();
+                m_cpuWorkers[0].result = runCpuJob(m_cpuWorkers[0].agents, job, 0);
+                {
+                    std::unique_lock lock(m_cpuMutex);
+                    m_cpuDone.wait(lock, [&] { return m_cpuPending == 0; });
+                    for (uint32_t i = 0; i < m_cpuWorkerCount; ++i)
+                    {
+                        m_cpuLoadPasses += m_cpuWorkers[i].result.passes;
+                        m_cpuLoadChecksum += m_cpuWorkers[i].result.checksum;
+                        m_cpuSnapshots[i] = m_cpuWorkers[i].result;
+                    }
+                }
+                m_cpuLoadActualMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - started).count();
+            }
         }
         else stopCpuWorkers();
         if (m_recordCpuLoad)
@@ -342,6 +407,8 @@ namespace nau::sample
             // let it keep the last complete snapshot rather than mix workers from two frames.
             properties.setValue("sample/cpuLoad/sequence", ++m_cpuTelemetrySequence).ignore();
             properties.setValue("sample/cpuLoad/enabled", m_cpuLoadEnabled).ignore();
+            properties.setValue("sample/cpuLoad/continuous", m_cpuContinuous).ignore();
+            properties.setValue("sample/cpuLoad/level", m_cpuLevel).ignore();
             properties.setValue("sample/cpuLoad/targetMs", m_cpuLoadTargetMs).ignore();
             properties.setValue("sample/cpuLoad/actualMs", m_cpuLoadActualMs).ignore();
             properties.setValue("sample/cpuLoad/agents", m_cpuAgentCount).ignore();
@@ -351,13 +418,13 @@ namespace nau::sample
             properties.setValue("sample/cpuLoad/activeThreads", m_cpuWorkerCount).ignore();
             properties.setValue("sample/cpuLoad/agentBytes", static_cast<uint32_t>(sizeof(CpuAgent))).ignore();
             properties.setValue("sample/cpuLoad/configuredAgentBytes", uint64_t(sizeof(CpuAgent)) * m_cpuAgentCount * m_cpuLoadThreads).ignore();
-            for (uint32_t i = 0; i < kMaxCpuThreads; ++i)
+            for (uint32_t i = 0; i < kTelemetryWorkers; ++i)
             {
                 char name[64];
                 std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/wallMs", i);
-                properties.setValue(name, m_cpuWorkers[i].result.wallMs).ignore();
+                properties.setValue(name, m_cpuSnapshots[i].wallMs).ignore();
                 std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/passes", i);
-                properties.setValue(name, m_cpuWorkers[i].result.passes).ignore();
+                properties.setValue(name, m_cpuSnapshots[i].passes).ignore();
             }
             properties.setValue("sample/cpuLoad/sequence", ++m_cpuTelemetrySequence).ignore();
         }
@@ -376,7 +443,11 @@ namespace nau::sample
             m_automationStart = now;
         }
         const float elapsed = std::chrono::duration<float>(now - m_automationStart).count();
-        const uint32_t phase = elapsed < m_warmupSeconds ? 1u : elapsed < m_warmupSeconds + m_measureSeconds ? 2u : 3u;
+        // Give the renderer a short settling window to freeze a fully loaded input and
+        // finish warm-up jobs before phase 2. This never waits on the render thread.
+        properties.setValue("sample/automation/freezeInputsReady", elapsed >= m_warmupSeconds).ignore();
+        const float measurementStart = m_warmupSeconds + m_settleSeconds;
+        const uint32_t phase = elapsed < measurementStart ? 1u : elapsed < measurementStart + m_measureSeconds ? 2u : 3u;
         if (phase != m_automationPhase)
         {
             m_automationPhase = phase;
@@ -389,7 +460,7 @@ namespace nau::sample
             getApplication().stop();
             return;
         }
-        const float t = phase == 2 ? elapsed - m_warmupSeconds : elapsed;
+        const float t = phase == 2 ? elapsed - measurementStart : elapsed;
         m_elapsed = t;
         const uint32_t mask = m_pulseLoads && phase == 2 && (static_cast<uint32_t>(t / 3.f) & 1u) ? 0u : m_automationMask;
         for (size_t i=0; i<3; ++i)

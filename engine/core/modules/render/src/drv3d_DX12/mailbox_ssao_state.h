@@ -16,6 +16,7 @@ namespace drv3d_dx12
         bool gpuSelection = true;
         d3d::mgpu::MailboxDiagnostic diagnostic = d3d::mgpu::MailboxDiagnostic::disabled;
         d3d::mgpu::SsaoConstants frozenConstants;
+        int frozenInputSlot = -1;
         struct Input { uint64_t readDone = 0; } inputs[MAILBOX_IN_SLOTS];
         struct Output
         {
@@ -63,7 +64,8 @@ namespace drv3d_dx12
                 std::memcpy(&id, resources.mappedReadback() + i * MailboxSsaoResources::READBACK_STRIDE, sizeof(id));
                 // Frozen jobs retain increasing publication IDs for slot selection/reuse, but
                 // their data still belongs to the one seed frame. Never report it as fresh AO.
-                const uint64_t sourceFrame = id && observations.frozenInputFrame ? observations.frozenInputFrame : id;
+                const uint64_t sourceFrame = observations.frozenInputFrame && id >= observations.frozenInputFrame
+                    ? observations.frozenInputFrame : id;
                 if (sample.frame > observations.displayedFrame)
                 {
                     observations.displayedFrame = sample.frame;
