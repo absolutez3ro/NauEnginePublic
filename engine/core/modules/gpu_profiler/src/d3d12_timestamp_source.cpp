@@ -4,6 +4,7 @@
 #include "nau/gpu_profiler/d3d12_timestamp_source.h"
 
 #include <dxgi1_4.h>
+#include <cstdio>
 
 #include "profiler_log.h"
 
@@ -112,12 +113,23 @@ namespace nau::gpu_profiler
         Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
         DXGI_ADAPTER_DESC1 desc = {};
         char name[sizeof(desc.Description) * 2] = {};
+        const auto luid = device->GetAdapterLuid();
+        char key[48], value[48];
+        std::snprintf(key, sizeof(key), "gpu%u_luid", static_cast<unsigned>(gpu));
+        std::snprintf(value, sizeof(value), "%08x:%08x", static_cast<unsigned>(luid.HighPart), static_cast<unsigned>(luid.LowPart));
+        profiler.setRunInfo(key, value);
         if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) &&
             SUCCEEDED(factory->EnumAdapterByLuid(device->GetAdapterLuid(), IID_PPV_ARGS(&adapter))) &&
             SUCCEEDED(adapter->GetDesc1(&desc)) &&
             WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name), nullptr, nullptr) > 0)
         {
             profiler.setGpuName(gpu, name);
+            // Device identity must remain unambiguous with two boards of the same model.
+            std::snprintf(key, sizeof(key), "gpu%u_software", static_cast<unsigned>(gpu));
+            profiler.setRunInfo(key, (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? "true" : "false");
+            std::snprintf(key, sizeof(key), "gpu%u_pci_id", static_cast<unsigned>(gpu));
+            std::snprintf(value, sizeof(value), "%04x:%04x", desc.VendorId, desc.DeviceId);
+            profiler.setRunInfo(key, value);
         }
         return true;
     }
