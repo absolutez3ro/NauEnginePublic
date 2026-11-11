@@ -109,6 +109,14 @@ namespace nau::gpu_profiler
             return false;
         }
 
+        setDeviceInfo(device, gpu);
+        return true;
+    }
+
+    void D3D12TimestampSource::setDeviceInfo(ID3D12Device* device, const GpuIndex gpu)
+    {
+        auto& profiler = GpuProfiler::instance();
+        if (!device || !profiler.isEnabled()) return;
         Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
         Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
         DXGI_ADAPTER_DESC1 desc = {};
@@ -131,7 +139,6 @@ namespace nau::gpu_profiler
             std::snprintf(value, sizeof(value), "%04x:%04x", desc.VendorId, desc.DeviceId);
             profiler.setRunInfo(key, value);
         }
-        return true;
     }
 
     void D3D12TimestampSource::shutdown()

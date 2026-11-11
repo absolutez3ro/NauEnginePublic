@@ -9,11 +9,13 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "nau/3d/dag_drv3d.h"
 #include "nau/3d/dag_drv3dCmd.h"
 #include "nau/diag/logging.h"
 #include "nau/gpu_profiler/gpu_profiler.h"
+#include "nau/gpu_profiler/d3d12_timestamp_source.h"
 
 namespace nau::render
 {
@@ -179,6 +181,8 @@ namespace nau::render
 
         // Run metadata (<csv name>.json).
         instance.setGpuName(profiler::PrimaryGpu, d3d::get_device_name());
+        if (std::strcmp(d3d::get_driver_name(), "DirectX 12") == 0)
+            profiler::D3D12TimestampSource::setDeviceInfo(static_cast<ID3D12Device*>(d3d::get_device(d3d::PRIMARY_GPU)), profiler::PrimaryGpu);
         instance.setRunInfo("driver", d3d::get_driver_name());
         instance.setRunInfo("vsync", vsync ? "on" : "off");
         instance.setRunInfo("mgpu_available", d3d::is_multi_gpu_available() ? "yes" : "no");

@@ -45,6 +45,8 @@ namespace nau::gpu_profiler
 
         NAU_GPU_PROFILER_API D3D12TimestampSource();
         NAU_GPU_PROFILER_API ~D3D12TimestampSource() override;
+        // Also used by Nau's driver-backed primary timestamp source.
+        NAU_GPU_PROFILER_API static void setDeviceInfo(ID3D12Device* device, GpuIndex gpu);
 
         D3D12TimestampSource(const D3D12TimestampSource&) = delete;
         D3D12TimestampSource& operator=(const D3D12TimestampSource&) = delete;
