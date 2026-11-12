@@ -69,6 +69,14 @@ namespace nau
     };
 
 
+    // How a view chooses the levels of detail (RenderView::setLodSelection): the distance from the viewer is multiplied by
+    // distanceScale (more than 1 for the far shadow cascades), and the shadow-only levels are taken by the shadow cascades.
+    struct LodSelection
+    {
+        float distanceScale = 1.0f;
+        bool shadowLevels = false;
+    };
+
     class IInstanceGroup
     {
     public:
@@ -79,7 +87,8 @@ namespace nau
         virtual RenderEntity createRenderEntity() = 0;
         virtual RenderList::Ptr createRenderList(const nau::math::Vector3& viewerPosition, 
             eastl::function<bool(const InstanceInfo&)>& filterFunc,
-            eastl::function<bool(const nau::MaterialAssetView::Ptr)>& materialFilter) = 0;
+            eastl::function<bool(const nau::MaterialAssetView::Ptr)>& materialFilter,
+            const LodSelection& lodSelection) = 0;
 
     protected:
         RenderTags tags;

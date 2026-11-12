@@ -223,6 +223,8 @@ void ShadowMaskedPS(MaskedVertex input)
 
         std::unordered_map<uint64_t, Mesh> meshes;
         std::array<Slot, kSlotCount> slots;
+        std::vector<uint32_t> drawOrder; // Submit: indices of the draws, sorted (kept to reuse the memory)
+        std::vector<D3D12_RECT> clearRects; // Submit: the cascades drawn anew when others are kept
         uint64_t nextSequence = 0;
         RendererStats stats;
 
@@ -640,12 +642,12 @@ void ShadowMaskedPS(MaskedVertex input)
         }
 
         // The depth atlas of the second GPU; recreated when Nau changes the atlas size or format (rare: waits for the
-        // second GPU, because the previous atlas may still be in use).
-        void EnsureAtlas(const uint32_t width, const uint32_t height, const AtlasFormat format)
+        // second GPU, because the previous atlas may still be in use). Returns true when it was (re)created.
+        bool EnsureAtlas(const uint32_t width, const uint32_t height, const AtlasFormat format)
         {
             if (atlas && atlasWidth == width && atlasHeight == height && atlasFormat == format)
             {
-                return;
+                return false;
             }
 
             if (atlas)
@@ -673,6 +675,7 @@ void ShadowMaskedPS(MaskedVertex input)
             atlasWidth = width;
             atlasHeight = height;
             atlasFormat = format;
+            return true;
         }
 
         void EnsureSlot(Slot& slot, const FrameDesc& frame)
@@ -760,8 +763,13 @@ void ShadowMaskedPS(MaskedVertex input)
 
             try
             {
-                EnsureAtlas(frame.atlasWidth, frame.atlasHeight, frame.format);
+                const bool newAtlas = EnsureAtlas(frame.atlasWidth, frame.atlasHeight, frame.format);
                 EnsureSlot(*slot, frame);
+                bool keepAny = false;
+                for (uint32_t c = 0; c < frame.cascadeCount && !newAtlas; ++c)
+                {
+                    keepAny = keepAny || frame.cascades[c].keep;
+                }
 
                 auto queue = GraphicsQueue2();
                 auto cmdList = queue->GetCommandList();
@@ -775,7 +783,30 @@ void ShadowMaskedPS(MaskedVertex input)
                 cmdList->TransitionBarrier(*atlas, D3D12_RESOURCE_STATE_DEPTH_WRITE);
                 cmdList->FlushResourceBarriers();
                 cmdList->SetRenderTargets(0, nullptr, 0, &atlasDsv, 0);
-                cmdList->ClearDepthStencil(&atlasDsv, 0, D3D12_CLEAR_FLAG_DEPTH, 1.0f);
+                if (!keepAny)
+                {
+                    cmdList->ClearDepthStencil(&atlasDsv, 0, D3D12_CLEAR_FLAG_DEPTH, 1.0f);
+                }
+                else
+                {
+                    // Only the cascades drawn anew; the kept ones stay as the previous atlas left them.
+                    clearRects.clear();
+                    for (uint32_t c = 0; c < frame.cascadeCount; ++c)
+                    {
+                        const CascadeDesc& desc = frame.cascades[c];
+                        if (!desc.keep)
+                        {
+                            clearRects.push_back({static_cast<LONG>(desc.viewport[0]), static_cast<LONG>(desc.viewport[1]),
+                                                  static_cast<LONG>(desc.viewport[0] + desc.viewport[2]),
+                                                  static_cast<LONG>(desc.viewport[1] + desc.viewport[3])});
+                        }
+                    }
+                    if (!clearRects.empty())
+                    {
+                        cmdList->ClearDepthStencil(&atlasDsv, 0, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, clearRects.data(),
+                                                   clearRects.size());
+                    }
+                }
 
                 cmdList->SetRootSignature(*signature);
                 raw->SetGraphicsRootShaderResourceView(kMatricesParameter,
@@ -784,55 +815,87 @@ void ShadowMaskedPS(MaskedVertex input)
                 raw->SetDescriptorHeaps(1, descriptorHeaps);
                 cmdList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-                uint32_t drawn = 0;
-                for (uint32_t c = 0; c < frame.cascadeCount; ++c)
+                // Draws sorted by cascade, then by pipeline, mask and mesh: the pipeline, the mask and the vertex buffers
+                // change only where they differ. The order inside a cascade does not change the depth (LESS_EQUAL).
+                drawOrder.resize(frame.drawCount);
+                for (uint32_t d = 0; d < frame.drawCount; ++d)
                 {
-                    const CascadeDesc& cascade = frame.cascades[c];
+                    drawOrder[d] = d;
+                }
+                std::sort(drawOrder.begin(), drawOrder.end(), [&frame](const uint32_t a, const uint32_t b)
+                {
+                    const DrawDesc& x = frame.draws[a];
+                    const DrawDesc& y = frame.draws[b];
+                    return std::make_tuple(x.cascade, x.boneCount != 0, x.mask, x.mesh, a) <
+                           std::make_tuple(y.cascade, y.boneCount != 0, y.mask, y.mesh, b);
+                });
 
-                    const D3D12_VIEWPORT viewport = {static_cast<float>(cascade.viewport[0]),
-                                                     static_cast<float>(cascade.viewport[1]),
-                                                     static_cast<float>(cascade.viewport[2]),
-                                                     static_cast<float>(cascade.viewport[3]), 0.0f, 1.0f};
-                    const D3D12_RECT scissor = {static_cast<LONG>(cascade.viewport[0]), static_cast<LONG>(cascade.viewport[1]),
-                                                static_cast<LONG>(cascade.viewport[0] + cascade.viewport[2]),
-                                                static_cast<LONG>(cascade.viewport[1] + cascade.viewport[3])};
-                    cmdList->SetViewports(&viewport, 1);
-                    cmdList->SetScissorRects(&scissor, 1);
-                    raw->SetGraphicsRoot32BitConstants(kConstantsParameter, kViewProjConstants, cascade.viewProj, 0);
-
-                    for (uint32_t d = 0; d < frame.drawCount; ++d)
+                uint32_t drawn = 0;
+                uint32_t currentCascade = UINT32_MAX;
+                const CascadeDesc* cascade = nullptr;
+                const gfx::GraphicPSO* currentPso = nullptr;
+                const Mask* currentMask = nullptr;
+                const Mesh* currentMesh = nullptr;
+                int currentStreams = -1; // 0: positions, 1: skinned, 2: positions and texture coordinates
+                for (const uint32_t d : drawOrder)
+                {
+                    const DrawDesc& draw = frame.draws[d];
+                    if (draw.cascade >= frame.cascadeCount || (keepAny && frame.cascades[draw.cascade].keep))
                     {
-                        const DrawDesc& draw = frame.draws[d];
-                        if (draw.cascade != c)
-                        {
-                            continue;
-                        }
+                        continue;
+                    }
 
-                        const auto found = meshes.find(draw.mesh);
-                        if (found == meshes.end())
-                        {
-                            continue;
-                        }
-                        const Mesh& mesh = found->second;
-                        const bool skinned = draw.boneCount != 0;
-                        if (skinned && !mesh.skinned)
-                        {
-                            continue;
-                        }
+                    if (draw.cascade != currentCascade)
+                    {
+                        currentCascade = draw.cascade;
+                        cascade = &frame.cascades[currentCascade];
 
-                        const auto foundMask = draw.mask != 0 && !skinned && mesh.texCoords ? masks.find(draw.mask) : masks.end();
-                        const bool masked = foundMask != masks.end();
+                        const D3D12_VIEWPORT viewport = {static_cast<float>(cascade->viewport[0]),
+                                                         static_cast<float>(cascade->viewport[1]),
+                                                         static_cast<float>(cascade->viewport[2]),
+                                                         static_cast<float>(cascade->viewport[3]), 0.0f, 1.0f};
+                        const D3D12_RECT scissor = {static_cast<LONG>(cascade->viewport[0]), static_cast<LONG>(cascade->viewport[1]),
+                                                    static_cast<LONG>(cascade->viewport[0] + cascade->viewport[2]),
+                                                    static_cast<LONG>(cascade->viewport[1] + cascade->viewport[3])};
+                        cmdList->SetViewports(&viewport, 1);
+                        cmdList->SetScissorRects(&scissor, 1);
+                        raw->SetGraphicsRoot32BitConstants(kConstantsParameter, kViewProjConstants, cascade->viewProj, 0);
+                        currentPso = nullptr; // the depth bias of a cascade is a part of the pipeline
+                    }
 
-                        cmdList->SetPipelineState(GetPso(skinned, masked, frame.format, cascade.depthBias,
-                                                         cascade.slopeScaledDepthBias, cascade.depthClip));
-                        if (masked)
-                        {
-                            raw->SetGraphicsRootDescriptorTable(kMaskParameter, foundMask->second.descriptor);
-                        }
-                        const uint32_t drawConstants[kDrawConstants] = {draw.firstMatrix, draw.boneCount};
-                        raw->SetGraphicsRoot32BitConstants(kConstantsParameter, kDrawConstants, drawConstants,
-                                                           kViewProjConstants);
+                    const auto found = meshes.find(draw.mesh);
+                    if (found == meshes.end())
+                    {
+                        continue;
+                    }
+                    const Mesh& mesh = found->second;
+                    const bool skinned = draw.boneCount != 0;
+                    if (skinned && !mesh.skinned)
+                    {
+                        continue;
+                    }
 
+                    const auto foundMask = draw.mask != 0 && !skinned && mesh.texCoords ? masks.find(draw.mask) : masks.end();
+                    const bool masked = foundMask != masks.end();
+
+                    const gfx::GraphicPSO& pso = GetPso(skinned, masked, frame.format, cascade->depthBias, cascade->slopeScaledDepthBias,
+                                                        cascade->depthClip);
+                    if (&pso != currentPso)
+                    {
+                        cmdList->SetPipelineState(pso);
+                        currentPso = &pso;
+                    }
+                    if (masked && &foundMask->second != currentMask)
+                    {
+                        raw->SetGraphicsRootDescriptorTable(kMaskParameter, foundMask->second.descriptor);
+                        currentMask = &foundMask->second;
+                    }
+                    const uint32_t drawConstants[kDrawConstants] = {draw.firstMatrix, draw.boneCount};
+                    raw->SetGraphicsRoot32BitConstants(kConstantsParameter, kDrawConstants, drawConstants, kViewProjConstants);
+
+                    const int streams = masked ? 2 : skinned ? 1 : 0;
+                    if (&mesh != currentMesh || streams != currentStreams)
+                    {
                         if (masked)
                         {
                             cmdList->SetVBuffer(0, 2u, mesh.maskedViews.data());
@@ -842,9 +905,11 @@ void ShadowMaskedPS(MaskedVertex input)
                             cmdList->SetVBuffer(0, skinned ? 3u : 1u, mesh.vertexViews.data());
                         }
                         cmdList->SetIBuffer(&mesh.indexView);
-                        cmdList->DrawIndexed(draw.indexCount, skinned ? 1u : draw.instanceCount, draw.startIndex, 0, 0);
-                        ++drawn;
+                        currentMesh = &mesh;
+                        currentStreams = streams;
                     }
+                    cmdList->DrawIndexed(draw.indexCount, skinned ? 1u : draw.instanceCount, draw.startIndex, 0, 0);
+                    ++drawn;
                 }
 
                 if (drawQueries)

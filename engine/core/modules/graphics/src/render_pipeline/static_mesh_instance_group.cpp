@@ -63,7 +63,8 @@ namespace nau
 
     RenderList::Ptr nau::StaticMeshInstanceGroup::createRenderList(const nau::math::Vector3& viewerPosition,
         eastl::function<bool(const InstanceInfo&)>& filterFunc,
-        eastl::function<bool(const nau::MaterialAssetView::Ptr)>& materialFilter)
+        eastl::function<bool(const nau::MaterialAssetView::Ptr)>& materialFilter,
+        const LodSelection& lodSelection)
     {
         NAU_FATAL(m_staticMesh);
 
@@ -116,13 +117,16 @@ namespace nau
             }
 
             // Level of detail by the distance from the viewer, in the units of the mesh: the scale of the instance is divided
-            // out. Every view gets the position of the main camera, so the shadows are cast by the levels that are seen.
+            // out. Every view gets the position of the main camera, so the shadows are cast by the levels that are seen; the
+            // far shadow cascades scale the distance up, their texels are larger than the details dropped, and the shadow
+            // cascades take the shadow-only levels (lodSelection).
             uint32_t lodLevel = 0;
             if (hasLods)
             {
                 const float scale = std::sqrt(float(lengthSqr(info.worldMatrix.getCol0().getXYZ())));
                 const float distance = std::sqrt(float(lengthSqr(info.worldMatrix.getTranslation() - viewerPosition)));
-                lodLevel = mesh.selectLod(distance / eastl::max(scale, 1e-6f));
+                lodLevel = mesh.selectLod(distance * lodSelection.distanceScale / eastl::max(scale, 1e-6f),
+                                          lodSelection.shadowLevels);
             }
 
             const nau::StaticMeshLod& lod = mesh.getLod(lodLevel);

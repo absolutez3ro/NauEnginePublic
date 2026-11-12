@@ -68,16 +68,22 @@ namespace nau
         view.clearLists();
         for (auto& manager : m_managers)
         {
-            view.addRenderList(manager->getRenderList(viewerPosition, view.getInstanceFilter(), view.getMaterialFilter()));
+            view.addRenderList(manager->getRenderList(viewerPosition, view.getInstanceFilter(), view.getMaterialFilter(),
+                                                      view.getLodSelection()));
         }
         view.prepareInstanceData();
 
         uint64_t instances = 0;
+        uint64_t triangles = 0;
         for (const auto& list : view.getLists())
         {
             for (const auto& entity : list->getEntities())
             {
                 instances += entity.instancesCount;
+                if (entity.endIndex > entity.startIndex)
+                {
+                    triangles += uint64_t(entity.endIndex - entity.startIndex) / 3 * entity.instancesCount;
+                }
             }
         }
         const ViewsStats::Kind kind = view.containsTag(Tags::shadowCascadeTag) ? ViewsStats::Cascade
@@ -91,6 +97,7 @@ namespace nau
             if (cascade >= 0 && cascade < static_cast<intptr_t>(csm::CascadeShadows::MAX_CASCADES))
             {
                 m_viewsStats.cascadeInstances[cascade] += instances;
+                m_viewsStats.cascadeTriangles[cascade] += triangles;
             }
         }
     }
@@ -107,17 +114,6 @@ namespace nau
                 continue;
             }
             updateView(*view, viewerPosition);
-        }
-    }
-
-    void RenderScene::updateViewsWithTag(RenderTag tag, const nau::math::Vector3& viewerPosition)
-    {
-        for (auto& view : m_views)
-        {
-            if (view->isActive() && view->containsTag(tag))
-            {
-                updateView(*view, viewerPosition);
-            }
         }
     }
 

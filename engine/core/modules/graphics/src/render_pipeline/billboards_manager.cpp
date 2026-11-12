@@ -112,7 +112,8 @@ namespace nau
 
     RenderList::Ptr BillboardsManager::getRenderList(const nau::math::Vector3& viewerPosition,
         eastl::function<bool(const InstanceInfo&)>& filterFunc,
-        eastl::function<bool(const nau::MaterialAssetView::Ptr)>& materialFilter)
+        eastl::function<bool(const nau::MaterialAssetView::Ptr)>& materialFilter,
+        const LodSelection& /*lodSelection*/)
     {
         NAU_FAILURE("Not implemented yet!");
         return RenderList::Ptr();

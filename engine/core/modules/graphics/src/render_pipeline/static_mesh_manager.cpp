@@ -69,7 +69,7 @@ namespace nau
             {
                 auto dummy = eastl::function<bool(const InstanceInfo&)>([](const InstanceInfo&) -> bool { return true; });
                 auto dummyForMaterials = eastl::function<bool(const MaterialAssetView::Ptr)>([](const MaterialAssetView::Ptr) -> bool { return true; });
-                auto list = group->createRenderList({}, dummy, dummyForMaterials);
+                auto list = group->createRenderList({}, dummy, dummyForMaterials, LodSelection{});
 
                 for (auto& ent : list->getEntities())
                 {
@@ -86,7 +86,8 @@ namespace nau
 
     RenderList::Ptr nau::StaticMeshManager::getRenderList(const nau::math::Vector3& viewerPosition,
         eastl::function<bool(const InstanceInfo&)>& filterFunc,
-        eastl::function<bool(const nau::MaterialAssetView::Ptr)>& materialFilter)
+        eastl::function<bool(const nau::MaterialAssetView::Ptr)>& materialFilter,
+        const LodSelection& lodSelection)
     {
         eastl::vector<RenderList::Ptr> lists;
         lists.reserve(m_meshGroups.size());
@@ -94,7 +95,7 @@ namespace nau
         {
             if (const auto& group = weakGroup.lock())
             {
-                lists.emplace_back(group->createRenderList(viewerPosition, filterFunc, materialFilter));
+                lists.emplace_back(group->createRenderList(viewerPosition, filterFunc, materialFilter, lodSelection));
             }
             else
             {

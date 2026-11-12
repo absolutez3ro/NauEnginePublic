@@ -7,10 +7,27 @@
 #include <cmath>
 #include <cstring>
 
+#include "nau/3d/dag_d3dResource.h"
 #include "nau/async/task.h"
+#include "nau/diag/logging.h"
 
 nau::StaticMesh::StaticMesh()
 {
+}
+
+// The buffers of the levels were never freed before: every unloaded scene kept its geometry in video memory. Freed here and
+// not in StaticMeshLod, which is copied around in the vector of the levels. The driver deletes a buffer once the frames
+// that may still use it have completed.
+nau::StaticMesh::~StaticMesh()
+{
+    for (StaticMeshLod& lod : lods)
+    {
+        del_d3dres(lod.m_positionsBuffer);
+        del_d3dres(lod.m_normalsBuffer);
+        del_d3dres(lod.m_tangentsBuffer);
+        del_d3dres(lod.m_texCoordsBuffer);
+        del_d3dres(lod.m_indexBuffer);
+    }
 }
 
 namespace
@@ -258,8 +275,15 @@ nau::async::Task<nau::Ptr<nau::StaticMesh>> nau::StaticMesh::createFromStaticMes
         {
             continue;
         }
+        // A shadow-only level before an ordinary one would hide the ordinary one from the views that are seen.
+        if (!source.shadowOnly && !mesh->m_lodShadowOnly.empty() && mesh->m_lodShadowOnly.back())
+        {
+            NAU_LOG_WARNING("A level of detail follows a shadow-only level: the level and the following ones are ignored");
+            break;
+        }
         loadLod(*source.accessor, mesh->lods.emplace_back());
         mesh->m_lodDistances.push_back(source.distance);
+        mesh->m_lodShadowOnly.push_back(source.shadowOnly);
     }
 
     // load material: the default one in the only slot of every level (StaticMeshComponent overrides it)
@@ -293,10 +317,10 @@ uint32_t nau::StaticMesh::getLodsCount() const
     return lods.size();
 }
 
-uint32_t nau::StaticMesh::selectLod(float distance) const
+uint32_t nau::StaticMesh::selectLod(float distance, bool shadowLevels) const
 {
     uint32_t lod = 0;
-    while (lod < m_lodDistances.size() && distance > m_lodDistances[lod])
+    while (lod < m_lodDistances.size() && distance > m_lodDistances[lod] && (shadowLevels || !m_lodShadowOnly[lod]))
     {
         ++lod;
     }

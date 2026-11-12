@@ -4,6 +4,11 @@
 
 #include "graphics_impl.h"
 
+#include <cstdlib>
+#include <cstring>
+
+#include "nau/runtime/internal/runtime_component.h"
+
 #include <EASTL/unique_ptr.h>
 #include <imgui.h>
 #include "nau/input.h"
@@ -301,11 +306,43 @@ namespace nau
             task.detach();
         }
 
-        d3d::finish_render_commands();
+        // Stage 1b of the MGPU optimisation, frame pipelining (on by default, NAU_FRAME_PIPELINING=0 switches it off). The waits below
+        // keep the CPU and the GPU from overlapping: the CPU records a frame only after the GPU has finished the previous
+        // one. Pre-render work (asset loading, scene activation, material changes) may change resources the GPU still
+        // reads, so a frame with such work waits and runs it exactly as before. A frame without it records at once: the
+        // driver bounds the frames in flight at present, frees resources only after the frames that used them, and the
+        // per-frame updates of buffers go through discard (renamed copies). Work that arrives during such a frame is run
+        // by the next frame, which then waits.
+        static const bool pipelining = []
+        {
+            const char* const value = std::getenv("NAU_FRAME_PIPELINING");
+            const bool enabled = value == nullptr || std::strcmp(value, "0") != 0;
+            NAU_LOG_INFO("graphics: frame pipelining {}", enabled ? "on" : "off (NAU_FRAME_PIPELINING=0)");
+            return enabled;
+        }();
 
-        co_await executeRenderJobs();
+        if (pipelining && !hasPreRenderWork())
+        {
+            ++m_pipelinedFrames;
+        }
+        else
+        {
+            ++m_waitingFrames;
 
-        d3d::finish_render_commands();
+            d3d::finish_render_commands();
+
+            co_await executeRenderJobs();
+
+            d3d::finish_render_commands();
+        }
+
+        if (pipelining && m_pipelinedFrames + m_waitingFrames >= 600)
+        {
+            NAU_LOG_INFO("graphics: {} of {} frames recorded without waiting for the GPU", m_pipelinedFrames,
+                         m_pipelinedFrames + m_waitingFrames);
+            m_pipelinedFrames = 0;
+            m_waitingFrames = 0;
+        }
 
         renderMainScene();
 
@@ -486,6 +523,20 @@ namespace nau
         NAU_FATAL(action);
         lock_(m_preRenderJobsMutex);
         m_preRenderJobs.emplace_back(std::move(action));
+    }
+
+    bool GraphicsImpl::hasPreRenderWork()
+    {
+        {
+            lock_(m_preRenderJobsMutex);
+            if (!m_preRenderJobs.empty())
+            {
+                return true;
+            }
+        }
+        // The work queue tells it through its runtime component; a queue that cannot tell counts as busy.
+        auto* const component = m_preRenderWorkQueue->as<IRuntimeComponent*>();
+        return component == nullptr || component->hasWorks();
     }
 
     async::Task<> GraphicsImpl::executeRenderJobs()

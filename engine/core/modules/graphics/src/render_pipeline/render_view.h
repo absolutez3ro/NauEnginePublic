@@ -61,6 +61,17 @@ namespace nau
             return m_active;
         }
 
+        // How the view chooses the levels of detail: the default for the views that are seen, the shadow-only levels and a
+        // larger distance for the shadow cascades (stage 3 of the MGPU optimisation, GraphicsScene).
+        void setLodSelection(const LodSelection& selection)
+        {
+            m_lodSelection = selection;
+        }
+        const LodSelection& getLodSelection() const
+        {
+            return m_lodSelection;
+        }
+
 
         eastl::function<bool(const InstanceInfo&)>& getInstanceFilter();
         void setInstanceFilter(eastl::function<bool(const InstanceInfo&)>& filter);
@@ -80,6 +91,7 @@ namespace nau
 
         RenderTags m_tags;
         bool m_active = true;
+        LodSelection m_lodSelection;
 
         void* m_userData = nullptr;
     };

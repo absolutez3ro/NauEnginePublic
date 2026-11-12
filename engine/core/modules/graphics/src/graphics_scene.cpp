@@ -23,8 +23,49 @@
 #include "nau/utils/performance_profiling.h"
 #include "nau/vfx_manager.h"
 
+#include <cstdlib>
+#include <cstring>
+
 namespace nau
 {
+    namespace
+    {
+        // Stage 3 of the MGPU optimisation: the far shadow cascades (from FAR_SHADOW_CASCADE on) choose the levels of detail
+        // as if the casters were this many times farther. Their texels cover metres, the details the coarser levels drop are
+        // smaller. NAU_SHADOW_LOD_SCALE overrides it, 1 switches it off.
+        constexpr int FAR_SHADOW_CASCADE = 2;
+
+        float farShadowCascadeLodScale()
+        {
+            static const float scale = []
+            {
+                float value = 2.0f;
+                if (const char* const text = std::getenv("NAU_SHADOW_LOD_SCALE"))
+                {
+                    value = static_cast<float>(std::atof(text));
+                }
+                value = value >= 1.0f && value <= 16.0f ? value : 1.0f;
+                NAU_LOG_INFO("graphics: far shadow cascades choose levels of detail at {}x the distance", value);
+                return value;
+            }();
+            return scale;
+        }
+
+        // The far shadow cascades draw the shadow-only levels of detail of the meshes that have them (IMeshLodsAccessor).
+        // NAU_SHADOW_ONLY_LODS=0 makes them draw the levels that are seen.
+        bool shadowOnlyLodsEnabled()
+        {
+            static const bool enabled = []
+            {
+                const char* const text = std::getenv("NAU_SHADOW_ONLY_LODS");
+                const bool value = text == nullptr || std::strcmp(text, "0") != 0;
+                NAU_LOG_INFO("graphics: shadow-only levels of detail {}", value ? "on" : "off (NAU_SHADOW_ONLY_LODS=0)");
+                return value;
+            }();
+            return enabled;
+        }
+    } // namespace
+
     GraphicsScene::GraphicsScene(Uid worldUid) :
         m_worldUid(worldUid)
     {
@@ -44,6 +85,15 @@ namespace nau
                 return info.isCastShadow && csmViewPtr->getFrustum().testSphere(info.worldSphere) != 0;
             });
             csmView->setInstanceFilter(csmFilter);
+            // The far cascades only: the near ones hold the casters next to the camera (grass blades a metre away), their
+            // shadows stay those of the levels that are seen.
+            LodSelection lodSelection;
+            if (i >= FAR_SHADOW_CASCADE)
+            {
+                lodSelection.distanceScale = farShadowCascadeLodScale();
+                lodSelection.shadowLevels = shadowOnlyLodsEnabled();
+            }
+            csmView->setLodSelection(lodSelection);
 
             m_renderScene->addView(csmView);
         }

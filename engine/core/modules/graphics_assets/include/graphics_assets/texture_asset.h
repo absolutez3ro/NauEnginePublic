@@ -17,6 +17,9 @@ namespace nau
     public:
         static async::Task<nau::Ptr<TextureAssetView>> createFromAssetAccessor(nau::Ptr<> accessor);
 
+        // The view owns its texture (created in createFromAssetAccessor) and frees it.
+        ~TextureAssetView();
+
         inline BaseTexture* getTexture()
         {
             return m_Texture;
@@ -59,7 +62,7 @@ namespace nau
 
         using Ptr = nau::Ptr<TextureAssetView>;
     private:
-        BaseTexture* m_Texture;
+        BaseTexture* m_Texture = nullptr;
         eastl::vector<CpuMip> m_cpuMips;
         uint32_t m_cpuMipsWidth = 0;
         uint32_t m_cpuMipsHeight = 0;

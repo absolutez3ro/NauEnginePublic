@@ -15,9 +15,12 @@ namespace nau
 
     public:
         virtual void update() = 0;
+        // lodSelection: how the view chooses the levels of detail (RenderView::setLodSelection). A manager without levels of
+        // detail ignores it.
         virtual RenderList::Ptr getRenderList(const nau::math::Vector3& viewerPosition,
             eastl::function<bool(const InstanceInfo&)>& filterFunc,
-            eastl::function<bool(const nau::MaterialAssetView::Ptr)>& materialFilter) = 0;
+            eastl::function<bool(const nau::MaterialAssetView::Ptr)>& materialFilter,
+            const LodSelection& lodSelection) = 0;
     };
 
 } // namespace nau

@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 
 #include "nau/math/math.h"
 #include "nau/scene/components/directional_light_component.h"
@@ -32,6 +34,9 @@ namespace nau::sample
         {
             m_castShadows = light->hasShadows();
             m_intensity = light->getIntensity();
+            // NAU_SAMPLE_SUN_ROTATE=1 starts with the sun turning (a benchmark of shadows that change every frame).
+            const char* const rotate = std::getenv("NAU_SAMPLE_SUN_ROTATE");
+            m_autoRotate = rotate != nullptr && std::strcmp(rotate, "1") == 0;
             m_initialized = true;
         }
 

@@ -123,6 +123,18 @@ namespace nau::render
                 nau::math::NauFrustum frustum;
                 frustum.construct(globtm);
 
+                // Sparse update of the far cascades (stage 5): another light or another layout of the cascades makes the
+                // kept cascades wrong.
+                if (sparseShadowFrames() > 0)
+                {
+                    if (static_cast<int>(mode.numCascades) != m_sparseNumCascades || float(lengthSqr(lightDir - m_sparseLightDir)) > 1e-12f)
+                    {
+                        m_csm->invalidate();
+                    }
+                    m_sparseNumCascades = static_cast<int>(mode.numCascades);
+                    m_sparseLightDir = lightDir;
+                }
+
                 m_csm->prepareShadowCascades(mode, lightDir, view, cameraPos, proj,
                     frustum, nau::math::Vector2(nearZ, farZ), nearZ);
 
@@ -135,7 +147,29 @@ namespace nau::render
                 if (!atlasFromSecondGpu)
                 {
 #if defined(NAU_ENABLE_MGPU)
-                    rebuildSkippedCascadeLists();
+                    // Nau's atlas holds cascades of the second GPU, drawn for an older frame: the cascades Nau would keep
+                    // are drawn anew.
+                    if (m_mgpuShadows.secondGpuCascadesInAtlas && sparseShadowFrames() > 0)
+                    {
+                        m_csm->invalidate();
+                        m_csm->prepareShadowCascades(mode, lightDir, view, cameraPos, proj,
+                            frustum, nau::math::Vector2(nearZ, farZ), nearZ);
+                    }
+                    m_mgpuShadows.secondGpuCascadesInAtlas = false;
+                    if (m_mgpuShadows.cascadeListsSkipped)
+                    {
+                        m_mgpuShadows.cascadeListsSkipped = false;
+                        ++m_mgpuShadows.listFallbacks;
+                    }
+#endif
+                    // The lists the cascades Nau draws this frame lack: the far ones of the sparse update, or all while the
+                    // second GPU was busy.
+                    buildCascadeLists([this](int cascade) { return m_csm->shouldUpdateCascade(cascade); });
+#if defined(NAU_ENABLE_MGPU)
+                    for (int cascade = 0; cascade < m_csm->getNumCascadesToRender(); ++cascade)
+                    {
+                        m_mgpuShadows.timings.nauCascadeDraws += m_csm->shouldUpdateCascade(cascade) ? 1 : 0;
+                    }
                     m_mgpuShadows.timings.gpuNauCascades.begin();
 #endif
                     m_csm->renderShadowsCascades();
@@ -143,6 +177,12 @@ namespace nau::render
                     m_mgpuShadows.timings.gpuNauCascades.end();
 #endif
                 }
+#if defined(NAU_ENABLE_MGPU)
+                else
+                {
+                    renderMgpuNearCascades();
+                }
+#endif
 
                 // Shadow maps of the point lights (before the resolve node draws the lights).
                 renderOmniShadows();
@@ -205,8 +245,9 @@ namespace nau::render
 #if defined(NAU_ENABLE_MGPU)
                     if (m_mgpuShadows.hasAtlas)
                     {
-                        // The atlas of the second GPU goes with the cascade matrices of the frame it was drawn for.
-                        m_csm->setCascadesToShader(m_gBuffer->getResolveShading()->getMaterial(), m_mgpuShadows.atlasSnapshot);
+                        // The atlas of the second GPU goes with the cascade matrices of the frame it was drawn for, the
+                        // near cascades Nau has drawn this frame with the matrices of this frame.
+                        m_csm->setCascadesToShader(m_gBuffer->getResolveShading()->getMaterial(), m_mgpuShadows.resolveSnapshot);
                     }
                     else
 #endif

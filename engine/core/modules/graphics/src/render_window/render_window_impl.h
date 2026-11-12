@@ -98,6 +98,21 @@ namespace nau::render
         // the CSM and gbuffer_resolve nodes. Without NAU_ENABLE_MGPU it does nothing.
         void initializeMgpu();
 
+        // Stage 5 of the MGPU optimisation, sparse update of the far shadow cascades (from SPARSE_FIRST_CASCADE): a far
+        // cascade keeps its shadow map while the view stays inside it, and is drawn anew at least every
+        // sparseShadowFrames() + its number frames (moving casters; the far cascades take turns). Their lists are built only
+        // in the frames that draw them, after the cascades of the frame are known (buildCascadeLists).
+        // NAU_SHADOW_SPARSE_FRAMES overrides the frames, 0 draws every cascade every frame as before.
+        static constexpr int SPARSE_FIRST_CASCADE = 2;
+        static int sparseShadowFrames();
+        // The lists of the cascade views that have none this frame (skipped in render()), for the cascades `draw` accepts,
+        // culled with the cascade matrices of this frame.
+        void buildCascadeLists(const eastl::function<bool(int)>& draw);
+        nau::math::Vector3 m_viewerPosition = nau::math::Vector3::zero(); // of the lists of this frame
+        // A change of the light or of the cascades makes every kept cascade wrong: they are drawn anew.
+        nau::math::Vector3 m_sparseLightDir = nau::math::Vector3::zero();
+        int m_sparseNumCascades = -1;
+
         void resizeResolutions();
 
     private:
@@ -168,6 +183,9 @@ namespace nau::render
                 uint64_t frame = 0;
                 nau::csm::CascadeShadows::ShaderSnapshot snapshot;
                 nau::render::OmniShadows::Snapshot omniSnapshot;  // point light shadows only (m_mgpuOmniShadows)
+                // The camera of every cascade in that frame (CascadeShadows::getRenderCameraWorldViewPos): the cascade
+                // matrices of the snapshot are relative to it (updateMgpuResolveSnapshot).
+                eastl::array<nau::math::Vector3, nau::csm::CascadeShadows::MAX_CASCADES> viewPos;
             };
             eastl::vector<PendingFrame> pendingFrames;
             uint64_t frame = 0;
@@ -175,6 +193,43 @@ namespace nau::render
             // Nau's atlas holds an atlas of the second GPU, drawn with atlasSnapshot for Nau frame atlasFrame.
             bool hasAtlas = false;
             nau::csm::CascadeShadows::ShaderSnapshot atlasSnapshot;
+            eastl::array<nau::math::Vector3, nau::csm::CascadeShadows::MAX_CASCADES> atlasViewPos; // PendingFrame::viewPos
+            // Stage 4 of the MGPU optimisation: the cascades [0, nearCascades) are drawn by Nau every frame over the atlas
+            // of the second GPU, which draws only the far ones. Set by renderMgpuShadows for its frame (0: the second GPU
+            // draws all). resolveSnapshot: the constants of the resolve, the near cascades of this frame and the far ones
+            // of atlasSnapshot.
+            int nearCascades = 0;
+            nau::csm::CascadeShadows::ShaderSnapshot resolveSnapshot;
+
+            // Stage 5: the atlas of the second GPU persists, a far cascade it is not asked to redraw keeps its rectangle
+            // (CascadeDesc::keep). redrawPending: Nau has drawn the cascade anew (shouldUpdateCascade) since the last
+            // submitted atlas; fullRedraw: the atlas of the second GPU cannot be trusted (new, another scene or layout, a
+            // failed atlas). secondGpuCascadesInAtlas: Nau's atlas holds cascades of the second GPU, drawn for an older frame.
+            eastl::array<bool, nau::csm::CascadeShadows::MAX_CASCADES> redrawPending = {};
+            bool fullRedraw = true;
+            nau::csm::CascadeShadows::AtlasInfo redrawAtlas;
+            int redrawNumCascades = -1;
+            bool secondGpuCascadesInAtlas = false;
+
+            // Stage 7: the earliest time of the next atlas (mgpuSubmitDue).
+            std::chrono::steady_clock::time_point nextSubmit;
+
+            // Stage 7, auto mode (nau::mgpu::bridge::isAutoEnabled, m_mgpuShadows only): at the end of a report period the
+            // frame rate of the choice in use is kept; now and then the other choice is tried for two periods (the first
+            // one settles, the second is measured) and kept if it is clearly faster. suspended: one GPU draws all shadows,
+            // the second GPU waits with its meshes loaded, for a fast return.
+            struct AutoSwitch
+            {
+                bool suspended = false;
+                bool probing = false;
+                int probePeriods = 0;
+                float framesPerSecond = 0; // of the choice in use, before the try
+                float otherFramesPerSecond = 0; // of the other choice at its last try
+                float intervalSeconds = 0;
+                std::chrono::steady_clock::time_point nextProbe;
+                uint64_t meshGeneration = 0;
+            };
+            AutoSwitch autoSwitch;
             nau::render::OmniShadows::Snapshot omniAtlasSnapshot;  // point light shadows only (m_mgpuOmniShadows)
             uint64_t atlasFrame = 0;
 
@@ -210,7 +265,7 @@ namespace nau::render
             struct Timings
             {
                 GpuTimer gpuFrame; // Nau's frame graph on the scene GPU
-                GpuTimer gpuNauCascades; // Nau's own cascade pass (MGPU off, or no atlas of the second GPU yet)
+                GpuTimer gpuNauCascades; // Nau's own cascade pass (MGPU off, no atlas of the second GPU yet, or the near cascades)
                 GpuTimer gpuAtlasCopy; // an atlas of the second GPU into Nau's atlas
                 std::chrono::steady_clock::time_point renderStart;
                 uint32_t frames = 0;
@@ -219,6 +274,11 @@ namespace nau::render
                 eastl::array<double, nau::RenderScene::ViewsStats::KindCount> listSeconds = {};
                 eastl::array<uint64_t, nau::RenderScene::ViewsStats::KindCount> listInstances = {};
                 eastl::array<uint64_t, nau::csm::CascadeShadows::MAX_CASCADES> cascadeInstances = {};
+                eastl::array<uint64_t, nau::csm::CascadeShadows::MAX_CASCADES> cascadeTriangles = {};
+                uint64_t nauCascadeDraws = 0; // cascades Nau has drawn (all of a frame, or the near ones)
+                uint64_t secondGpuCascadeDraws = 0; // cascades the second GPU has drawn anew (not kept)
+                uint32_t submits = 0;
+                uint32_t unchangedFrames = 0; // frames that sent no atlas: nothing to draw anew
                 double collectSeconds = 0; // the casters for the second GPU
                 double submitSeconds = 0; // recording and submitting an atlas of the second GPU
                 // Sums of the renderer at the last report: the GPU times of the second GPU are differences.
@@ -242,17 +302,29 @@ namespace nau::render
         static constexpr float MGPU_REPORT_PERIOD_SECONDS = 2.0f;
 
         // Called by the CSM node after prepareShadowCascades. Returns true when Nau's atlas holds an atlas of the second
-        // GPU for this frame: Nau then does not draw the cascades, and gbuffer_resolve uses m_mgpuShadows.atlasSnapshot.
+        // GPU for this frame: Nau then draws only the near cascades (renderMgpuNearCascades), and gbuffer_resolve uses
+        // m_mgpuShadows.resolveSnapshot.
         bool renderMgpuShadows();
+        // Stage 7 of the MGPU optimisation: at most NAU_MGPU_MAX_ATLASES atlases per second for each renderer of the second
+        // GPU (0: as many as it draws). Every atlas crosses the bus to the scene GPU, which presents the frames over the same
+        // bus: in a light scene a faster rate only takes the bandwidth of the frames. mgpuSubmitDue: may an atlas be sent
+        // now; mgpuSubmitted: one was.
+        static bool mgpuSubmitDue(const MgpuShadowsState& state);
+        static void mgpuSubmitted(MgpuShadowsState& state);
+        // Auto mode: called at the end of every report period with its frame rate.
+        void updateMgpuAutoSwitch();
+        // Auto mode, one GPU in use: drops the finished atlases of a renderer, keeps its meshes. Returns false (no atlas).
+        bool suspendMgpuRenderer(MgpuShadowsState& state);
+        // The near cascades of this frame over the atlas of the second GPU (m_mgpuShadows.nearCascades).
+        void renderMgpuNearCascades();
+        // m_mgpuShadows.resolveSnapshot from atlasSnapshot and the near cascades of this frame.
+        void updateMgpuResolveSnapshot();
         // Averages of the timings since the last report: the status and a log line.
         void reportMgpuTimings();
-        // The cascade lists were skipped this frame but Nau draws the cascades: builds them now.
-        void rebuildSkippedCascadeLists();
-        nau::math::Vector3 m_viewerPosition = nau::math::Vector3::zero();
         void releaseMgpuShadows(MgpuShadowsState& state);
         // Releases the slots whose copy has executed; returns true when no slot is waiting any more.
         bool releaseMgpuShadowSlots(MgpuShadowsState& state);
-        void collectMgpuShadowCasters(int numCascades);
+        void collectMgpuShadowCasters(int firstCascade, int numCascades);
         void appendMgpuViewCasters(MgpuShadowsState& state, nau::RenderView& view, uint32_t cascade);
         uint64_t registerMgpuShadowMesh(MgpuShadowsState& state, const nau::RenderEntity& entity);
         uint64_t registerMgpuShadowMask(MgpuShadowsState& state, const nau::RenderEntity& entity);

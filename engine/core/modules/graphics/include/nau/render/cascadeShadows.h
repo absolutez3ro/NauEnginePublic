@@ -125,6 +125,9 @@ namespace nau::csm
         void renderShadowsCascades();
         void renderShadowsCascadesCb(csm_render_cascades_cb_t cb);
         void renderShadowCascadeDepth(int cascadeNo, bool clearPerView);
+        // Draws only the cascades [0, count) and clears only their rectangles: the other cascades keep what the atlas holds
+        // (MGPU: the far cascades drawn by the second GPU and copied into the atlas this frame or earlier).
+        void renderNearShadowCascades(int count);
 
         void setCascadesToShader(MaterialAssetView::Ptr resolveMaterial);
 

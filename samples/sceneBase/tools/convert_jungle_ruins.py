@@ -88,6 +88,14 @@ LODS = [
 MAX_LOD_LEAF_GROWTH = 6.0  # the far crowns keep most of their covered area
 LOD_MIN_TRIANGLES = 600  # smaller parts are drawn whole at any distance
 
+# Levels drawn by the shadow cascades only (the extras "nau_lod_shadow_only"), after the levels above: share of the pieces
+# of level 0, switch distance in radii of the prototype. The far cascades scale the distance by 2 (NAU_SHADOW_LOD_SCALE)
+# and switch at half of it; the main view never draws them. Only the thinned parts (leaves, twigs, blades) get them, the
+# grown pieces keep the covered area: trunks and crowns cast the same shadow, from far fewer triangles.
+SHADOW_LODS = [
+    (0.03, 8.0),
+]
+
 DEFAULT_NORMAL = "file:/content/textures/default_normal_8x8.png"
 MASTER_OPAQUE = "file:/res/materials/embedded/standard_opaque.nmat_json"
 MASTER_MASKED = "file:/res/materials/embedded/standard_masked.nmat_json"
@@ -533,8 +541,11 @@ class Scene:
         self.gltf["meshes"].append({"name": name, "primitives": [primitive]})
         return len(self.gltf["meshes"]) - 1
 
-    def set_lods(self, mesh_index, lod_meshes, distances):
-        self.gltf["meshes"][mesh_index]["extras"] = {"nau_lod_meshes": lod_meshes, "nau_lod_distances": [float(d) for d in distances]}
+    def set_lods(self, mesh_index, lod_meshes, distances, shadow_only):
+        extras = {"nau_lod_meshes": lod_meshes, "nau_lod_distances": [float(d) for d in distances]}
+        if any(shadow_only):
+            extras["nau_lod_shadow_only"] = [1 if flag else 0 for flag in shadow_only]
+        self.gltf["meshes"][mesh_index]["extras"] = extras
 
     def add_node(self, mesh_index, material_name, translation=None, rotation=None, scale=None):
         # The sample assigns the material by the node name.
@@ -564,7 +575,8 @@ def keep_share(material_name, detail):
 
 
 def convert_prototype(scene, class_prim, usd_dir, detail, rng):
-    """Meshes of a prototype, in its own coordinates: [(mesh index, material, triangles of every level)]."""
+    """Meshes of a prototype, in its own coordinates: [(mesh index, material, triangles of every level)]; the last
+    levels can be the shadow-only ones (SHADOW_LODS)."""
     meshes = [Mesh(prim) for prim in Usd.PrimRange(class_prim, Usd.PrimAllPrimsPredicate) if prim.GetTypeName() == "Mesh"]
     # Nau measures the distance of a level from the origin of an instance: the radius is taken around the origin, the same
     # for all the parts, so that the trunk and the crown switch together.
@@ -581,8 +593,8 @@ def convert_prototype(scene, class_prim, usd_dir, detail, rng):
             keep = keep_share(name, detail)
             leaf = bool(LEAF_PART.search(name))
             pieces = keep < 1.0 or leaf
-            keeps = [keep] + ([keep * level[0] for level in LODS] if pieces else [])
-            growths = [MAX_LEAF_GROWTH] + [MAX_LOD_LEAF_GROWTH] * len(LODS)
+            keeps = [keep] + ([keep * level[0] for level in LODS] + [keep * level[0] for level in SHADOW_LODS] if pieces else [])
+            growths = [MAX_LEAF_GROWTH] + [MAX_LOD_LEAF_GROWTH] * (len(LODS) + len(SHADOW_LODS))
             levels = thin_out(mesh, triangles, keeps, leaf, rng, growths)
 
             positions, kept = levels[0]
@@ -608,8 +620,23 @@ def convert_prototype(scene, class_prim, usd_dir, detail, rng):
                     lod_meshes.append(scene.add_mesh("%s_lod%d" % (base_name, level), *simplified))
                     lod_distances.append(distances[level - 1])
                     counts.append(len(simplified[3]) // 3)
+                shadow_only = [False] * len(lod_meshes)
+                # The shadow levels continue a complete chain of thinned levels only.
+                if pieces and len(lod_meshes) == len(LODS):
+                    for index, (_, radii) in enumerate(SHADOW_LODS):
+                        level = len(LODS) + 1 + index
+                        if level >= len(levels) or len(levels[level][1]) >= 0.9 * len(levels[level - 1][1]):
+                            break
+                        level_positions, level_kept = levels[level]
+                        simplified = weld(level_positions, mesh.normals[level_kept], mesh.uvs[level_kept])
+                        if len(simplified[3]) // 3 > 0.8 * counts[-1]:
+                            break
+                        lod_meshes.append(scene.add_mesh("%s_shadow%d" % (base_name, index + 1), *simplified))
+                        lod_distances.append(radius * radii)
+                        shadow_only.append(True)
+                        counts.append(len(simplified[3]) // 3)
                 if lod_meshes:
-                    scene.set_lods(mesh_index, lod_meshes, lod_distances)
+                    scene.set_lods(mesh_index, lod_meshes, lod_distances, shadow_only)
                 else:
                     clustered = False
             material_name = scene.material(material, usd_dir, terrain=False, two_sided=clustered)
@@ -728,13 +755,13 @@ def main():
         scene.triangles_in_scene += family_triangles
         scene.far_triangles_in_scene += family_far_triangles
         report.append((pattern, count, family_triangles))
-        print("%-18s %5d instances of %6d candidates, %10d triangles, %9d at the last level, %.0f s"
+        print("%-18s %5d instances of %6d candidates, %10d triangles, %9d at the coarsest level, %.0f s"
               % (pattern, count, len(candidates), family_triangles, family_far_triangles, time.time() - started))
 
     scene.write()
 
     size = sum(os.path.getsize(os.path.join(folder, f)) for folder, _, files in os.walk(out_dir) for f in files)
-    print("nodes %d, meshes %d, materials %d, triangles in the scene %d (%d with every plant at its last level of detail)"
+    print("nodes %d, meshes %d, materials %d, triangles in the scene %d (%d with every plant at its coarsest level, a shadow one if it has it)"
           % (len(scene.gltf["nodes"]), len(scene.gltf["meshes"]), len(scene.materials), scene.triangles_in_scene, scene.far_triangles_in_scene))
     print("binary %.0f MB, whole folder %.0f MB, %.0f s" % (len(scene.binary) / 1e6, size / 1e6, time.time() - started))
 

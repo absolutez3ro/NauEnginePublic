@@ -26,7 +26,8 @@ namespace nau
 
     RenderList::Ptr nau::SkinnedMeshManager::getRenderList(const nau::math::Vector3& viewerPosition,
         eastl::function<bool(const InstanceInfo&)>& filterFunc,
-        eastl::function<bool(const nau::MaterialAssetView::Ptr)>& materialFilter)
+        eastl::function<bool(const nau::MaterialAssetView::Ptr)>& materialFilter,
+        const LodSelection& /*lodSelection*/)
     {
         eastl::vector<RenderList::Ptr> lists;
 

@@ -4,6 +4,10 @@
 
 #include "render_window_impl.h"
 
+#include <algorithm>
+#include <cstdlib>
+
+#include "nau/diag/logging.h"
 #include "nau/graphics/core_graphics.h"
 #include "nau/input.h"
 
@@ -130,14 +134,19 @@ namespace nau::render
                 const int cascadesInUse = m_csm->getNumCascadesToRender();
 #if defined(NAU_ENABLE_MGPU)
                 m_mgpuShadows.cascadeListsSkipped = optimized && nau::mgpu::bridge::isEnabled() && m_mgpuShadows.renderer.isReady() &&
-                                                    m_mgpuShadows.hasAtlas && !m_mgpuShadows.renderer.canSubmit();
+                                                    m_mgpuShadows.hasAtlas &&
+                                                    (!m_mgpuShadows.renderer.canSubmit() || !mgpuSubmitDue(m_mgpuShadows));
                 const bool skipCascades = m_mgpuShadows.cascadeListsSkipped;
                 if (skipCascades)
                 {
                     ++m_mgpuShadows.skippedListFrames;
                 }
+                // Nau draws the near cascades every frame (stage 4): their lists are always built. The count of the last
+                // frame, like cascadesInUse; a change of the count makes Nau draw all cascades (renderMgpuShadows).
+                const int nearCascades = m_mgpuShadows.nearCascades;
 #else
                 const bool skipCascades = false;
+                const int nearCascades = 0;
 #endif
                 for (auto& view : m_graphicsScene->getRenderScene()->getViews())
                 {
@@ -146,8 +155,11 @@ namespace nau::render
                         int cascade = (int)view->getUserData();
                         NAU_ASSERT(cascade < nau::csm::CascadeShadows::MAX_CASCADES);
                         view->updateFrustum(m_csm->getWorldRenderMatrix(cascade));
-                        // Before the first frame of the cascades their count is not known yet: all are kept.
-                        view->setActive(!optimized || (!skipCascades && (cascadesInUse <= 0 || cascade < cascadesInUse)));
+                        // Before the first frame of the cascades their count is not known yet: all are kept. The far cascades
+                        // of the sparse update get their lists in the CSM node, if they are drawn (buildCascadeLists).
+                        const bool onDemand = sparseShadowFrames() > 0 && cascade >= SPARSE_FIRST_CASCADE;
+                        view->setActive(!onDemand && (!optimized || ((!skipCascades || cascade < nearCascades) &&
+                                                                     (cascadesInUse <= 0 || cascade < cascadesInUse))));
                     }
                     else if (view->containsTag(nau::RenderScene::Tags::shadowOmniTag))
                     {
@@ -167,9 +179,7 @@ namespace nau::render
                     }
                 }
                 const nau::math::Vector3 viewerPosition = inverse(m_graphicsScene->getMainCamera().getViewMatrix()).getTranslation();
-#if defined(NAU_ENABLE_MGPU)
                 m_viewerPosition = viewerPosition;
-#endif
                 m_graphicsScene->getRenderScene()->updateViews(vp, viewerPosition);
 #if defined(NAU_ENABLE_MGPU)
                 {
@@ -183,6 +193,7 @@ namespace nau::render
                     for (size_t cascade = 0; cascade < timings.cascadeInstances.size(); ++cascade)
                     {
                         timings.cascadeInstances[cascade] += views.cascadeInstances[cascade];
+                        timings.cascadeTriangles[cascade] += views.cascadeTriangles[cascade];
                     }
                     ++timings.listFrames;
                 }
@@ -376,8 +387,81 @@ namespace nau::render
 
     void RenderWindowImpl::getCascadeShadowSparseUpdateParams(int cascade_no, const nau::math::NauFrustum& cascade_frustum, float& out_min_sparse_dist, int& out_min_sparse_frame)
     {
+        // CascadeShadowsPrivate::prepareShadowCascades draws a cascade anew if it starts nearer than the distance or was kept
+        // for the frames plus its number; otherwise only if the view has left it.
+        if (const int frames = sparseShadowFrames(); frames > 0 && cascade_no >= SPARSE_FIRST_CASCADE)
+        {
+            out_min_sparse_dist = 0.0f;
+            out_min_sparse_frame = frames;
+            return;
+        }
         out_min_sparse_dist = 100000;
         out_min_sparse_frame = -1000;
+    }
+
+    int RenderWindowImpl::sparseShadowFrames()
+    {
+        static const int frames = []
+        {
+            int value = 4;
+            if (const char* const text = std::getenv("NAU_SHADOW_SPARSE_FRAMES"))
+            {
+                value = std::max(0, std::atoi(text));
+            }
+            if (value > 0)
+            {
+                NAU_LOG_INFO("graphics: far shadow cascades drawn anew when the view leaves them, at least every {} frames", value);
+            }
+            else
+            {
+                NAU_LOG_INFO("graphics: far shadow cascades drawn every frame (NAU_SHADOW_SPARSE_FRAMES=0)");
+            }
+            return value;
+        }();
+        return frames;
+    }
+
+    void RenderWindowImpl::buildCascadeLists(const eastl::function<bool(int)>& draw)
+    {
+        if (!m_graphicsScene)
+        {
+            return;
+        }
+        nau::RenderScene& scene = *m_graphicsScene->getRenderScene();
+#if defined(NAU_ENABLE_MGPU)
+        const nau::RenderScene::ViewsStats before = scene.getViewsStats();
+#endif
+        const int cascadesInUse = m_csm->getNumCascadesToRender();
+        for (auto& view : scene.getViews())
+        {
+            if (!view->containsTag(nau::RenderScene::Tags::shadowCascadeTag) || view->isActive())
+            {
+                continue;
+            }
+            const int cascade = static_cast<int>(reinterpret_cast<intptr_t>(view->getUserData()));
+            if (cascade >= cascadesInUse || !draw(cascade))
+            {
+                continue;
+            }
+            view->updateFrustum(m_csm->getWorldRenderMatrix(cascade));
+            view->setActive(true);
+            scene.updateView(*view, m_viewerPosition);
+        }
+#if defined(NAU_ENABLE_MGPU)
+        // Into the sums of this frame (render() has taken those of updateViews already).
+        const nau::RenderScene::ViewsStats& after = scene.getViewsStats();
+        auto& timings = m_mgpuShadows.timings;
+        for (int kind = 0; kind < nau::RenderScene::ViewsStats::KindCount; ++kind)
+        {
+            timings.listSeconds[kind] += after.seconds[kind] - before.seconds[kind];
+            timings.listInstances[kind] += after.instances[kind] - before.instances[kind];
+        }
+        for (size_t cascade = 0; cascade < timings.cascadeInstances.size(); ++cascade)
+        {
+            timings.cascadeInstances[cascade] += after.cascadeInstances[cascade] - before.cascadeInstances[cascade];
+            timings.cascadeTriangles[cascade] += after.cascadeTriangles[cascade] - before.cascadeTriangles[cascade];
+        }
+#endif
     }
 
 }  // namespace nau::render

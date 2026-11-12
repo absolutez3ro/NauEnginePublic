@@ -18,6 +18,9 @@ namespace nau::sample
     // Key 1 shows the default scenes, key 2 the Jungle Ruins scene (see tools/convert_jungle_ruins.py); the "Scenes" window
     // shows which one is active. The object with this component stays in both: it has the camera and the lights.
     //
+    // NAU_SAMPLE_SWITCH_TEST=<n>: the sample switches between the scenes n times, 3 s in each, and closes (a stability
+    // test of loading and unloading; "switch test:" lines in the log).
+    //
     // Key B runs a benchmark in the active scene: without vsync, the shadow cascades in turn on the second GPU and on the
     // scene GPU, the table goes to the window and to the log. With the environment variable NAU_SAMPLE_BENCHMARK set the
     // sample does this by itself and closes (no keys, the window does not need the focus): in Jungle Ruins, or in the
@@ -64,6 +67,7 @@ namespace nau::sample
 
         void startBenchmark();
         void updateBenchmark();
+        void updateBenchmarkMotion();
 
         ScenesFactory m_defaultScenes = nullptr;
         ScenesFactory m_jungleRuins = nullptr;
@@ -82,6 +86,19 @@ namespace nau::sample
         bool m_benchmarkDone = false;
         bool m_benchmarkExit = false;
         bool m_savedMgpu = false;
+        bool m_savedMgpuAuto = false;
+        bool m_startSceneDone = false;
+
+        // NAU_SAMPLE_BENCHMARK_MOTION=1: the camera sways during the benchmark (the pose it had at the start, moved).
+        bool m_benchmarkMotion = false;
+        math::vec3 m_motionTranslation = math::vec3::zero();
+        math::quat m_motionRotation = math::quat::identity();
+        std::chrono::steady_clock::time_point m_motionStart;
+
+        void updateSwitchTest();
+        SceneSet m_switchTestSeen = SceneSet::None;
+        int m_switchTestSwitches = 0;
+        std::chrono::steady_clock::time_point m_switchTestSince;
         std::chrono::steady_clock::time_point m_benchmarkPhaseStart;
         std::chrono::steady_clock::time_point m_benchmarkLastUpdate;
     };

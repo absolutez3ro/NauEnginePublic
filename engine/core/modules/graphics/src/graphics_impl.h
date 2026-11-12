@@ -93,6 +93,12 @@ namespace nau
 
         async::Task<> executeRenderJobs();
 
+        // Stage 1b of the MGPU optimisation (frame pipelining, NAU_FRAME_PIPELINING=0 switches it off): pre-render work is queued (jobs or continuations on
+        // the pre-render executor). A frame without it does not wait for the GPU.
+        bool hasPreRenderWork();
+        uint32_t m_pipelinedFrames = 0; // since the last log line
+        uint32_t m_waitingFrames = 0;
+
         void stopGraphics();
 
         BaseTexture* m_defaultTex;

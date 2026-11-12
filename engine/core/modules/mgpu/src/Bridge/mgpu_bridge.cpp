@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <mutex>
@@ -40,6 +41,11 @@ namespace nau::mgpu::bridge
     namespace
     {
         std::atomic<bool> g_enabled{false};
+        std::atomic<bool> g_autoEnabled{[]
+        {
+            const char* const value = std::getenv("NAU_MGPU_AUTO");
+            return value == nullptr || std::strcmp(value, "0") != 0;
+        }()};
         std::atomic<bool> g_vsyncEnabled{true};
         std::atomic<uint64_t> g_meshGeneration{0};
 
@@ -139,6 +145,16 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
         return g_enabled.load();
     }
 
+    void setAutoEnabled(const bool enabled)
+    {
+        g_autoEnabled.store(enabled);
+    }
+
+    bool isAutoEnabled()
+    {
+        return g_autoEnabled.load();
+    }
+
     void setVsyncEnabled(const bool enabled)
     {
         g_vsyncEnabled.store(enabled);
@@ -174,6 +190,7 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
         }
         status.linked = true;
         status.enabled = g_enabled.load();
+        status.autoMode = g_autoEnabled.load();
         return status;
     }
 

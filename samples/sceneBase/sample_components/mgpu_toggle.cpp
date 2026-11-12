@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include "nau/input.h"
 #include "nau/mgpu/bridge/mgpu_bridge.h"
@@ -19,6 +21,15 @@ namespace nau::sample
         using namespace nau::input;
         namespace bridge = nau::mgpu::bridge;
 
+        if (!m_startApplied)
+        {
+            m_startApplied = true;
+            const char* const vsync = std::getenv("NAU_SAMPLE_VSYNC");
+            if (vsync != nullptr && std::strcmp(vsync, "0") == 0)
+            {
+                bridge::setVsyncEnabled(false);
+            }
+        }
         if (isKeyboardButtonPressed(0, input::Key::M))
         {
             bridge::setEnabled(!bridge::isEnabled());
@@ -26,6 +37,10 @@ namespace nau::sample
         if (isKeyboardButtonPressed(0, input::Key::V))
         {
             bridge::setVsyncEnabled(!bridge::isVsyncEnabled());
+        }
+        if (isKeyboardButtonPressed(0, input::Key::G))
+        {
+            bridge::setAutoEnabled(!bridge::isAutoEnabled());
         }
 
         const bridge::Status status = bridge::getStatus();
@@ -49,9 +64,14 @@ namespace nau::sample
             ImGui::Text("Mode: 1 GPU (second GPU not available)");
             ImGui::TextWrapped("%s", status.lastError);
         }
+        else if (status.autoMode && status.autoSuspended)
+        {
+            ImGui::Text("Mode: auto, 1 GPU now (%.1f fps with the second GPU at the last try)", status.autoOtherFramesPerSecond);
+            ImGui::Text("Shadow GPU: %s (waiting)", status.secondaryAdapter);
+        }
         else
         {
-            ImGui::Text("Mode: 2 GPU, shadow cascades: %s",
+            ImGui::Text("Mode: %s2 GPU, shadow cascades: %s", status.autoMode ? "auto, " : "",
                         status.shadowsFromSecondGpu ? "second GPU" : "Nau (no atlas from the second GPU)");
             ImGui::Text("Scene GPU:  %s", status.primaryAdapter);
             ImGui::Text("Shadow GPU: %s", status.secondaryAdapter);
@@ -98,7 +118,8 @@ namespace nau::sample
         }
         if (status.linked)
         {
-            ImGui::Text("M - switch MGPU on/off, V - vsync (%s)", bridge::isVsyncEnabled() ? "on" : "off");
+            ImGui::Text("M - switch MGPU on/off, G - auto (%s), V - vsync (%s)", bridge::isAutoEnabled() ? "on" : "off",
+                        bridge::isVsyncEnabled() ? "on" : "off");
         }
 
         ImGui::End();

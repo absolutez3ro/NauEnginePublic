@@ -32,12 +32,13 @@ namespace nau
 
     struct StaticMeshLod
     {
-        Sbuffer* m_positionsBuffer; // TODO: change to ResPtr's
-        Sbuffer* m_normalsBuffer;
-        Sbuffer* m_tangentsBuffer;
-        Sbuffer* m_texCoordsBuffer;
+        // Owned by the StaticMesh of the level, which frees them (~StaticMesh).
+        Sbuffer* m_positionsBuffer = nullptr; // TODO: change to ResPtr's
+        Sbuffer* m_normalsBuffer = nullptr;
+        Sbuffer* m_tangentsBuffer = nullptr;
+        Sbuffer* m_texCoordsBuffer = nullptr;
 
-        Sbuffer* m_indexBuffer;
+        Sbuffer* m_indexBuffer = nullptr;
 
         uint32_t m_indexCount;
         uint32_t m_vertexCount;
@@ -62,15 +63,16 @@ namespace nau
 
         using Ptr = nau::Ptr<StaticMesh>;
 
-        virtual ~StaticMesh() = default;
+        virtual ~StaticMesh();
         StaticMesh();
 
         const nau::StaticMeshLod& getLod(uint32_t lodInd) const;
         uint32_t getLodsCount() const;
 
         // The level of detail for a viewer at this distance from the origin of an instance, in the units of the mesh
-        // (the distance divided by the scale of the instance). See IMeshLodsAccessor.
-        uint32_t selectLod(float distance) const;
+        // (the distance divided by the scale of the instance). The shadow-only levels are chosen for shadowLevels only (the
+        // shadow cascades). See IMeshLodsAccessor.
+        uint32_t selectLod(float distance, bool shadowLevels = false) const;
 
         inline const nau::math::BSphere3& getLod0BSphere() const
         {
@@ -89,6 +91,7 @@ namespace nau
 
         eastl::vector<StaticMeshLod> lods;
         eastl::vector<float> m_lodDistances; // of the levels 1, 2, ...
+        eastl::vector<bool> m_lodShadowOnly; // the same levels: drawn by the shadow cascades only (always the last ones)
         eastl::vector<float> m_lodsScreenSpaceError;
         float cullDistance;
     };

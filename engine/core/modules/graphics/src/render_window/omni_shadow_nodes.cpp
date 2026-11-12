@@ -179,6 +179,10 @@ namespace nau::render
         {
             return false;
         }
+        if (m_mgpuShadows.autoSwitch.suspended)
+        {
+            return suspendMgpuRenderer(state);
+        }
 
         ++state.framesSinceReport;
         releaseMgpuShadowSlots(state);
@@ -226,7 +230,11 @@ namespace nau::render
             }), state.pendingFrames.end());
         }
 
-        // 2. The faces of this frame go to the second GPU if it has a free slot; it never waits.
+        // 2. The faces of this frame go to the second GPU if it has a free slot and the rate allows; it never waits.
+        if (!mgpuSubmitDue(state))
+        {
+            return state.hasAtlas;
+        }
         collectMgpuOmniShadowCasters(casters);
 
         const OmniShadows::AtlasInfo atlas = m_omniShadows->getAtlasInfo();
@@ -243,6 +251,7 @@ namespace nau::render
         frame.userToken = state.frame;
         if (state.renderer.submit(frame))
         {
+            mgpuSubmitted(state);
             MgpuShadowsState::PendingFrame pending;
             pending.token = state.frame;
             pending.frame = state.frame;

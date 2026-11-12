@@ -110,8 +110,9 @@ namespace nau::csm
             }
         }
         void renderShadowsCascades();
-        void renderShadowsCascadesCb(csm_render_cascades_cb_t render_cascades_cb);
+        void renderShadowsCascadesCb(csm_render_cascades_cb_t render_cascades_cb, bool keep_atlas = false);
         void renderShadowCascadeDepth(int cascadeNo, bool clearPerView);
+        void renderNearShadowCascades(int count);
         void calcTMs();
         void setCascadesToShader(MaterialAssetView::Ptr resolveMaterial);
         CascadeShadows::ShaderSnapshot snapshotShaderConstants();
@@ -377,14 +378,15 @@ namespace nau::csm
     }
 
 
-    void CascadeShadowsPrivate::renderShadowsCascadesCb(csm_render_cascades_cb_t render_cascades_cb)
+    // keep_atlas: the atlas is not cleared as a whole, every drawn cascade clears its own rectangle (renderNearShadowCascades).
+    void CascadeShadowsPrivate::renderShadowsCascadesCb(csm_render_cascades_cb_t render_cascades_cb, bool keep_atlas)
     {
         //SCOPE_RENDER_TARGET;
         //SCOPE_VIEW_PROJ_MATRIX;
 
         d3d::set_render_target();
         d3d::set_render_target(nullptr, 0);
-        bool clearPerView = false;
+        bool clearPerView = keep_atlas;
         for (int cascadeNo = numCascadesToRender - 1; cascadeNo >= 0; cascadeNo--)
         {
             if (!shadowSplits[cascadeNo].shouldUpdate)
@@ -433,6 +435,16 @@ namespace nau::csm
                 renderShadowCascadeDepth(i, clear_per_view);
             }
         });
+    }
+
+    void CascadeShadowsPrivate::renderNearShadowCascades(int count)
+    {
+        renderShadowsCascadesCb([&](int num_cascades_to_render, bool clear_per_view) {
+            for (int i = 0; i < eastl::min(count, num_cascades_to_render); ++i)
+            {
+                renderShadowCascadeDepth(i, clear_per_view);
+            }
+        }, true);
     }
 
     static void calculate_cascades(float dist, float weight, int cascades, float* distances, float zn)
@@ -560,22 +572,19 @@ namespace nau::csm
                     Vector3 frustumPoints[8];
                     shadowFrustum.generateAllPointFrustm(frustumPoints);
 
-                    for (int pt = 0; pt < 8; ++pt)
+                    // A corner of the part of the view this cascade covers outside of the kept cascade: behind one of its
+                    // planes, which face inwards (NauFrustum::testSphere). The port of the Dagor test ORed the distances of
+                    // distFromPlane, which returns their absolute values: almost every frame looked like an escape.
+                    for (int pt = 0; pt < 8 && !shouldUpdate; ++pt)
                     {
-                        Vector3 v_pt = frustumPoints[pt];
-                        Vector4 invisible = Vector4(0, 0, 0, 0);
+                        const Vector4 point(frustumPoints[pt], 1.0f);
                         for (int plane = 0; plane < 6; ++plane)
                         {
-                            invisible = Vector4(
-                                _mm_or_ps(invisible.get128(),
-                                    Vector4(distFromPlane(Point3(v_pt), shadowSplits[cascadeNo].frustum.camPlanes[plane])).get128()));
-                        }
-                        //invisible = v_and(invisible, v_msbit());
-                        //if (!v_test_vec_x_eqi_0(invisible))
-                        if (int(invisible.getX()) != 0.0f)
-                        {
-                            shouldUpdate = true;
-                            break;
+                            if (float(dot(point, shadowSplits[cascadeNo].frustum.camPlanes[plane])) < 0.0f)
+                            {
+                                shouldUpdate = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -1052,6 +1061,8 @@ namespace nau::csm
     }
 
     void CascadeShadows::renderShadowsCascades() { d->renderShadowsCascades(); }
+
+    void CascadeShadows::renderNearShadowCascades(int count) { d->renderNearShadowCascades(count); }
 
     void CascadeShadows::renderShadowCascadeDepth(int cascadeNo, bool clearPerView)
     {

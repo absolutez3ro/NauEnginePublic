@@ -66,6 +66,9 @@ namespace nau::mgpu::shadows
         // false (the default): no depth clipping, as for the orthographic cascades (Z_CLAMP_ENABLED). A perspective face of a
         // point light needs the clipping: triangles through the plane of the light would write garbage depth without it.
         bool depthClip = false;
+        // true: the rectangle keeps what the previous atlas drew there (the atlas of the second GPU persists between frames);
+        // it is not cleared and the draws of the cascade are ignored. A new atlas (another size or format) keeps nothing.
+        bool keep = false;
     };
 
     struct DrawDesc

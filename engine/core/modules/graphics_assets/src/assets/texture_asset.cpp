@@ -5,6 +5,8 @@
 
 #include <algorithm>
 
+#include "nau/3d/dag_d3dResource.h"
+
 #include "nau/assets/texture_asset_accessor.h"
 
 #define LOAD_TEXTURE_ASYNC
@@ -81,6 +83,13 @@ namespace nau
             return DXGI_FORMAT_UNKNOWN;
         }
     }  // namespace
+
+    // The texture was never freed before: every unloaded scene kept its textures in video memory (about 1 GB per visit of
+    // Jungle Ruins). The driver deletes it once the frames that may still use it have completed.
+    TextureAssetView::~TextureAssetView()
+    {
+        del_d3dres(m_Texture);
+    }
 
     async::Task<nau::Ptr<TextureAssetView>> TextureAssetView::createFromAssetAccessor(nau::Ptr<> accessor)
     {

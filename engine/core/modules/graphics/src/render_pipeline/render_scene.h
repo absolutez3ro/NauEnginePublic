@@ -61,6 +61,7 @@ namespace nau
             double seconds[KindCount] = {};
             uint64_t instances[KindCount] = {};
             uint64_t cascadeInstances[csm::CascadeShadows::MAX_CASCADES] = {}; // by the cascade of the view
+            uint64_t cascadeTriangles[csm::CascadeShadows::MAX_CASCADES] = {}; // the same, triangles of the casters
         };
 
         const ViewsStats& getViewsStats() const
@@ -71,8 +72,6 @@ namespace nau
         // viewerPosition: the main camera, for the levels of detail of every view (the shadows too). An inactive view only
         // drops its lists.
         void updateViews(const nau::math::Matrix4& vp, const nau::math::Vector3& viewerPosition);
-        // The active views with the tag only: their lists were skipped earlier in the frame and are needed after all.
-        void updateViewsWithTag(RenderTag tag, const nau::math::Vector3& viewerPosition);
         void updateManagers();
         void renderScene(const nau::math::Matrix4& vp);
         void renderDepth(const nau::math::Matrix4& vp);
@@ -91,12 +90,13 @@ namespace nau
             static constexpr RenderTag shadowOmniTag = nau::strings::constHash("shadow_omni");
         };
 
+        // The lists of one view, its time and instances added to the stats of the last updateViews.
+        void updateView(RenderView& view, const nau::math::Vector3& viewerPosition);
+
     private:
         eastl::vector<nau::Ptr<IRenderManager>> m_managers;
         eastl::vector<eastl::shared_ptr<RenderView>> m_views;
         ViewsStats m_viewsStats;
-
-        void updateView(RenderView& view, const nau::math::Vector3& viewerPosition);
 
         nau::Ptr<BillboardsManager> m_billboardsManager;
 

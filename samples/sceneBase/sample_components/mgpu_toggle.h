@@ -19,5 +19,7 @@ namespace nau::sample
 
     private:
         void updateComponent(float dt) override;
+
+        bool m_startApplied = false; // NAU_SAMPLE_VSYNC is applied on the first update
     };
 }  // namespace nau::sample

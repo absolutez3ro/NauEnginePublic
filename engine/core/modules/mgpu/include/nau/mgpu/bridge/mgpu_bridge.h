@@ -44,6 +44,9 @@ namespace nau::mgpu::bridge
     {
         bool linked = false; // built with NAU_ENABLE_MGPU
         bool enabled = false; // the setEnabled() switch
+        bool autoMode = false; // the setAutoEnabled() switch
+        bool autoSuspended = false; // auto mode: one GPU is faster now, the second GPU waits
+        float autoOtherFramesPerSecond = 0; // auto mode: the frame rate of the other choice at its last try
         bool ready = false; // two hardware adapters found, the second GPU is initialized
         char primaryAdapter[128] = {};
         char secondaryAdapter[128] = {};
@@ -90,6 +93,12 @@ namespace nau::mgpu::bridge
     /// Manual switch of the Mgpu path. Default: false.
     void setEnabled(bool enabled);
     bool isEnabled();
+
+    /// Automatic use of the second GPU while the Mgpu path is enabled (stage 7 of the MGPU optimisation): the render side
+    /// keeps the second GPU ready but uses it only while the frames are faster with it, and tries the other choice now and
+    /// then. Default: on, NAU_MGPU_AUTO=0 switches it off.
+    void setAutoEnabled(bool enabled);
+    bool isAutoEnabled();
 
     /// Vsync of Nau's swap chain (SceneBaseSample: key V). With it on the frame rate is the one of the display.
     void setVsyncEnabled(bool enabled);
@@ -146,6 +155,8 @@ namespace nau::mgpu::bridge
 
     inline void setEnabled(bool) {}
     inline bool isEnabled() { return false; }
+    inline void setAutoEnabled(bool) {}
+    inline bool isAutoEnabled() { return false; }
     inline void setVsyncEnabled(bool) {}
     inline bool isVsyncEnabled() { return true; }
     inline void notifyMeshesChanged() {}

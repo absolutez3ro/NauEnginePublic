@@ -158,6 +158,8 @@ namespace nau
             // The meshes of the levels are read without levels of their own: no chains, no cycles.
             const eastl::vector<double> lodMeshes = numbersOf(mesh.extras, "nau_lod_meshes");
             const eastl::vector<double> lodDistances = numbersOf(mesh.extras, "nau_lod_distances");
+            // Optional, 1 for a level drawn by the shadow cascades only.
+            const eastl::vector<double> lodShadowOnly = numbersOf(mesh.extras, "nau_lod_shadow_only");
             NAU_ASSERT(lodMeshes.size() == lodDistances.size(), "Mesh ({}): nau_lod_meshes and nau_lod_distances differ in size", mesh.name);
 
             const size_t count = eastl::min(lodMeshes.size(), lodDistances.size());
@@ -174,6 +176,7 @@ namespace nau
                 Lod& lod = m_lods.emplace_back();
                 lod.accessor = rtti::createInstance<GltfMeshAssetAccessor, IMeshAssetAccessor>(file, lodMeshIndex, bufferFiles, false);
                 lod.distance = static_cast<float>(lodDistances[i]);
+                lod.shadowOnly = i < lodShadowOnly.size() && lodShadowOnly[i] != 0.0;
             }
         }
 

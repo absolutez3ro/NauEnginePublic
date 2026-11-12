@@ -39,6 +39,20 @@ namespace nau::sample
         constexpr float BENCHMARK_MEASURE_SECONDS = 16.0f;
         constexpr float BENCHMARK_AUTOSTART_SECONDS = 6.0f;
 
+        // NAU_SAMPLE_BENCHMARK_MOTION=1: the camera sways sideways and turns during the benchmark, so the cascades and the
+        // shadows move as in play (a still camera hides how late the shadows of the second GPU are, and lets the shadow
+        // cascades stay unchanged). Walking speed: up to 2*pi*amplitude/period = 3 m/s, 12 degrees of turn.
+        constexpr float MOTION_AMPLITUDE_METERS = 4.0f;
+        constexpr float MOTION_PERIOD_SECONDS = 8.0f;
+        constexpr float MOTION_YAW_DEGREES = 12.0f;
+        constexpr float MOTION_YAW_PERIOD_SECONDS = 11.0f;
+
+        bool benchmarkMotionRequested()
+        {
+            const char* const value = std::getenv("NAU_SAMPLE_BENCHMARK_MOTION");
+            return value != nullptr && std::strcmp(value, "1") == 0;
+        }
+
         bool isJungleRuinsConverted()
         {
             return getServiceProvider().get<io::IFileSystem>().exists(JUNGLE_RUINS_FILE);
@@ -141,6 +155,8 @@ namespace nau::sample
     void SceneSwitcher::startBenchmark()
     {
         m_savedMgpu = nau::mgpu::bridge::isEnabled();
+        m_savedMgpuAuto = nau::mgpu::bridge::isAutoEnabled();
+        nau::mgpu::bridge::setAutoEnabled(false);
         m_benchmarkModes[0] = {};
         m_benchmarkModes[1] = {};
         m_benchmarkDone = false;
@@ -148,7 +164,33 @@ namespace nau::sample
         m_benchmarkPhaseStart = m_benchmarkLastUpdate = std::chrono::steady_clock::now();
         nau::mgpu::bridge::setVsyncEnabled(false);
         nau::mgpu::bridge::setEnabled(true);
-        NAU_LOG_INFO("benchmark: started");
+
+        m_benchmarkMotion = false;
+        if (benchmarkMotionRequested())
+        {
+            if (auto* const camera = getParentObject().findFirstComponent<CameraControl>(true))
+            {
+                m_benchmarkMotion = true;
+                m_motionTranslation = camera->getPoseTranslation();
+                m_motionRotation = camera->getPoseRotation();
+                m_motionStart = m_benchmarkPhaseStart;
+            }
+        }
+        NAU_LOG_INFO("benchmark: started{}", m_benchmarkMotion ? ", the camera in motion" : "");
+    }
+
+    void SceneSwitcher::updateBenchmarkMotion()
+    {
+        auto* const camera = getParentObject().findFirstComponent<CameraControl>(true);
+        if (camera == nullptr)
+        {
+            return;
+        }
+        constexpr float TWO_PI = 6.28318531f;
+        const float time = std::chrono::duration<float>(std::chrono::steady_clock::now() - m_motionStart).count();
+        const float sideways = MOTION_AMPLITUDE_METERS * std::sin(TWO_PI * time / MOTION_PERIOD_SECONDS);
+        const float yaw = MOTION_YAW_DEGREES * (TWO_PI / 360.0f) * std::sin(TWO_PI * time / MOTION_YAW_PERIOD_SECONDS);
+        camera->setPose(m_motionTranslation + math::vec3(sideways, 0.0f, 0.0f), math::quat::rotationY(yaw) * m_motionRotation);
     }
 
     void SceneSwitcher::updateBenchmark()
@@ -195,7 +237,16 @@ namespace nau::sample
         m_benchmarkPhase = -1;
         m_benchmarkDone = true;
         nau::mgpu::bridge::setEnabled(m_savedMgpu);
+        nau::mgpu::bridge::setAutoEnabled(m_savedMgpuAuto);
         nau::mgpu::bridge::setVsyncEnabled(true);
+        if (m_benchmarkMotion)
+        {
+            m_benchmarkMotion = false;
+            if (auto* const camera = getParentObject().findFirstComponent<CameraControl>(true))
+            {
+                camera->setPose(m_motionTranslation, m_motionRotation);
+            }
+        }
 
         const BenchmarkMode& nauMode = m_benchmarkModes[0];
         const BenchmarkMode& gpu2Mode = m_benchmarkModes[1];
@@ -224,14 +275,59 @@ namespace nau::sample
         }
     }
 
+    void SceneSwitcher::updateSwitchTest()
+    {
+        static const int switches = []
+        {
+            const char* const value = std::getenv("NAU_SAMPLE_SWITCH_TEST");
+            return value != nullptr ? std::max(0, std::atoi(value)) : 0;
+        }();
+        if (switches == 0 || m_loading != SceneSet::None || m_active == SceneSet::None || !isJungleRuinsConverted())
+        {
+            return;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (m_switchTestSeen != m_active)
+        {
+            m_switchTestSeen = m_active;
+            m_switchTestSince = now;
+            NAU_LOG_INFO("switch test: active {}", m_active == SceneSet::JungleRuins ? "jungle" : "default");
+        }
+        else if (std::chrono::duration<float>(now - m_switchTestSince).count() > 3.0f)
+        {
+            m_switchTestSince = now;
+            if (m_switchTestSwitches++ < switches)
+            {
+                switchTo(m_active == SceneSet::Default ? SceneSet::JungleRuins : SceneSet::Default).detach();
+            }
+            else
+            {
+                NAU_LOG_INFO("switch test: done, {} switches", switches);
+                getApplication().stop();
+            }
+        }
+    }
+
     void SceneSwitcher::updateComponent([[maybe_unused]] float dt)
     {
+        updateSwitchTest();
         using namespace nau::input;
 
         static const bool converted = isJungleRuinsConverted();
         static const char* const autoBenchmarkValue = std::getenv("NAU_SAMPLE_BENCHMARK");
         static const bool autoBenchmark = autoBenchmarkValue != nullptr;
         static const SceneSet autoBenchmarkScene = autoBenchmark && std::strcmp(autoBenchmarkValue, "default") == 0 ? SceneSet::Default : SceneSet::JungleRuins;
+
+        // NAU_SAMPLE_SCENE=jungle: Jungle Ruins once the default scenes are up, without a benchmark (the auto mode of Mgpu
+        // works only outside of one).
+        static const char* const startSceneValue = std::getenv("NAU_SAMPLE_SCENE");
+        if (!m_startSceneDone && startSceneValue != nullptr && std::strcmp(startSceneValue, "jungle") == 0 && converted &&
+            m_active == SceneSet::Default && m_loading == SceneSet::None)
+        {
+            m_startSceneDone = true;
+            switchTo(SceneSet::JungleRuins).detach();
+        }
 
         if (autoBenchmark && !m_benchmarkDone && m_benchmarkPhase < 0 && m_loading == SceneSet::None)
         {
@@ -256,6 +352,10 @@ namespace nau::sample
 
         if (m_benchmarkPhase >= 0)
         {
+            if (m_benchmarkMotion)
+            {
+                updateBenchmarkMotion();
+            }
             updateBenchmark();
         }
         else if (m_loading == SceneSet::None && isKeyboardButtonPressed(0, input::Key::B))
