@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <map>
@@ -143,7 +144,8 @@ void ShadowMaskedPS(MaskedVertex input)
     {
         using Clock = std::chrono::steady_clock;
 
-        // Shadow-caster geometry on the second GPU. Upload heap: the data is written once and read by the GPU directly.
+        // Shadow-caster geometry on the second GPU (CreateGeometryBuffer): in the upload heap on an integrated GPU, in its
+        // video memory on a discrete one.
         struct Mesh
         {
             std::shared_ptr<gfx::GResource> positions;
@@ -223,6 +225,20 @@ void ShadowMaskedPS(MaskedVertex input)
 
         std::unordered_map<uint64_t, Mesh> meshes;
         std::array<Slot, kSlotCount> slots;
+
+        // An integrated second GPU reads the upload heap from its own memory: the geometry stays there. A discrete one would
+        // fetch every vertex of every draw over the bus: its geometry is copied into its video memory once, by a command
+        // list that runs on its graphics queue ahead of the next atlas (FlushUploads). The buffers of the copies live until
+        // the second GPU has done them. NAU_MGPU_GEOMETRY_IN_VIDEO_MEMORY=1 takes the copy path on an integrated GPU too.
+        bool geometryInVideoMemory = false;
+        std::shared_ptr<gfx::GCommandList> uploadList;
+        std::vector<std::shared_ptr<gfx::GResource>> uploadBuffers; // the sources and the targets of uploadList
+        struct UploadBatch
+        {
+            uint64_t fenceValue = 0;
+            std::vector<std::shared_ptr<gfx::GResource>> buffers;
+        };
+        std::vector<UploadBatch> uploadsInFlight;
         std::vector<uint32_t> drawOrder; // Submit: indices of the draws, sorted (kept to reuse the memory)
         std::vector<D3D12_RECT> clearRects; // Submit: the cascades drawn anew when others are kept
         uint64_t nextSequence = 0;
@@ -262,6 +278,13 @@ void ShadowMaskedPS(MaskedVertex input)
                 }
                 primaryName = bridge::detail::ToUtf8(primaryDevice->GetName());
                 secondaryName = bridge::detail::ToUtf8(secondaryDevice->GetName());
+
+                D3D12_FEATURE_DATA_ARCHITECTURE architecture = {};
+                const bool uma = FAILED(secondaryDevice->GetDXDevice()->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture,
+                                                                                           sizeof(architecture))) ||
+                                 architecture.UMA != FALSE;
+                const char* const forceVideoMemory = std::getenv("NAU_MGPU_GEOMETRY_IN_VIDEO_MEMORY");
+                geometryInVideoMemory = !uma || (forceVideoMemory != nullptr && std::strcmp(forceVideoMemory, "1") == 0);
 
                 signature = std::make_shared<gfx::GRootSignature>();
                 signature->AddConstantParameter(kViewProjConstants + kDrawConstants, 0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
@@ -480,6 +503,58 @@ void ShadowMaskedPS(MaskedVertex input)
             return *psos.emplace(key, std::move(pso)).first->second;
         }
 
+        // A buffer of geometry the draws of the second GPU read (vertex or index data): see geometryInVideoMemory.
+        std::shared_ptr<gfx::GResource> CreateGeometryBuffer(const void* data, const size_t size, const std::wstring& name)
+        {
+            std::shared_ptr<gfx::GResource> upload = CreateUploadBuffer(secondaryDevice, size, geometryInVideoMemory ? name + L" Upload" : name);
+            Upload(*upload, data, size);
+            if (!geometryInVideoMemory)
+            {
+                return upload;
+            }
+
+            auto buffer = std::make_shared<gfx::GResource>(secondaryDevice, CD3DX12_RESOURCE_DESC::Buffer(std::max<size_t>(size, 256)),
+                                                           name, nullptr, D3D12_RESOURCE_STATE_COPY_DEST);
+            if (!uploadList)
+            {
+                uploadList = GraphicsQueue2()->GetCommandList();
+            }
+            // Directly on the D3D12 list: the wrapper resolves the barriers of a list ahead of the whole list, the transition
+            // would come before the copy.
+            auto* const raw = uploadList->GetGraphicsCommandList().Get();
+            raw->CopyBufferRegion(buffer->GetD3D12Resource().Get(), 0, upload->GetD3D12Resource().Get(), 0, size);
+            const auto toGeometry = CD3DX12_RESOURCE_BARRIER::Transition(buffer->GetD3D12Resource().Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                                         D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER |
+                                                                             D3D12_RESOURCE_STATE_INDEX_BUFFER);
+            raw->ResourceBarrier(1, &toGeometry);
+            uploadBuffers.push_back(upload);
+            uploadBuffers.push_back(buffer); // also the target: a mesh that fails half way drops its buffers
+            return buffer;
+        }
+
+        // The copies recorded since the last call go to the queue of the second GPU, ahead of what comes next on it.
+        void FlushUploads()
+        {
+            if (!uploadList)
+            {
+                return;
+            }
+            UploadBatch& batch = uploadsInFlight.emplace_back();
+            batch.fenceValue = GraphicsQueue2()->ExecuteCommandList(uploadList);
+            batch.buffers = std::move(uploadBuffers);
+            uploadBuffers.clear();
+            uploadList.reset();
+        }
+
+        void ReleaseFinishedUploads()
+        {
+            const auto& queue = GraphicsQueue2();
+            uploadsInFlight.erase(std::remove_if(uploadsInFlight.begin(), uploadsInFlight.end(), [&queue](const UploadBatch& batch)
+            {
+                return queue->IsFinish(batch.fenceValue);
+            }), uploadsInFlight.end());
+        }
+
         bool RegisterMesh(const uint64_t key, const MeshDesc& desc)
         {
             if (!ready || desc.positions == nullptr || desc.indices == nullptr || desc.vertexCount == 0 ||
@@ -495,22 +570,19 @@ void ShadowMaskedPS(MaskedVertex input)
                 mesh.skinned = desc.boneWeights != nullptr && desc.boneIndices != nullptr;
 
                 const size_t positionsSize = static_cast<size_t>(desc.vertexCount) * 3 * sizeof(float);
-                mesh.positions = CreateUploadBuffer(secondaryDevice, positionsSize, name + L" Positions");
-                Upload(*mesh.positions, desc.positions, positionsSize);
+                mesh.positions = CreateGeometryBuffer(desc.positions, positionsSize, name + L" Positions");
                 mesh.vertexViews[0] = {mesh.positions->GetD3D12Resource()->GetGPUVirtualAddress(),
                                        static_cast<UINT>(positionsSize), 3 * sizeof(float)};
 
                 if (mesh.skinned)
                 {
                     const size_t weightsSize = static_cast<size_t>(desc.vertexCount) * 4 * sizeof(float);
-                    mesh.boneWeights = CreateUploadBuffer(secondaryDevice, weightsSize, name + L" Bone Weights");
-                    Upload(*mesh.boneWeights, desc.boneWeights, weightsSize);
+                    mesh.boneWeights = CreateGeometryBuffer(desc.boneWeights, weightsSize, name + L" Bone Weights");
                     mesh.vertexViews[1] = {mesh.boneWeights->GetD3D12Resource()->GetGPUVirtualAddress(),
                                            static_cast<UINT>(weightsSize), 4 * sizeof(float)};
 
                     const size_t indicesSize = static_cast<size_t>(desc.vertexCount) * 4 * sizeof(uint32_t);
-                    mesh.boneIndices = CreateUploadBuffer(secondaryDevice, indicesSize, name + L" Bone Indices");
-                    Upload(*mesh.boneIndices, desc.boneIndices, indicesSize);
+                    mesh.boneIndices = CreateGeometryBuffer(desc.boneIndices, indicesSize, name + L" Bone Indices");
                     mesh.vertexViews[2] = {mesh.boneIndices->GetD3D12Resource()->GetGPUVirtualAddress(),
                                            static_cast<UINT>(indicesSize), 4 * sizeof(uint32_t)};
                 }
@@ -519,16 +591,14 @@ void ShadowMaskedPS(MaskedVertex input)
                 if (desc.texCoords != nullptr)
                 {
                     const size_t texCoordsSize = static_cast<size_t>(desc.vertexCount) * 2 * sizeof(float);
-                    mesh.texCoords = CreateUploadBuffer(secondaryDevice, texCoordsSize, name + L" Texture Coordinates");
-                    Upload(*mesh.texCoords, desc.texCoords, texCoordsSize);
+                    mesh.texCoords = CreateGeometryBuffer(desc.texCoords, texCoordsSize, name + L" Texture Coordinates");
                     mesh.maskedViews[1] = {mesh.texCoords->GetD3D12Resource()->GetGPUVirtualAddress(),
                                            static_cast<UINT>(texCoordsSize), 2 * sizeof(float)};
                 }
 
                 const size_t indexSize = desc.indices32 ? sizeof(uint32_t) : sizeof(uint16_t);
                 const size_t indicesSize = static_cast<size_t>(desc.indexCount) * indexSize;
-                mesh.indices = CreateUploadBuffer(secondaryDevice, indicesSize, name + L" Indices");
-                Upload(*mesh.indices, desc.indices, indicesSize);
+                mesh.indices = CreateGeometryBuffer(desc.indices, indicesSize, name + L" Indices");
                 mesh.indexView = {mesh.indices->GetD3D12Resource()->GetGPUVirtualAddress(), static_cast<UINT>(indicesSize),
                                   desc.indices32 ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT};
 
@@ -633,7 +703,9 @@ void ShadowMaskedPS(MaskedVertex input)
         {
             if (ready)
             {
+                FlushUploads();
                 GraphicsQueue2()->Flush();
+                uploadsInFlight.clear();
             }
             meshes.clear();
             masks.clear();
@@ -745,6 +817,9 @@ void ShadowMaskedPS(MaskedVertex input)
             {
                 return false;
             }
+
+            // The geometry registered since the last atlas: its copies run first on the same queue.
+            FlushUploads();
 
             // Like HybridShadowApp, the second GPU starts a new atlas only when it has finished the previous one: a deeper
             // queue would only add latency, and the second GPU may also have to present (an integrated GPU driving the
@@ -990,6 +1065,7 @@ void ShadowMaskedPS(MaskedVertex input)
 
         void CollectFinished()
         {
+            ReleaseFinishedUploads();
             auto graphics2 = GraphicsQueue2();
             auto copy1 = CopyQueue1();
             bool transferring = false;
@@ -1225,6 +1301,9 @@ void ShadowMaskedPS(MaskedVertex input)
                 slot = Slot();
             }
             ReleaseTimings();
+            uploadList.reset();
+            uploadBuffers.clear();
+            uploadsInFlight.clear();
             meshes.clear();
             psos.clear();
             staticVS.reset();

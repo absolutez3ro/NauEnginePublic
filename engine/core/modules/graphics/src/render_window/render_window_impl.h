@@ -12,6 +12,7 @@
 #include "nau/render/environmentRenderer.h"
 #include "nau/render/render_window.h"
 #include "render/daBfg/bfg.h"
+#include "../graphics_settings.h"
 
 #if defined(NAU_ENABLE_MGPU)
 #include <chrono>
@@ -98,13 +99,15 @@ namespace nau::render
         // the CSM and gbuffer_resolve nodes. Without NAU_ENABLE_MGPU it does nothing.
         void initializeMgpu();
 
-        // Stage 5 of the MGPU optimisation, sparse update of the far shadow cascades (from SPARSE_FIRST_CASCADE): a far
+        // Stage 5 of the MGPU optimisation, sparse update of the far shadow cascades (from FAR_SHADOW_CASCADE): a far
         // cascade keeps its shadow map while the view stays inside it, and is drawn anew at least every
         // sparseShadowFrames() + its number frames (moving casters; the far cascades take turns). Their lists are built only
         // in the frames that draw them, after the cascades of the frame are known (buildCascadeLists).
-        // NAU_SHADOW_SPARSE_FRAMES overrides the frames, 0 draws every cascade every frame as before.
-        static constexpr int SPARSE_FIRST_CASCADE = 2;
-        static int sparseShadowFrames();
+        // GraphicsSettings::shadowSparseFrames, 0 draws every cascade every frame as before.
+        static int sparseShadowFrames()
+        {
+            return getGraphicsSettings().shadowSparseFrames;
+        }
         // The lists of the cascade views that have none this frame (skipped in render()), for the cascades `draw` accepts,
         // culled with the cascade matrices of this frame.
         void buildCascadeLists(const eastl::function<bool(int)>& draw);
@@ -186,6 +189,7 @@ namespace nau::render
                 // The camera of every cascade in that frame (CascadeShadows::getRenderCameraWorldViewPos): the cascade
                 // matrices of the snapshot are relative to it (updateMgpuResolveSnapshot).
                 eastl::array<nau::math::Vector3, nau::csm::CascadeShadows::MAX_CASCADES> viewPos;
+                std::chrono::steady_clock::time_point submitted; // checkMgpuStall
             };
             eastl::vector<PendingFrame> pendingFrames;
             uint64_t frame = 0;
@@ -213,6 +217,10 @@ namespace nau::render
 
             // Stage 7: the earliest time of the next atlas (mgpuSubmitDue).
             std::chrono::steady_clock::time_point nextSubmit;
+
+            // The second GPU has stopped delivering atlases (checkMgpuStall); the submits that failed one after another.
+            bool stalled = false;
+            uint32_t failedSubmitsInRow = 0;
 
             // Stage 7, auto mode (nau::mgpu::bridge::isAutoEnabled, m_mgpuShadows only): at the end of a report period the
             // frame rate of the choice in use is kept; now and then the other choice is tried for two periods (the first
@@ -300,6 +308,18 @@ namespace nau::render
 
         // Log line and status update for the UI (atlases per second, latency, failures).
         static constexpr float MGPU_REPORT_PERIOD_SECONDS = 2.0f;
+
+        // The second GPU is taken for stalled (hung, removed, failing) when an atlas it was given is not back after
+        // MGPU_STALL_SECONDS and MGPU_STALL_FRAMES (the usual latency is tens of milliseconds; the frames keep a long frame,
+        // a scene being loaded, from looking like a stall) or that many submits failed in a row: Nau draws the shadows
+        // itself until an atlas arrives again, instead of showing the last atlas for ever.
+        static constexpr float MGPU_STALL_SECONDS = 1.0f;
+        static constexpr uint64_t MGPU_STALL_FRAMES = 10;
+        static constexpr uint32_t MGPU_FAILED_SUBMITS_LIMIT = 3;
+        // Applies the rule above to a renderer (m_mgpuShadows or m_mgpuOmniShadows); returns true when it is stalled.
+        bool checkMgpuStall(MgpuShadowsState& state, const char* what);
+        // After renderer.submit(): counts the failed submits in a row.
+        static void noteMgpuSubmit(MgpuShadowsState& state, uint64_t failedBefore, bool submitted);
 
         // Called by the CSM node after prepareShadowCascades. Returns true when Nau's atlas holds an atlas of the second
         // GPU for this frame: Nau then draws only the near cascades (renderMgpuNearCascades), and gbuffer_resolve uses

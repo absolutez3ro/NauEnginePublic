@@ -94,9 +94,24 @@ namespace nau::mgpu::bridge
     void setEnabled(bool enabled);
     bool isEnabled();
 
-    /// Automatic use of the second GPU while the Mgpu path is enabled (stage 7 of the MGPU optimisation): the render side
-    /// keeps the second GPU ready but uses it only while the frames are faster with it, and tries the other choice now and
-    /// then. Default: on, NAU_MGPU_AUTO=0 switches it off.
+    /// Tuning of the Mgpu path, applied from the next frame; any thread may change it. The render side sets it once from
+    /// the "mgpu" section of the application properties (RenderWindowImpl::initializeMgpu).
+    struct Settings
+    {
+        /// The second GPU is used only while the frames are faster with it; the render side tries the other choice now and
+        /// then (it keeps the second GPU ready meanwhile, for a fast return). Off: always used while the path is enabled.
+        bool autoMode = true;
+        /// The nearest shadow cascades the scene GPU draws itself every frame: they are seen up close, where a shadow late
+        /// by an atlas of the second GPU shows. The second GPU draws the others; 0: it draws all.
+        uint32_t nearCascades = 2;
+        /// At most that many atlases per second for each renderer of the second GPU; 0: as many as it draws. Every atlas
+        /// crosses the bus to the scene GPU, which may present its frames over the same bus (an external GPU).
+        uint32_t maxAtlasesPerSecond = 30;
+    };
+    void setSettings(const Settings& settings);
+    Settings getSettings();
+
+    /// Settings::autoMode (SceneBaseSample: key G).
     void setAutoEnabled(bool enabled);
     bool isAutoEnabled();
 
@@ -155,6 +170,14 @@ namespace nau::mgpu::bridge
 
     inline void setEnabled(bool) {}
     inline bool isEnabled() { return false; }
+    struct Settings
+    {
+        bool autoMode = true;
+        uint32_t nearCascades = 2;
+        uint32_t maxAtlasesPerSecond = 30;
+    };
+    inline void setSettings(const Settings&) {}
+    inline Settings getSettings() { return {}; }
     inline void setAutoEnabled(bool) {}
     inline bool isAutoEnabled() { return false; }
     inline void setVsyncEnabled(bool) {}

@@ -4,8 +4,7 @@
 
 #include "graphics_impl.h"
 
-#include <cstdlib>
-#include <cstring>
+#include "graphics_settings.h"
 
 #include "nau/runtime/internal/runtime_component.h"
 
@@ -306,20 +305,14 @@ namespace nau
             task.detach();
         }
 
-        // Stage 1b of the MGPU optimisation, frame pipelining (on by default, NAU_FRAME_PIPELINING=0 switches it off). The waits below
+        // Stage 1b of the MGPU optimisation, frame pipelining (GraphicsSettings::framePipelining, on by default). The waits below
         // keep the CPU and the GPU from overlapping: the CPU records a frame only after the GPU has finished the previous
         // one. Pre-render work (asset loading, scene activation, material changes) may change resources the GPU still
         // reads, so a frame with such work waits and runs it exactly as before. A frame without it records at once: the
         // driver bounds the frames in flight at present, frees resources only after the frames that used them, and the
         // per-frame updates of buffers go through discard (renamed copies). Work that arrives during such a frame is run
         // by the next frame, which then waits.
-        static const bool pipelining = []
-        {
-            const char* const value = std::getenv("NAU_FRAME_PIPELINING");
-            const bool enabled = value == nullptr || std::strcmp(value, "0") != 0;
-            NAU_LOG_INFO("graphics: frame pipelining {}", enabled ? "on" : "off (NAU_FRAME_PIPELINING=0)");
-            return enabled;
-        }();
+        const bool pipelining = getGraphicsSettings().framePipelining;
 
         if (pipelining && !hasPreRenderWork())
         {

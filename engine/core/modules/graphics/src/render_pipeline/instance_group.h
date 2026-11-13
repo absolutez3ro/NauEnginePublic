@@ -6,10 +6,8 @@
 
 #include <EASTL/vector.h>
 
-#include <cstdlib>
-#include <cstring>
-
 #include "nau/3d/dag_drv3d.h"
+#include "../graphics_settings.h"
 #include "nau/math/dag_bounds3.h"
 #include "graphics_assets/material_asset.h"
 #include "render_entity.h"
@@ -27,16 +25,11 @@ namespace nau
     };
 
 
-    // Stage 1 of the MGPU optimisation (the CPU cost of the render lists): on by default; NAU_RENDER_OPTIMIZATIONS=0 switches
-    // it off, to compare with the original behaviour in the same build.
+    // Stage 1 of the MGPU optimisation (the CPU cost of the render lists): on by default; GraphicsSettings::
+    // renderOptimizations off restores the original behaviour, to compare in the same build.
     inline bool renderOptimizationsEnabled()
     {
-        static const bool enabled = []
-        {
-            const char* const value = std::getenv("NAU_RENDER_OPTIMIZATIONS");
-            return value == nullptr || std::strcmp(value, "0") != 0;
-        }();
-        return enabled;
+        return getGraphicsSettings().renderOptimizations;
     }
 
     struct InstanceInfo

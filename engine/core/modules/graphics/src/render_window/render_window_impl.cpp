@@ -157,7 +157,7 @@ namespace nau::render
                         view->updateFrustum(m_csm->getWorldRenderMatrix(cascade));
                         // Before the first frame of the cascades their count is not known yet: all are kept. The far cascades
                         // of the sparse update get their lists in the CSM node, if they are drawn (buildCascadeLists).
-                        const bool onDemand = sparseShadowFrames() > 0 && cascade >= SPARSE_FIRST_CASCADE;
+                        const bool onDemand = sparseShadowFrames() > 0 && cascade >= FAR_SHADOW_CASCADE;
                         view->setActive(!onDemand && (!optimized || ((!skipCascades || cascade < nearCascades) &&
                                                                      (cascadesInUse <= 0 || cascade < cascadesInUse))));
                     }
@@ -389,7 +389,7 @@ namespace nau::render
     {
         // CascadeShadowsPrivate::prepareShadowCascades draws a cascade anew if it starts nearer than the distance or was kept
         // for the frames plus its number; otherwise only if the view has left it.
-        if (const int frames = sparseShadowFrames(); frames > 0 && cascade_no >= SPARSE_FIRST_CASCADE)
+        if (const int frames = sparseShadowFrames(); frames > 0 && cascade_no >= FAR_SHADOW_CASCADE)
         {
             out_min_sparse_dist = 0.0f;
             out_min_sparse_frame = frames;
@@ -397,28 +397,6 @@ namespace nau::render
         }
         out_min_sparse_dist = 100000;
         out_min_sparse_frame = -1000;
-    }
-
-    int RenderWindowImpl::sparseShadowFrames()
-    {
-        static const int frames = []
-        {
-            int value = 4;
-            if (const char* const text = std::getenv("NAU_SHADOW_SPARSE_FRAMES"))
-            {
-                value = std::max(0, std::atoi(text));
-            }
-            if (value > 0)
-            {
-                NAU_LOG_INFO("graphics: far shadow cascades drawn anew when the view leaves them, at least every {} frames", value);
-            }
-            else
-            {
-                NAU_LOG_INFO("graphics: far shadow cascades drawn every frame (NAU_SHADOW_SPARSE_FRAMES=0)");
-            }
-            return value;
-        }();
-        return frames;
     }
 
     void RenderWindowImpl::buildCascadeLists(const eastl::function<bool(int)>& draw)

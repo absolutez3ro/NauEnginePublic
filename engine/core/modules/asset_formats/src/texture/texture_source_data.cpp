@@ -329,13 +329,21 @@ namespace nau
                 TextureUtils::copyImageData(destination[i], mip.width, mip.height, getFormat(), reinterpret_cast<std::byte*>(mip.data));
             }
 
-            // NOTE: do not delete original (mip0) data
-            if(prevMip && (prevMip->width != m_width && prevMip->height != m_height))
+            // NOTE: do not delete original (mip0) data. A generated level is told by its buffer: comparing the sizes kept the
+            // levels of a narrow texture, whose one side stays the size of level 0.
+            if(prevMip && prevMip->data != reinterpret_cast<unsigned char*>(m_data))
             {
                 STBI_FREE(prevMip->data);
             }
 
             prevMip = mip;
+        }
+
+        // The last generated level: it was never freed, and TextureAssetView asks for one level per call, so every level but
+        // 0 of every texture leaked (a third of the texture, ~0.4 GB per visit of Jungle Ruins).
+        if(prevMip && prevMip->data != reinterpret_cast<unsigned char*>(m_data))
+        {
+            STBI_FREE(prevMip->data);
         }
     }
 

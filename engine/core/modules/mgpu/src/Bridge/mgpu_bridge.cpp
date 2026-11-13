@@ -7,7 +7,6 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <mutex>
@@ -41,11 +40,9 @@ namespace nau::mgpu::bridge
     namespace
     {
         std::atomic<bool> g_enabled{false};
-        std::atomic<bool> g_autoEnabled{[]
-        {
-            const char* const value = std::getenv("NAU_MGPU_AUTO");
-            return value == nullptr || std::strcmp(value, "0") != 0;
-        }()};
+        std::atomic<bool> g_autoEnabled{Settings{}.autoMode};
+        std::atomic<uint32_t> g_nearCascades{Settings{}.nearCascades};
+        std::atomic<uint32_t> g_maxAtlasesPerSecond{Settings{}.maxAtlasesPerSecond};
         std::atomic<bool> g_vsyncEnabled{true};
         std::atomic<uint64_t> g_meshGeneration{0};
 
@@ -143,6 +140,22 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
     bool isEnabled()
     {
         return g_enabled.load();
+    }
+
+    void setSettings(const Settings& settings)
+    {
+        g_autoEnabled.store(settings.autoMode);
+        g_nearCascades.store(settings.nearCascades);
+        g_maxAtlasesPerSecond.store(settings.maxAtlasesPerSecond);
+    }
+
+    Settings getSettings()
+    {
+        Settings settings;
+        settings.autoMode = g_autoEnabled.load();
+        settings.nearCascades = g_nearCascades.load();
+        settings.maxAtlasesPerSecond = g_maxAtlasesPerSecond.load();
+        return settings;
     }
 
     void setAutoEnabled(const bool enabled)

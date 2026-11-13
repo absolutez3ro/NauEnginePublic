@@ -109,50 +109,62 @@ namespace nau::render
 #if defined(NAU_ENABLE_MGPU)
     namespace
     {
-        // Stage 4 of the MGPU optimisation: the cascades Nau draws itself every frame, the second GPU draws the others.
-        // The near cascades hold few casters but are the ones seen up close, where a shadow late by an atlas shows.
-        // NAU_MGPU_NEAR_CASCADES overrides it, 0 gives all cascades to the second GPU. At least one cascade stays on the
-        // second GPU (renderMgpuShadows).
+        // Stage 4 of the MGPU optimisation (bridge::Settings::nearCascades): the cascades Nau draws itself every frame, the
+        // second GPU draws the others. At least one cascade stays on the second GPU (renderMgpuShadows).
         int mgpuNearCascadesSetting()
         {
-            static const int count = []
-            {
-                int value = 2;
-                if (const char* const text = std::getenv("NAU_MGPU_NEAR_CASCADES"))
-                {
-                    value = std::atoi(text);
-                }
-                value = std::clamp(value, 0, static_cast<int>(csm::CascadeShadows::MAX_CASCADES));
-                NAU_LOG_INFO("mgpu shadows: up to {} near cascade(s) drawn by the scene GPU", value);
-                return value;
-            }();
-            return count;
+            return std::min(static_cast<int>(nau::mgpu::bridge::getSettings().nearCascades),
+                            static_cast<int>(csm::CascadeShadows::MAX_CASCADES));
         }
+
+        // Stage 7 (bridge::Settings::maxAtlasesPerSecond).
         int mgpuMaxAtlasesSetting()
         {
-            static const int rate = []
-            {
-                int value = 30;
-                if (const char* const text = std::getenv("NAU_MGPU_MAX_ATLASES"))
-                {
-                    value = std::max(0, std::atoi(text));
-                }
-                if (value > 0)
-                {
-                    NAU_LOG_INFO("mgpu shadows: at most {} atlases per second for each renderer of the second GPU", value);
-                }
-                return value;
-            }();
-            return rate;
+            return static_cast<int>(nau::mgpu::bridge::getSettings().maxAtlasesPerSecond);
         }
     } // namespace
 #endif
 
+    // The Mgpu switch and settings from the "mgpu" section of the application properties, an environment variable
+    // overriding a value (for comparisons and debugging): mgpu/enabled (NAU_MGPU, default MGPU_SHADOWS_ENABLED),
+    // mgpu/auto (NAU_MGPU_AUTO), mgpu/nearCascades (NAU_MGPU_NEAR_CASCADES), mgpu/maxAtlasesPerSecond
+    // (NAU_MGPU_MAX_ATLASES). Applied once; nau::mgpu::bridge::setEnabled / setSettings change them at run time.
     void RenderWindowImpl::initializeMgpu()
     {
 #if defined(NAU_ENABLE_MGPU)
-        static const bool switchApplied = (nau::mgpu::bridge::setEnabled(MGPU_SHADOWS_ENABLED), true);
-        static_cast<void>(switchApplied);
+        static const bool applied = []
+        {
+            namespace bridge = nau::mgpu::bridge;
+            using namespace settings_detail;
+
+            bool enabled = MGPU_SHADOWS_ENABLED;
+            bridge::Settings settings = bridge::getSettings();
+            bool autoMode = settings.autoMode;
+            int nearCascades = static_cast<int>(settings.nearCascades);
+            int maxAtlases = static_cast<int>(settings.maxAtlasesPerSecond);
+
+            GlobalProperties* const properties = findGlobalProperties();
+            readProperty(properties, "mgpu/enabled", enabled);
+            readProperty(properties, "mgpu/auto", autoMode);
+            readProperty(properties, "mgpu/nearCascades", nearCascades);
+            readProperty(properties, "mgpu/maxAtlasesPerSecond", maxAtlases);
+            readEnvironment("NAU_MGPU", enabled);
+            readEnvironment("NAU_MGPU_AUTO", autoMode);
+            readEnvironment("NAU_MGPU_NEAR_CASCADES", nearCascades);
+            readEnvironment("NAU_MGPU_MAX_ATLASES", maxAtlases);
+
+            settings.autoMode = autoMode;
+            settings.nearCascades = static_cast<uint32_t>(std::clamp(nearCascades, 0, static_cast<int>(csm::CascadeShadows::MAX_CASCADES)));
+            settings.maxAtlasesPerSecond = static_cast<uint32_t>(std::max(0, maxAtlases));
+            bridge::setSettings(settings);
+            bridge::setEnabled(enabled);
+            NAU_LOG_INFO("mgpu settings: {}, auto {}, {} near cascade(s) on the scene GPU, atlases per second: {}",
+                         enabled ? "on" : "off", settings.autoMode ? "on" : "off", settings.nearCascades,
+                         settings.maxAtlasesPerSecond > 0 ? ::fmt::format("at most {}", settings.maxAtlasesPerSecond)
+                                                          : std::string("no limit"));
+            return true;
+        }();
+        static_cast<void>(applied);
 #endif
     }
 
@@ -623,6 +635,47 @@ namespace nau::render
         }
     }
 
+    bool RenderWindowImpl::checkMgpuStall(MgpuShadowsState& state, const char* what)
+    {
+        // pendingFrames is in the order of submission; takeReady drops the frames up to the atlas it hands out.
+        const bool late = !state.pendingFrames.empty() &&
+                          std::chrono::steady_clock::now() - state.pendingFrames.front().submitted >
+                              std::chrono::duration<float>(MGPU_STALL_SECONDS) &&
+                          state.frame - state.pendingFrames.front().frame >= MGPU_STALL_FRAMES;
+        const bool stalled = late || state.failedSubmitsInRow >= MGPU_FAILED_SUBMITS_LIMIT;
+        if (stalled != state.stalled)
+        {
+            state.stalled = stalled;
+            if (stalled)
+            {
+                NAU_LOG_WARNING("{}: the second GPU has stopped delivering atlases ({}), Nau draws the shadows itself until it "
+                                "does again: {}", what, late ? "an atlas is late by over a second" : "its submits fail",
+                                state.renderer.lastError());
+            }
+            else
+            {
+                NAU_LOG_INFO("{}: the second GPU delivers atlases again", what);
+            }
+        }
+        if (stalled)
+        {
+            state.hasAtlas = false;
+        }
+        return stalled;
+    }
+
+    void RenderWindowImpl::noteMgpuSubmit(MgpuShadowsState& state, const uint64_t failedBefore, const bool submitted)
+    {
+        if (state.renderer.stats().failed > failedBefore)
+        {
+            ++state.failedSubmitsInRow;
+        }
+        else if (submitted)
+        {
+            state.failedSubmitsInRow = 0;
+        }
+    }
+
     bool RenderWindowImpl::mgpuSubmitDue(const MgpuShadowsState& state)
     {
         return mgpuMaxAtlasesSetting() <= 0 || std::chrono::steady_clock::now() >= state.nextSubmit;
@@ -870,6 +923,7 @@ namespace nau::render
 
         if (!state.renderer.isReady())
         {
+            state.hasAtlas = false; // the resolve must not take the constants of an old atlas for Nau's cascades
             return false;
         }
         if (state.autoSwitch.suspended)
@@ -897,8 +951,8 @@ namespace nau::render
         state.nearCascades = std::min(mgpuNearCascadesSetting(), numCascades - 1);
         if (sparseShadowFrames() > 0)
         {
-            // The near cascades are never kept (SPARSE_FIRST_CASCADE): Nau draws them over the atlas every frame.
-            state.nearCascades = std::min(state.nearCascades, SPARSE_FIRST_CASCADE);
+            // The near cascades are never kept (FAR_SHADOW_CASCADE): Nau draws them over the atlas every frame.
+            state.nearCascades = std::min(state.nearCascades, FAR_SHADOW_CASCADE);
         }
 
         // Stage 5: what the persistent atlas of the second GPU has to draw anew.
@@ -965,6 +1019,8 @@ namespace nau::render
             }), state.pendingFrames.end());
         }
 
+        checkMgpuStall(state, "mgpu shadows");
+
         // 2. The cascades of this frame go to the second GPU if it has a free slot; it never waits.
         // Without this frame's cascade lists (skipped while the second GPU was busy or the rate reached) nothing is
         // submitted: the casters would be missing from the atlas.
@@ -1014,7 +1070,9 @@ namespace nau::render
         frame.matrices = state.matrices.data();
         frame.matrixCount = static_cast<uint32_t>(state.matrices.size() / 16);
         frame.userToken = state.frame;
+        const uint64_t failedBefore = state.renderer.stats().failed;
         const bool submitted = state.renderer.submit(frame);
+        noteMgpuSubmit(state, failedBefore, submitted);
         state.timings.submitSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - submitStart).count();
         if (submitted)
         {
@@ -1022,6 +1080,7 @@ namespace nau::render
             pending.token = state.frame;
             pending.frame = state.frame;
             pending.snapshot = m_csm->snapshotShaderConstants();
+            pending.submitted = std::chrono::steady_clock::now();
             for (int cascade = 0; cascade < numCascades; ++cascade)
             {
                 pending.viewPos[cascade] = m_csm->getRenderCameraWorldViewPos(cascade);

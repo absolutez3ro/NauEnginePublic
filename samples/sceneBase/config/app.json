@@ -20,5 +20,19 @@
             "file:/content/textures/rusted_pbr/rusted_albedo_ao.png"
         ]
     },
+    "graphics": {
+        "framePipelining": true,
+        "shadows": {
+            "sparseFrames": 4,
+            "farCascadeLodScale": 2.0,
+            "shadowOnlyLods": true
+        }
+    },
+    "mgpu": {
+        "enabled": true,
+        "auto": true,
+        "nearCascades": 2,
+        "maxAtlasesPerSecond": 30
+    },
     "contentPath": "test"
 }

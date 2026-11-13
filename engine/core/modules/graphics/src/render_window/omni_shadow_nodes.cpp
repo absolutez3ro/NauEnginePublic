@@ -177,6 +177,7 @@ namespace nau::render
 
         if (!state.renderer.isReady())
         {
+            state.hasAtlas = false;
             return false;
         }
         if (m_mgpuShadows.autoSwitch.suspended)
@@ -230,6 +231,8 @@ namespace nau::render
             }), state.pendingFrames.end());
         }
 
+        checkMgpuStall(state, "mgpu omni shadows");
+
         // 2. The faces of this frame go to the second GPU if it has a free slot and the rate allows; it never waits.
         if (!mgpuSubmitDue(state))
         {
@@ -249,12 +252,16 @@ namespace nau::render
         frame.matrices = state.matrices.data();
         frame.matrixCount = static_cast<uint32_t>(state.matrices.size() / 16);
         frame.userToken = state.frame;
-        if (state.renderer.submit(frame))
+        const uint64_t failedBefore = state.renderer.stats().failed;
+        const bool submitted = state.renderer.submit(frame);
+        noteMgpuSubmit(state, failedBefore, submitted);
+        if (submitted)
         {
             mgpuSubmitted(state);
             MgpuShadowsState::PendingFrame pending;
             pending.token = state.frame;
             pending.frame = state.frame;
+            pending.submitted = std::chrono::steady_clock::now();
             pending.omniSnapshot = m_omniShadows->makeSnapshot(casters);
             state.pendingFrames.push_back(pending);
         }
