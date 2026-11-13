@@ -138,6 +138,10 @@ namespace nau::sample
 
         async::Task<> startupApplication() override
         {
+            if (getApplication().isClosing())
+            {
+                return async::Task<>::makeResolved();
+            }
             // The overview camera shares input with ImGui outside its panels.
             imgui_use_hybrid_input_mode(getServiceProvider().get<GlobalProperties>().getValue<bool>("sample/camera/overview").value_or(false));
             return m_startup();
