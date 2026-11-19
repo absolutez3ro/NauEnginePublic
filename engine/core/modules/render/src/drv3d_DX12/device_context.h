@@ -12,10 +12,12 @@
 #include "nau/osApiWrappers/dag_threads.h"
 #include "nau/3d/dag_drv3dConsts.h"
 #include "nau/3d/tql.h"
+#include "nau/3d/dag_drv3d_multi_gpu.h"
 #include "variant_vector.h"
 #include "texture.h"
 #include "buffer.h"
 #include "resource_memory_heap.h"
+#include "mailbox_receive.h"
 #include "tagged_handles.h"
 #include "bindless.h"
 #include "device_queue.h"
@@ -1320,7 +1322,7 @@ class DeviceContext : protected ResourceUsageHistoryDataSetDebugger, public debu
     void setConstRegisterBuffer(uint32_t stage, HostDeviceSharedMemoryRegion update);
     void writeToDebug(StringIndexRef::RangeType index);
     // mode only used if present is true
-    int64_t flush(bool present, uint64_t progress, OutputMode mode);
+    int64_t flush(bool present, uint64_t progress, OutputMode mode, bool retireWorkItem = true);
     void pushEvent(StringIndexRef::RangeType name);
     void popEvent();
     void writeTimestamp(Query *query);
@@ -1411,6 +1413,11 @@ class DeviceContext : protected ResourceUsageHistoryDataSetDebugger, public debu
     void flushComputeState();
     void textureReadBack(Image *image, HostDeviceSharedMemoryRegion cpu_memory, BufferImageCopyListRef::RangeType regions,
       DeviceQueueType queue);
+    void transitionTextureForForeignQueue(Image *image);
+    void copySharedTexture(Image *image, ID3D12Resource *shared, bool toShared);
+    void mailboxReceive(Image *ao, const MailboxReceiveDesc &desc);
+    void signalForeignFence(ID3D12Fence *fence, uint64_t value);
+    void waitForeignFence(ID3D12Fence *fence, uint64_t value);
     void bufferReadBack(BufferResourceReferenceAndRange buffer, HostDeviceSharedMemoryRegion cpu_memory, size_t offset);
 #if !_TARGET_XBOXONE
     void setVariableRateShading(D3D12_SHADING_RATE rate, D3D12_SHADING_RATE_COMBINER vs_combiner,
@@ -1577,6 +1584,9 @@ class DeviceContext : protected ResourceUsageHistoryDataSetDebugger, public debu
     uint64_t nextWorkItemProgress = 2;
     uint64_t recordingWorkItemProgress = 1;
     uint64_t completedFrameProgress = 0;
+    d3d::mgpu::ForeignQueueMeasurements foreignQueueMeasurements;
+    bool measureForeignQueues = false;
+    bool inForeignQueueHandoff = false;
     eastl::vector<size_t> renderTargetIndices;
     // atomic so multiple threads are able to safely check if the progress has been completed
     std::atomic<uint64_t> frontendFinishedWorkItem = {0};
@@ -1804,6 +1814,19 @@ public:
   void copyFromExternalResource(ID3D12Resource *src, Image *dst);
   void resolveMultiSampleImage(Image *src, Image *dst);
   void flushDraws();
+  // Hands the work recorded so far to a queue outside this context, e.g. a multi-GPU copy queue: optionally moves
+  // subresource 0 of image to COMMON, submits everything recorded so far and signals fence with value on the graphics
+  // queue after it.
+  void releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint64_t value);
+  void copySharedTexture(Image *image, ID3D12Resource *shared, bool toShared);
+  void mailboxReceive(Image *ao, const MailboxReceiveDesc &desc);
+  // Submit the recorded graphics batch and signal without retiring frontend/frame storage.
+  void signalForeignFenceAfterSubmit(ID3D12Fence *fence, uint64_t value);
+  void releaseToForeignQueue(Image *const *images, uint32_t count, ID3D12Fence *fence, uint64_t value);
+  void waitForForeignQueue(ID3D12Fence *fence, uint64_t value);
+  void beginForeignQueueFrame(bool submitOnly, bool measure);
+  d3d::mgpu::ForeignQueueMeasurements getForeignQueueMeasurements();
+  void submitForForeignQueue();
   // Similar to flushDraws, with the exception that it will only execute a flush when no queries are active.
   // Returns true if it executed a flush, otherwise it returns false.
   bool flushDrawWhenNoQueries();

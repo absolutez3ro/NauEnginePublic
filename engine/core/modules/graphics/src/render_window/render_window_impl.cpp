@@ -8,11 +8,186 @@
 #include <cstdlib>
 
 #include "nau/diag/logging.h"
+#include <cstdio>
+#include <array>
+#include <iomanip>
+#include <locale>
+
+#include "nau/app/core_window_manager.h"
+#include "nau/app/global_properties.h"
 #include "nau/graphics/core_graphics.h"
 #include "nau/input.h"
+#include "nau/platform/windows/app/windows_window.h"
 
 namespace nau::render
 {
+    namespace
+    {
+        constexpr uint32_t CpuLoadWorkerColumns = 16;
+
+        struct CpuLoadSnapshot
+        {
+            bool enabled = false, continuous = false;
+            uint32_t level = 0;
+            float targetMs = 0.f, actualMs = 0.f, checksum = 0.f;
+            uint32_t agents = 4096, threads = 1, activeThreads = 0, agentBytes = 0, passes = 0;
+            uint64_t configuredBytes = 0, sequence = 0;
+            std::array<float, CpuLoadWorkerColumns> wallMs{};
+            std::array<uint32_t, CpuLoadWorkerColumns> workerPasses{};
+        };
+
+        CpuLoadSnapshot readCpuLoadSnapshot(GlobalProperties& properties)
+        {
+            static thread_local CpuLoadSnapshot last;
+            for (unsigned attempt = 0; attempt < 2; ++attempt)
+            {
+                CpuLoadSnapshot next;
+                next.sequence = properties.getValue<uint64_t>("sample/cpuLoad/sequence").value_or(0);
+                if (next.sequence & 1u) continue;
+                next.enabled = properties.getValue<bool>("sample/cpuLoad/enabled").value_or(false);
+                next.continuous = properties.getValue<bool>("sample/cpuLoad/continuous").value_or(false);
+                next.level = properties.getValue<uint32_t>("sample/cpuLoad/level").value_or(0);
+                next.targetMs = properties.getValue<float>("sample/cpuLoad/targetMs").value_or(0.f);
+                next.actualMs = properties.getValue<float>("sample/cpuLoad/actualMs").value_or(0.f);
+                next.agents = properties.getValue<uint32_t>("sample/cpuLoad/agents").value_or(4096);
+                next.passes = properties.getValue<uint32_t>("sample/cpuLoad/passes").value_or(0);
+                next.checksum = properties.getValue<float>("sample/cpuLoad/checksum").value_or(0.f);
+                next.threads = properties.getValue<uint32_t>("sample/cpuLoad/threads").value_or(1);
+                next.activeThreads = properties.getValue<uint32_t>("sample/cpuLoad/activeThreads").value_or(0);
+                next.agentBytes = properties.getValue<uint32_t>("sample/cpuLoad/agentBytes").value_or(0);
+                next.configuredBytes = properties.getValue<uint64_t>("sample/cpuLoad/configuredAgentBytes").value_or(0);
+                for (uint32_t i = 0; i < CpuLoadWorkerColumns; ++i)
+                {
+                    char name[64];
+                    std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/wallMs", i);
+                    next.wallMs[i] = properties.getValue<float>(name).value_or(0.f);
+                    std::snprintf(name, sizeof(name), "sample/cpuLoad/workers/%u/passes", i);
+                    next.workerPasses[i] = properties.getValue<uint32_t>(name).value_or(0);
+                }
+                if (properties.getValue<uint64_t>("sample/cpuLoad/sequence").value_or(0) == next.sequence)
+                {
+                    last = next;
+                    break;
+                }
+            }
+            return last;
+        }
+        async::Task<> setWindowTitle(void* handle, eastl::string title)
+        {
+            ASYNC_SWITCH_EXECUTOR(getServiceProvider().get<ICoreWindowManager>().getExecutor());
+            HWND window = static_cast<HWND>(handle);
+            if (IsWindow(window))
+            {
+                SetWindowTextA(window, title.c_str());
+            }
+        }
+    }  // namespace
+
+    void RenderWindowImpl::updateFrameStatistics()
+    {
+        m_ambientOcclusionWaitMs.store(m_ambientOcclusion ? m_ambientOcclusion->getWaitMilliseconds() : -1.f, std::memory_order_relaxed);
+        const auto now = std::chrono::steady_clock::now();
+        recordFrameMeasurements(now);
+        if (m_frameStatisticsStart == std::chrono::steady_clock::time_point{})
+        {
+            m_frameStatisticsStart = now;
+            return;
+        }
+        ++m_frameStatisticsCount;
+        const double milliseconds = std::chrono::duration<double, std::milli>(now - m_frameStatisticsStart).count();
+        if (milliseconds < 1000.0)
+        {
+            return;
+        }
+        // Count render frames, including presentation pacing; these are not GPU pass timings.
+        m_frameRate.store(static_cast<float>(1000.0 * m_frameStatisticsCount / milliseconds), std::memory_order_relaxed);
+        char wait[64] = {};
+        const char* waitLabel = m_ambientOcclusion ? m_ambientOcclusion->getWaitLabel() : "n/a";
+        if (waitLabel) std::snprintf(wait, sizeof(wait), "%s", waitLabel);
+        else std::snprintf(wait, sizeof(wait), "%.3f ms", m_ambientOcclusion->getWaitMilliseconds());
+        char title[384] = {};
+        std::snprintf(title, sizeof(title), "NAU | %.1f FPS | %.2f ms/frame | GPU0 wait: %s | %s | %s | F8 GPU / F9 preset",
+                      1000.0 * m_frameStatisticsCount / milliseconds, milliseconds / m_frameStatisticsCount,
+                      wait,
+                      m_ambientOcclusion ? m_ambientOcclusion->getExecutionLabel() : "AO disabled",
+                      m_ambientOcclusion ? m_ambientOcclusion->getVariantLabel() : "");
+        if (m_showFrameStatistics) setWindowTitle(m_windowHandle, title).detach();
+        m_frameStatisticsCount = 0;
+        m_frameStatisticsStart = now;
+    }
+
+    void RenderWindowImpl::recordFrameMeasurements(std::chrono::steady_clock::time_point now)
+    {
+        auto& properties = getServiceProvider().get<GlobalProperties>();
+        if (!m_measurementsInitialized)
+        {
+            m_measurementsInitialized = true;
+            m_measurementsOrigin = m_measurementsPrevious = now;
+            if (!properties.getValue<bool>("render/measurements/enabled").value_or(false)) return;
+            const auto path = properties.getValue<eastl::string>("render/measurements/csvPath").value_or("");
+            if (path.empty()) return;
+            m_measurementsCsv.open(path.c_str(), std::ios::out | std::ios::trunc);
+            if (!m_measurementsCsv) { NAU_LOG_ERROR("Measurements: cannot open {}", path); return; }
+            m_measurementsCsv.imbue(std::locale::classic());
+            m_measurementsCsv << "frame,elapsed_ms,frame_ms,phase,width,height,requested_gpu,actual_gpu,gpu1_available,wait_enabled,cpu_serialize,ao_valid,ao_source_frame,ao_age_frames,timing_frame,overlap_gpu_ms,wait_interval_ms,ready_at_record_cpu,gpu1_timing_frame,gpu1_raw_ms,gpu1_total_ms,chain_frame,chain_observed_ms,load_mask,submit_only_handoffs,handoff_releases,handoff_waits,handoff_frame_flushes,handoff_cpu_ms,handoff_slot_waits,handoff_slot_wait_ms,frame_slot_waits,frame_slot_wait_ms,framework_unsynchronized,"
+                "gpu1_input_ms,gpu1_blur_ms,gpu1_output_ms,gpu1_job_ms,gpu1_submitted,gpu1_completed,gpu1_skipped,gpu1_generation,"
+                "gpu0_exchange_frame,gpu0_publish_ms,gpu0_receive_ms,gpu0_blur_frame,gpu0_blur_ms,ao_width,ao_height,input_width,input_height,blur_gpu,normals_reconstructed,linear_depth16,packed_framework_depth,packed_framework_normals,"
+                "ao_transport,ao_readback_frame,ao_readback_source_frame,ao_readback_age_frames,ao_age_samples,ao_age_0,ao_age_1,ao_age_2,ao_age_3,ao_age_4,ao_age_5,ao_age_6,ao_age_7plus,"
+                "mailbox_skip_input,mailbox_skip_output,mailbox_skip_backlog,mailbox_submit_signals,mailbox_bad_ids,mailbox_unavailable_frames,mailbox_dropped_age_samples,"
+                "cpu_load_enabled,cpu_load_target_ms,cpu_load_actual_ms,cpu_load_agents,cpu_load_passes,cpu_load_checksum,"
+                "mailbox_diagnostic,mailbox_diagnostic_active,gpu0_input_copy_frames,mailbox_frozen_input_frame,"
+                "cpu_load_threads,cpu_load_active_threads,cpu_load_agent_bytes,cpu_load_configured_agent_bytes,cpu_load_snapshot_sequence";
+            for (uint32_t i = 0; i < CpuLoadWorkerColumns; ++i)
+                m_measurementsCsv << ",cpu_worker_" << i << "_wall_ms,cpu_worker_" << i << "_passes";
+            m_measurementsCsv << ",cpu_load_continuous,cpu_load_level,freeze_inputs_ready,system_uptime_ms\n";
+            m_measurementsCsv << std::fixed << std::setprecision(6);
+            NAU_LOG_INFO("Measurements: CSV {} (frame intervals are CPU render/present cadence; chain latency is a frame-polled upper bound)", path);
+        }
+        if (!m_measurementsCsv.is_open() || !m_measurementsCsv) return;
+        const double dt = std::chrono::duration<double, std::milli>(now - m_measurementsPrevious).count();
+        m_measurementsPrevious = now;
+        if (!m_ambientOcclusion || !m_ambientOcclusion->getMeasurements().frame) return;
+        const auto& m = m_ambientOcclusion->getMeasurements();
+        const auto handoffs = d3d::mgpu::get_foreign_queue_measurements();
+        const auto pipeline = getAmbientOcclusionPipeline();
+        const int64_t age = m.aoValid && m.aoFrame ? static_cast<int64_t>(m.frame - m.aoFrame) : -1;
+        const auto& gpu1 = m.gpu1Timing;
+        const auto cpu = readCpuLoadSnapshot(properties);
+        const int64_t readbackAge = m.mailboxTransport && gpu1.displayedAoFrame && gpu1.displayedAoFrame <= gpu1.displayedFrame
+            ? static_cast<int64_t>(gpu1.displayedFrame - gpu1.displayedAoFrame) : -1;
+        m_measurementsCsv << m.frame << ',' << std::chrono::duration<double, std::milli>(now - m_measurementsOrigin).count() << ',' << dt << ','
+            << m.phase << ',' << m_gBuffer->getWidth() << ',' << m_gBuffer->getHeight() << ','
+            << static_cast<uint32_t>(getAmbientOcclusionExecution()) << ',' << (m.gpu1 ? 1 : 0) << ',' << (d3d::is_multi_gpu_available() ? 1 : 0) << ','
+            << (m.transportMode == 0 && pipeline.waitForSecondary ? 1 : 0) << ',' << (properties.getValue<bool>("graphics/serializeRenderJobs").value_or(false) ? 1 : 0) << ','
+            << (m.aoValid ? 1 : 0) << ',' << m.aoFrame << ',' << age << ',' << m.timingFrame << ',' << m.overlapMs << ',' << m.waitMs << ',' << m.readyAtConsumer << ','
+            << m.gpu1Timing.frame << ',' << m.gpu1Timing.rawMilliseconds << ',' << m.gpu1Timing.totalMilliseconds << ',' << m.chainFrame << ',' << m.chainObservedMs << ','
+            << m.loadMask << ',' << (handoffs.submitOnly ? 1 : 0) << ',' << handoffs.releases << ',' << handoffs.waits << ','
+            << handoffs.frameFlushes << ',' << handoffs.cpuMilliseconds << ',' << handoffs.slotWaits << ',' << handoffs.slotWaitMilliseconds << ','
+            << handoffs.frameSlotWaits << ',' << handoffs.frameSlotWaitMilliseconds << ',' << (m.frameworkTransport ? 1 : 0) << ','
+            << m.gpu1Timing.inputMilliseconds << ',' << m.gpu1Timing.blurMilliseconds << ',' << m.gpu1Timing.outputMilliseconds << ',' << m.gpu1Timing.jobMilliseconds << ','
+            << m.gpu1Timing.submittedJobs << ',' << m.gpu1Timing.completedJobs << ',' << m.gpu1Timing.skippedSubmissions << ',' << m.gpu1Generation << ','
+            << m.gpu1Timing.primaryFrame << ',' << m.gpu1Timing.primaryPublishMilliseconds << ',' << m.gpu1Timing.primaryReceiveMilliseconds << ','
+            << m.primaryFilterFrame << ',' << m.primaryFilterMs << ',' << m.aoWidth << ',' << m.aoHeight << ',' << m.inputWidth << ',' << m.inputHeight << ','
+            << (m.gpu1 && pipeline.blurExecution == AmbientOcclusionExecution::multiGpu ? 1 : 0) << ','
+            << (pipeline.normals == AmbientOcclusionNormals::reconstructed ? 1 : 0) << ',' << (pipeline.linearDepth16 ? 1 : 0) << ',' << (m.gpu1Timing.packedDepth ? 1 : 0) << ',' << (m.gpu1Timing.packedNormals ? 1 : 0) << ','
+            << m.transportMode << ',' << gpu1.displayedFrame << ',' << gpu1.displayedAoFrame << ',' << readbackAge << ',' << gpu1.ageSamples;
+        for (uint64_t count : gpu1.ageHistogram) m_measurementsCsv << ',' << count;
+        m_measurementsCsv << ',' << gpu1.skippedInput << ',' << gpu1.skippedOutput << ',' << gpu1.skippedBacklog << ',' << gpu1.submitOnlySignals << ','
+            << gpu1.badFrameIds << ',' << gpu1.unavailableAoFrames << ',' << gpu1.droppedAgeSamples << ','
+            << (cpu.enabled ? 1 : 0) << ',' << cpu.targetMs << ',' << cpu.actualMs << ','
+            << cpu.agents << ',' << cpu.passes << ',' << cpu.checksum << ','
+            << static_cast<uint32_t>(m.mailboxDiagnostic) << ','
+            << (m.mailboxTransport && m.mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled ? 1 : 0) << ','
+            << gpu1.primaryInputCopyFrames << ',' << gpu1.frozenInputFrame << ','
+            << cpu.threads << ',' << cpu.activeThreads << ',' << cpu.agentBytes << ',' << cpu.configuredBytes << ',' << cpu.sequence;
+        for (uint32_t i = 0; i < CpuLoadWorkerColumns; ++i)
+        {
+            m_measurementsCsv << ',' << cpu.wallMs[i] << ',' << cpu.workerPasses[i];
+        }
+        m_measurementsCsv << ',' << (cpu.continuous ? 1 : 0) << ',' << cpu.level << ','
+            << (properties.getValue<bool>("sample/automation/freezeInputsReady").value_or(false) ? 1 : 0) << ',' << GetTickCount64() << '\n';
+    }
+
     void RenderWindowImpl::setWorld(nau::Uid worldUid)
     {
         lock_(m_readWriteMutex);
@@ -94,11 +269,79 @@ namespace nau::render
         m_activeCamera = ind;
     }
 
+    AmbientOcclusionMode RenderWindowImpl::getAmbientOcclusionMode() const
+    {
+        return m_ambientOcclusionMode.load(std::memory_order_relaxed);
+    }
+
+    void RenderWindowImpl::setAmbientOcclusionMode(AmbientOcclusionMode mode)
+    {
+        m_ambientOcclusionMode.store(mode, std::memory_order_relaxed);
+    }
+
+    AmbientOcclusionExecution RenderWindowImpl::getAmbientOcclusionExecution() const
+    {
+        return m_ambientOcclusionExecution.load(std::memory_order_relaxed);
+    }
+
+    void RenderWindowImpl::setAmbientOcclusionExecution(AmbientOcclusionExecution execution)
+    {
+        m_ambientOcclusionExecution.store(execution, std::memory_order_relaxed);
+    }
+
+    AmbientOcclusionVariant RenderWindowImpl::getAmbientOcclusionVariant() const
+    {
+        return m_ambientOcclusionVariant.load(std::memory_order_relaxed);
+    }
+
+    void RenderWindowImpl::setAmbientOcclusionVariant(AmbientOcclusionVariant variant)
+    {
+        AmbientOcclusionPipeline pipeline;
+        const auto requested = getAmbientOcclusionPipeline();
+        pipeline.waitForSecondary = requested.waitForSecondary;
+        if (variant == AmbientOcclusionVariant::xegtao)
+        {
+            pipeline.algorithm = variant;
+            pipeline.inputs = AmbientOcclusionInputs::full;
+            pipeline.fullResolution = true;
+            pipeline.blur = AmbientOcclusionBlur::off;
+            pipeline.upsample = AmbientOcclusionUpsample::bilinear;
+        }
+        else if (variant == AmbientOcclusionVariant::hbao)
+        {
+            // Algorithm selection preserves the user's SSAO normals and stage preferences.
+            pipeline = requested;
+            pipeline.algorithm = variant;
+        }
+        else if (variant == AmbientOcclusionVariant::bogdanov)
+        {
+            pipeline.inputs = AmbientOcclusionInputs::full;
+            pipeline.algorithm = variant;
+            pipeline.blur = AmbientOcclusionBlur::gaussian;
+            pipeline.upsample = AmbientOcclusionUpsample::bilinear;
+        }
+        setAmbientOcclusionPipeline(pipeline);
+        m_ambientOcclusionVariant.store(variant, std::memory_order_relaxed);
+    }
+
+    AmbientOcclusionPipeline RenderWindowImpl::getAmbientOcclusionPipeline() const
+    {
+        std::lock_guard lock(m_ambientOcclusionMutex);
+        return m_ambientOcclusionPipeline;
+    }
+
+    void RenderWindowImpl::setAmbientOcclusionPipeline(const AmbientOcclusionPipeline& pipeline)
+    {
+        std::lock_guard lock(m_ambientOcclusionMutex);
+        m_ambientOcclusionPipeline = pipeline;
+    }
+
     void RenderWindowImpl::render()
     {
 #if defined(NAU_ENABLE_MGPU)
         m_mgpuShadows.timings.renderStart = std::chrono::steady_clock::now();
 #endif
+        updateFrameStatistics();
         for (auto& [_, nodeGroup] : m_graphStages)
         {
             nodeGroup.resetState();
@@ -216,6 +459,11 @@ namespace nau::render
                 m_resizeFrameCounter--;
             }
         }
+        if (m_ambientOcclusion)
+        {
+            const AmbientOcclusion::Settings settings{getAmbientOcclusionMode(), getAmbientOcclusionExecution(), getAmbientOcclusionPipeline()};
+            m_ambientOcclusion->beginFrame(m_gBuffer->getWidth(), m_gBuffer->getHeight(), settings);
+        }
     }
 
     void RenderWindowImpl::setRenderScene(eastl::shared_ptr<GraphicsScene> gScene)
@@ -307,6 +555,7 @@ namespace nau::render
         setName(name);
         m_swapchain = swapchain;
         m_windowHandle = hwnd;
+        m_showFrameStatistics = getServiceProvider().get<GlobalProperties>().getValue<bool>("render/showFrameStatistics").value_or(false);
 
         nau::csm::CascadeShadows::Settings csmSettings;
         csmSettings.cascadeWidth = 1024;

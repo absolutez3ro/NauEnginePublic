@@ -7,6 +7,8 @@
 
 namespace nau::sample
 {
+    async::Task<> startupJungleRuins();
+
     /**
      */
     scene::IScene::Ptr makeTransformDemoScene(math::vec3 rootPos, bool addCamera);

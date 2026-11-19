@@ -163,7 +163,7 @@ namespace nau::render
                 state.releaseEventsCreated = true;
             }
 
-            if (state.renderer.initialize(d3d::get_device_name()))
+            if (state.renderer.initialize(d3d::get_device(), d3d::get_device(d3d::SECONDARY_GPU)))
             {
                 NAU_LOG_INFO("mgpu omni shadows: the point light shadow maps are drawn by '{}', the scene by '{}'",
                              state.renderer.secondaryAdapterName(), state.renderer.primaryAdapterName());

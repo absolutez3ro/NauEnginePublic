@@ -1,0 +1,46 @@
+compile_configs {
+    config {
+        stage:t="vs"
+        entry:t="VSMain"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSMain"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSDebug"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSDownsample"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSFullInputs"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSDebugBilinear"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSHalfBlur"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSBogdanov"
+    }
+    config {
+        stage:t="ps"
+        entry:t="PSUpsample"
+    }
+}
+input_layout {
+}
+permutations {
+    permutation {
+        name:t="regular"
+        defines {}
+    }
+}

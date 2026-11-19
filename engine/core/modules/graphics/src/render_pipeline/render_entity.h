@@ -65,12 +65,13 @@ namespace nau
         void render(nau::math::Matrix4 viewProj) const;
         void renderInstanced(nau::math::Matrix4 viewProj, Sbuffer* instanceData) const;
 
-        void renderZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const;
-        void renderZPrepassInstanced(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const;
+        void renderZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals = false) const;
+        void renderZPrepassInstanced(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals = false) const;
 
         // The texture whose alpha cuts this entity in a depth pass (a masked material, foliage), or nullptr.
         BaseTexture* getDepthMask(MaterialAssetView* zPrepassMat) const;
     private:
+        eastl::string_view prepareStaticZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals) const;
         void prepareZPrepass(eastl::string_view pipeline, const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const;
     };
 

@@ -298,6 +298,32 @@ namespace nau::PEPEngine::Graphics
         return devices;
     }
 
+    std::shared_ptr<GDevice> GDeviceFactory::GetNauDevice(ID3D12Device* device)
+    {
+        if (!device || FAILED(device->GetDeviceRemovedReason())) return {};
+
+        static std::mutex mutex;
+        static std::vector<std::shared_ptr<GDevice>> wrappers;
+        std::lock_guard lock(mutex);
+        for (const auto& wrapper : wrappers)
+        {
+            if (wrapper->GetDXDevice().Get() == device) return wrapper;
+        }
+
+        ComPtr<IDXGIFactory4> factory;
+        ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
+        ComPtr<IDXGIAdapter3> adapter;
+        ThrowIfFailed(factory->EnumAdapterByLuid(device->GetAdapterLuid(), IID_PPV_ARGS(&adapter)));
+        DXGI_ADAPTER_DESC2 desc = {};
+        ThrowIfFailed(adapter->GetDesc2(&desc));
+        if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) return {};
+
+        auto wrapper = std::make_shared<GDevice>(adapter, device);
+        wrapper->Initialize();
+        wrappers.push_back(wrapper);
+        return wrapper;
+    }
+
     bool GDeviceFactory::CheckTearingSupport()
     {
         BOOL allowTearing = FALSE;

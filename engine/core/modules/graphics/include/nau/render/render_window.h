@@ -28,6 +28,54 @@ namespace nau::render
 
     NAU_DEFINE_TYPED_FLAG(NauRenderStage)
 
+    enum class AmbientOcclusionMode : uint32_t
+    {
+        off = 0,
+        lighting = 1,
+        debug = 2
+    };
+
+    enum class AmbientOcclusionExecution : uint32_t
+    {
+        singleGpu = 0,
+        multiGpu = 1
+    };
+
+    enum class AmbientOcclusionVariant : uint32_t
+    {
+        current = 0,
+        bogdanov = 1,
+        hbao = 2,
+        xegtao = 3
+    };
+
+    enum class AmbientOcclusionInputs : uint32_t { downsampled, full };
+    enum class AmbientOcclusionNormals : uint32_t { prepass, reconstructed };
+    enum class AmbientOcclusionBlur : uint32_t { off, box, gather, gaussian, bilateralUpsample };
+    enum class AmbientOcclusionUpsample : uint32_t { separate, resolve, bilinear };
+
+    struct AmbientOcclusionPipeline
+    {
+        AmbientOcclusionInputs inputs = AmbientOcclusionInputs::downsampled;
+        AmbientOcclusionVariant algorithm = AmbientOcclusionVariant::current;
+        AmbientOcclusionNormals normals = AmbientOcclusionNormals::prepass;
+        AmbientOcclusionBlur blur = AmbientOcclusionBlur::box;
+        AmbientOcclusionExecution blurExecution = AmbientOcclusionExecution::singleGpu;
+        AmbientOcclusionUpsample upsample = AmbientOcclusionUpsample::separate;
+        bool packedNormals = false;
+        bool linearDepth16 = false;
+        bool eightSamples = false;
+        bool weightedUpsample = false;
+        bool rejectOutside = false;
+        bool quarterResolution = false;
+        bool gatherUpsample = false;
+        bool waitForSecondary = true;
+        bool fullResolution = false;
+
+        uint32_t resolutionDivisor() const { return fullResolution ? 1 : (quarterResolution ? 4 : 2); }
+        bool operator==(const AmbientOcclusionPipeline&) const = default;
+    };
+
     struct NAU_ABSTRACT_TYPE IRenderWindow : public virtual IRefCounted
     {
         NAU_INTERFACE(nau::render::IRenderWindow, IRefCounted)
@@ -40,6 +88,43 @@ namespace nau::render
 
         virtual int32_t getMainCameraIndex() = 0;
         virtual void setMainCameraIndex(int32_t ind) = 0;
+
+        /**
+         * @brief Returns the most recently requested SSAO mode. Thread safe.
+         * @return The requested mode, independent of whether SSAO was enabled at startup.
+         */
+        virtual AmbientOcclusionMode getAmbientOcclusionMode() const = 0;
+        /**
+         * @brief Requests a mode for SSAO enabled at startup, preserving its resources. Thread safe.
+         * With render/ssao/enabled=false this has no rendering effect and cannot enable SSAO at runtime.
+         * @param mode The requested SSAO mode.
+         */
+        virtual void setAmbientOcclusionMode(AmbientOcclusionMode mode) = 0;
+
+        /**
+         * @brief Returns the requested SSAO execution mode. Thread safe.
+         */
+        virtual AmbientOcclusionExecution getAmbientOcclusionExecution() const = 0;
+        /**
+         * @brief Requests the GPU for raw AO. MGPU requires dx12/multiGpu at startup. Thread safe.
+         * @param execution The requested execution mode; unavailable MGPU falls back to GPU 0.
+         */
+        virtual void setAmbientOcclusionExecution(AmbientOcclusionExecution execution) = 0;
+        /**
+         * @brief Returns the requested complete SSAO variant. Thread safe.
+         */
+        virtual AmbientOcclusionVariant getAmbientOcclusionVariant() const = 0;
+        /**
+         * @brief Requests inputs, noise, AO formula, blur and reconstruction independently of GPU selection. Thread safe.
+         * @param variant The complete SSAO implementation to compare.
+         */
+        virtual void setAmbientOcclusionVariant(AmbientOcclusionVariant variant) = 0;
+        /** @brief Thread-safe snapshot/request of independent SSAO stages, applied at the next frame boundary. */
+        virtual AmbientOcclusionPipeline getAmbientOcclusionPipeline() const = 0;
+        virtual void setAmbientOcclusionPipeline(const AmbientOcclusionPipeline& pipeline) = 0;
+        virtual float getFrameRate() const = 0;
+        /** @brief GPU timestamp interval around the AO queue wait; negative until available. */
+        virtual float getAmbientOcclusionWaitMilliseconds() const = 0;
 
         virtual async::Task<> requestViewportResize(int32_t width, int32_t height) = 0;
         virtual async::Task<> requestViewportResizeImmediate(int32_t width, int32_t height) = 0;

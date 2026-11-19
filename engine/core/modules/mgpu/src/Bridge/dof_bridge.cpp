@@ -184,44 +184,16 @@ namespace nau::mgpu::bridge
             }
         }
 
-        void initialize(ID3D12Device* device, ID3D12CommandQueue* queue)
+        void initialize(ID3D12Device* device, ID3D12Device* secondaryDevice, ID3D12CommandQueue* queue)
         {
+            if (!secondaryDevice || device == secondaryDevice)
+            {
+                throw std::runtime_error("Nau did not initialize a second DX12 device");
+            }
+            secondary = gfx::GDeviceFactory::GetNauDevice(secondaryDevice);
+            if (!secondary) throw std::runtime_error("Nau's second DX12 device is not a hardware device");
             primary = device;
             primaryQueue = queue;
-            const LUID luid = primary->GetAdapterLuid();
-            // Do not initialize the module factory on a one-adapter machine: its
-            // enumeration creates devices/queues before the transfer test rejects it.
-            ComPtr<IDXGIFactory1> factory;
-            check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
-            bool hasSecondary = false;
-            for (UINT i = 0; ; ++i)
-            {
-                ComPtr<IDXGIAdapter1> adapter;
-                const HRESULT hr = factory->EnumAdapters1(i, &adapter);
-                if (hr == DXGI_ERROR_NOT_FOUND) break;
-                check(hr);
-                DXGI_ADAPTER_DESC1 desc = {};
-                check(adapter->GetDesc1(&desc));
-                if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) continue;
-                if (desc.AdapterLuid.HighPart == luid.HighPart && desc.AdapterLuid.LowPart == luid.LowPart) continue;
-                if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), nullptr)))
-                {
-                    hasSecondary = true;
-                    break;
-                }
-            }
-            if (!hasSecondary) throw std::runtime_error("no suitable secondary hardware GPU (preflight)");
-            gfx::GDeviceFactory::SetDebugLayerEnabled(false);
-            for (const auto& candidate : gfx::GDeviceFactory::GetAllDevices(false))
-            {
-                const LUID other = candidate->GetDXDevice()->GetAdapterLuid();
-                if (other.HighPart != luid.HighPart || other.LowPart != luid.LowPart)
-                {
-                    secondary = candidate;
-                    break;
-                }
-            }
-            if (!secondary) throw std::runtime_error("no suitable secondary hardware GPU");
             const auto name = secondary->GetName();
             const int bytes = WideCharToMultiByte(CP_UTF8, 0, name.data(), static_cast<int>(name.size()), nullptr, 0, nullptr, nullptr);
             adapterName.resize(bytes);
@@ -435,14 +407,15 @@ namespace nau::mgpu::bridge
     DofBridge::DofBridge() : m_impl(std::make_unique<Impl>()) {}
     DofBridge::~DofBridge() = default;
 
-    bool DofBridge::prepare(void* device, void* queue, uint32_t width, uint32_t height)
+    bool DofBridge::prepare(void* device, void* secondary, void* queue, uint32_t width, uint32_t height)
     {
         if (m_impl->failed) return false;
         try
         {
             if (!device || !queue || !width || !height || width > 16384 || height > 16384)
                 throw std::runtime_error("invalid DOF device, queue or dimensions");
-            if (!m_impl->primary) m_impl->initialize(static_cast<ID3D12Device*>(device), static_cast<ID3D12CommandQueue*>(queue));
+            if (!m_impl->primary) m_impl->initialize(static_cast<ID3D12Device*>(device), static_cast<ID3D12Device*>(secondary),
++                                                    static_cast<ID3D12CommandQueue*>(queue));
             if (m_impl->primary.Get() != device) throw std::runtime_error("primary device changed; recreate DOF bridge");
             if (width != m_impl->width || height != m_impl->height) m_impl->resize(width, height);
             return true;

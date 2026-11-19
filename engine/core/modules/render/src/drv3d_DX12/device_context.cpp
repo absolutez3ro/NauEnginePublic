@@ -209,7 +209,20 @@ void DeviceContext::manageLatchedState()
   {
     if (nextWait)
     {
+      const bool measure = front.measureForeignQueues;
+      const auto start = measure ? ref_time_ticks() : 0;
       wait_for_frame_progress_with_event(device.queues, nextWait->progress, front.frameWaitEvent.get(), "manageLatchedState");
+      if (measure)
+      {
+        const double milliseconds = ref_time_delta_to_usec(ref_time_ticks() - start) / 1000.0;
+        ++front.foreignQueueMeasurements.frameSlotWaits;
+        front.foreignQueueMeasurements.frameSlotWaitMilliseconds += milliseconds;
+        if (front.inForeignQueueHandoff)
+        {
+          ++front.foreignQueueMeasurements.slotWaits;
+          front.foreignQueueMeasurements.slotWaitMilliseconds += milliseconds;
+        }
+      }
     }
     for (auto &&frame : front.latchedFrameSet)
     {
@@ -1283,6 +1296,105 @@ void DeviceContext::flushDraws()
   commandStream.pushBack(cmd);
   immediateModeExecute();
   frontFlush();
+}
+
+void DeviceContext::beginForeignQueueFrame(bool submitOnly, bool measure)
+{
+  DX12_LOCK_FRONT();
+  front.foreignQueueMeasurements = {};
+  front.foreignQueueMeasurements.submitOnly = submitOnly;
+  front.measureForeignQueues = measure;
+}
+
+d3d::mgpu::ForeignQueueMeasurements DeviceContext::getForeignQueueMeasurements()
+{
+  DX12_LOCK_FRONT();
+  return front.foreignQueueMeasurements;
+}
+
+void DeviceContext::submitForForeignQueue()
+{
+  if (front.foreignQueueMeasurements.submitOnly)
+  {
+    commandStream.pushBack(make_command<CmdSubmitForForeignQueue>());
+    immediateModeExecute();
+  }
+  else
+  {
+    commandStream.pushBack(make_command<CmdFlushWithFence>(front.recordingWorkItemProgress));
+    immediateModeExecute();
+    ++front.foreignQueueMeasurements.frameFlushes;
+    frontFlush();
+  }
+}
+
+void DeviceContext::releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint64_t value)
+{
+  Image *images[] = {image};
+  releaseToForeignQueue(images, image ? 1u : 0u, fence, value);
+}
+
+void DeviceContext::copySharedTexture(Image *image, ID3D12Resource *shared, bool toShared)
+{
+  DX12_LOCK_FRONT();
+  commandStream.pushBack(make_command<CmdCopySharedTexture>(image, shared, toShared));
+  immediateModeExecute();
+}
+
+void DeviceContext::mailboxReceive(Image *ao, const MailboxReceiveDesc &desc)
+{
+  DX12_LOCK_FRONT();
+  commandStream.pushBack(make_command<CmdMailboxReceive>(ao, desc));
+  immediateModeExecute();
+}
+
+void DeviceContext::signalForeignFenceAfterSubmit(ID3D12Fence *fence, uint64_t value)
+{
+  DX12_LOCK_FRONT();
+  // This is always a submit-only boundary, independently of the comparison transport's checkbox.
+  // The signal must follow execution of the recorded input copies, without frontFlush or a CPU wait.
+  commandStream.pushBack(make_command<CmdSubmitForForeignQueue>());
+  commandStream.pushBack(make_command<CmdSignalForeignFence>(fence, value));
+  immediateModeExecute();
+}
+
+void DeviceContext::releaseToForeignQueue(Image *const *images, uint32_t count, ID3D12Fence *fence, uint64_t value)
+{
+  DX12_LOCK_FRONT();
+  const auto start = front.measureForeignQueues ? ref_time_ticks() : 0;
+  front.inForeignQueueHandoff = true;
+  ++front.foreignQueueMeasurements.releases;
+
+  for (uint32_t index = 0; index < count; ++index)
+  {
+    commandStream.pushBack(make_command<CmdTransitionTextureForForeignQueue>(images[index]));
+  }
+  // The signal must follow the submit of everything recorded so far: a foreign queue waiting for it must never depend on
+  // a command list that is still open here.
+  submitForForeignQueue();
+
+  commandStream.pushBack(make_command<CmdSignalForeignFence>(fence, value));
+  immediateModeExecute();
+  front.inForeignQueueHandoff = false;
+  if (front.measureForeignQueues)
+    front.foreignQueueMeasurements.cpuMilliseconds += ref_time_delta_to_usec(ref_time_ticks() - start) / 1000.0;
+}
+
+void DeviceContext::waitForForeignQueue(ID3D12Fence* fence, uint64_t value)
+{
+    DX12_LOCK_FRONT();
+    const auto start = front.measureForeignQueues ? ref_time_ticks() : 0;
+    front.inForeignQueueHandoff = true;
+    ++front.foreignQueueMeasurements.waits;
+
+    // Submit independent graphics work before enqueueing the foreign wait on its queue.
+    submitForForeignQueue();
+
+    commandStream.pushBack(make_command<CmdWaitForeignFence>(fence, value));
+    immediateModeExecute();
+    front.inForeignQueueHandoff = false;
+    if (front.measureForeignQueues)
+      front.foreignQueueMeasurements.cpuMilliseconds += ref_time_delta_to_usec(ref_time_ticks() - start) / 1000.0;
 }
 
 bool DeviceContext::flushDrawWhenNoQueries()
@@ -3353,8 +3465,9 @@ void DeviceContext::ExecutionContext::writeToDebug(StringIndexRef::RangeType inf
   contextState.resourceStates.marker(info);
 }
 
-int64_t DeviceContext::ExecutionContext::flush(bool present, uint64_t progress, OutputMode mode)
+int64_t DeviceContext::ExecutionContext::flush(bool present, uint64_t progress, OutputMode mode, bool retireWorkItem)
 {
+  NAU_ASSERT(retireWorkItem || !present);
   int64_t swapDur = 0;
   FrameInfo &frame = contextState.getFrameData();
 
@@ -3507,21 +3620,29 @@ int64_t DeviceContext::ExecutionContext::flush(bool present, uint64_t progress, 
     ID3D12CommandList *submit = cmdList.get();
     device.queues[DeviceQueueType::READ_BACK].enqueueCommands(1, &submit);
 
-    device.queues.updateFrameProgress(progress);
+    if (retireWorkItem)
+      device.queues.updateFrameProgress(progress);
+    else
+      // Mid-frame readbacks must finish before later graphics reuses their sources, without retiring frame storage.
+      device.queues.synchronizeGraphicsWithReadBack();
   }
-  else
+  else if (retireWorkItem)
   {
     device.queues.updateFrameProgressOnGraphics(progress);
   }
 
       // we have to wait for previous frame to avoid overlapping previous frame read back and current frame graphics
-  device.queues.synchronizeWithPreviousFrame();
+  if (retireWorkItem)
+    device.queues.synchronizeWithPreviousFrame();
 
 
 
-  for (os_event_t &event : self.back.frameCompleteEvents)
-    device.queues.waitForFrameProgress(progress, event);
-  self.back.frameCompleteEvents.clear();
+  if (retireWorkItem)
+  {
+    for (os_event_t &event : self.back.frameCompleteEvents)
+      device.queues.waitForFrameProgress(progress, event);
+    self.back.frameCompleteEvents.clear();
+  }
 
   auto &resourceUsageDebugger = static_cast<ResourceUsageHistoryDataSetDebugger &>(self);
   contextState.resourceStates.addTo(resourceUsageDebugger);
@@ -3531,10 +3652,13 @@ int64_t DeviceContext::ExecutionContext::flush(bool present, uint64_t progress, 
   }
   contextState.resourceStates.onFlush(contextState.initialResourceStateSet);
   contextState.resourceActivationTracker.reset();
-  contextState.bufferAccessTracker.advance();
   contextState.onFlush();
 
-  ++self.back.frameProgress;
+  if (retireWorkItem)
+  {
+    contextState.bufferAccessTracker.advance();
+    ++self.back.frameProgress;
+  }
   return swapDur;
 }
 
@@ -5237,6 +5361,152 @@ void DeviceContext::ExecutionContext::flushComputeState()
   csStageState.flushResourceStates(pipelineHeader.resourceUsageTable.bRegisterUseMask,
     pipelineHeader.resourceUsageTable.tRegisterUseMask, pipelineHeader.resourceUsageTable.uRegisterUseMask, STAGE_CS,
     contextState.resourceStates, contextState.graphicsCommandListBarrierBatch, contextState.graphicsCommandListSplitBarrierTracker);
+}
+
+void DeviceContext::ExecutionContext::transitionTextureForForeignQueue(Image *image)
+{
+  // COPY_QUEUE_SOURCE is COMMON: the state a copy queue of this device can read from and write to.
+  contextState.resourceStates.useTextureAsReadBack(contextState.graphicsCommandListBarrierBatch,
+    contextState.graphicsCommandListSplitBarrierTracker, image, SubresourceIndex::make(0));
+  dirtyTextureState(image);
+}
+
+void DeviceContext::ExecutionContext::copySharedTexture(Image *image, ID3D12Resource *shared, bool toShared)
+{
+  if (!readyCommandList()) return;
+  disablePredication();
+  if (toShared)
+    contextState.resourceStates.useTextureAsCopySourceForWholeCopy(contextState.graphicsCommandListBarrierBatch,
+      contextState.graphicsCommandListSplitBarrierTracker, image);
+  else
+    contextState.resourceStates.useTextureAsCopyDestinationForWholeCopy(contextState.graphicsCommandListBarrierBatch,
+      contextState.graphicsCommandListSplitBarrierTracker, image);
+  contextState.graphicsCommandListBarrierBatch.execute(contextState.cmdBuffer);
+  D3D12_RESOURCE_BARRIER barrier = {};
+  barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  // Shared payloads have one mip and one slice. Use index 0 for Nau's barrier validator too.
+  barrier.Transition = {shared, 0, D3D12_RESOURCE_STATE_COMMON,
+    toShared ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_COPY_SOURCE};
+  contextState.cmdBuffer.resourceBarrier(1, &barrier);
+  contextState.cmdBuffer.copyResource(toShared ? shared : image->getHandle(), toShared ? image->getHandle() : shared);
+  eastl::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+  contextState.cmdBuffer.resourceBarrier(1, &barrier);
+  if (!toShared)
+    contextState.resourceStates.finishUseTextureAsCopyDestinationForWholeCopy(contextState.graphicsCommandListBarrierBatch,
+      contextState.graphicsCommandListSplitBarrierTracker, image);
+  image->updateLastFrameAccess(self.back.frameProgress);
+  dirtyTextureState(image);
+}
+
+void DeviceContext::ExecutionContext::mailboxReceive(Image *ao, const MailboxReceiveDesc &desc)
+{
+  if (!ao || !desc.frameId || desc.slotCount == 0 || desc.slotCount > MAILBOX_OUT_SLOTS ||
+      (desc.gpuSelection && (!desc.mailbox || !desc.predicate)) ||
+      (!desc.gpuSelection && (desc.cpuSlot < -1 || desc.cpuSlot >= static_cast<int32_t>(desc.slotCount))) ||
+      (desc.readback && (desc.readbackOffset % D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT) != 0))
+  {
+    NAU_ASSERT(false, "Invalid mailbox receive descriptor");
+    return;
+  }
+  for (uint32_t slot = 0; slot < desc.slotCount; ++slot)
+    if ((desc.gpuSelection || desc.cpuSlot == static_cast<int32_t>(slot)) && (!desc.ao[slot] || !desc.id[slot]))
+    {
+      NAU_ASSERT(false, "Mailbox output slot has no texture pair");
+      return;
+    }
+  if (desc.gpuSelection)
+  {
+    uint32_t visited = 0;
+    for (uint32_t order = 0; order < desc.slotCount; ++order)
+    {
+      const uint32_t slot = desc.copyOrder[order];
+      if (slot >= desc.slotCount || (visited & (1u << slot)))
+      {
+        NAU_ASSERT(false, "Mailbox copy order must be a permutation of the output slots");
+        return;
+      }
+      visited |= 1u << slot;
+    }
+  }
+  if (!readyCommandList()) return;
+  disablePredication();
+
+  const auto transition = [&](ID3D12Resource *resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+  {
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    // The native textures have one mip and slice. Subresource zero also satisfies Nau's barrier validator.
+    barrier.Transition = {resource, 0, before, after};
+    contextState.cmdBuffer.resourceBarrier(1, &barrier);
+  };
+  if (desc.gpuSelection)
+  {
+    transition(desc.mailbox, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    transition(desc.predicate, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+    contextState.cmdBuffer.copyBuffer(desc.predicate, 0, desc.mailbox, 0, sizeof(uint64_t) * desc.slotCount);
+    transition(desc.mailbox, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+    transition(desc.predicate, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PREDICATION);
+  }
+
+  const bool copyPayload = desc.gpuSelection || desc.cpuSlot >= 0;
+  if (copyPayload)
+  {
+    contextState.resourceStates.useTextureAsCopyDestinationForWholeCopy(contextState.graphicsCommandListBarrierBatch,
+      contextState.graphicsCommandListSplitBarrierTracker, ao);
+    contextState.graphicsCommandListBarrierBatch.execute(contextState.cmdBuffer);
+    transition(desc.frameId, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+    for (uint32_t order = 0; order < desc.slotCount; ++order)
+    {
+      const uint32_t slot = desc.gpuSelection ? desc.copyOrder[order] : order;
+      if (!desc.gpuSelection && desc.cpuSlot != static_cast<int32_t>(slot)) continue;
+      // SetPredication suppresses operations when the data matches the operation: zero skips,
+      // nonzero executes. Barriers are unconditional; AO and its input-frame ID use one predicate.
+      if (desc.gpuSelection)
+        contextState.cmdBuffer.setPredication(desc.predicate, sizeof(uint64_t) * slot, D3D12_PREDICATION_OP_EQUAL_ZERO);
+      transition(desc.ao[slot], D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+      transition(desc.id[slot], D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+      contextState.cmdBuffer.copyResource(ao->getHandle(), desc.ao[slot]);
+      contextState.cmdBuffer.copyResource(desc.frameId, desc.id[slot]);
+      transition(desc.id[slot], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+      transition(desc.ao[slot], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+    }
+    // Do not leave native predication active after returning to Nau's render graph.
+    if (desc.gpuSelection)
+      contextState.cmdBuffer.setPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+    transition(desc.frameId, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+    contextState.resourceStates.finishUseTextureAsCopyDestinationForWholeCopy(contextState.graphicsCommandListBarrierBatch,
+      contextState.graphicsCommandListSplitBarrierTracker, ao);
+    ao->updateLastFrameAccess(self.back.frameProgress);
+    dirtyTextureState(ao);
+  }
+  if (desc.gpuSelection)
+    transition(desc.predicate, D3D12_RESOURCE_STATE_PREDICATION, D3D12_RESOURCE_STATE_COMMON);
+
+  if (desc.readback)
+  {
+    // Read the ID actually paired with the AO selected by this graphics execution, including a
+    // retained previous result. Its caller releases the readback slot only after a later F0 signal.
+    transition(desc.frameId, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    D3D12_TEXTURE_COPY_LOCATION source = {}, destination = {};
+    source.pResource = desc.frameId;
+    source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    destination.pResource = desc.readback;
+    destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    destination.PlacedFootprint.Offset = desc.readbackOffset;
+    destination.PlacedFootprint.Footprint = {DXGI_FORMAT_R32_UINT, 1, 1, 1, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT};
+    contextState.cmdBuffer.copyTexture(&destination, 0, 0, 0, &source, nullptr);
+    transition(desc.frameId, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+  }
+}
+
+void DeviceContext::ExecutionContext::signalForeignFence(ID3D12Fence *fence, uint64_t value)
+{
+  device.queues[DeviceQueueType::GRAPHICS].enqueueProgressUpdate(fence, value);
+}
+
+void DeviceContext::ExecutionContext::waitForeignFence(ID3D12Fence *fence, uint64_t value)
+{
+  device.queues[DeviceQueueType::GRAPHICS].syncWith(fence, value);
 }
 
 void DeviceContext::ExecutionContext::textureReadBack(Image *image, HostDeviceSharedMemoryRegion cpu_memory,

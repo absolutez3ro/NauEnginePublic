@@ -684,6 +684,56 @@ DX12_BEGIN_CONTEXT_COMMAND(FlushWithFence)
 #endif
 DX12_END_CONTEXT_COMMAND
 
+DX12_BEGIN_CONTEXT_COMMAND(SubmitForForeignQueue)
+#if DX12_CONTEXT_COMMAND_IMPLEMENTATION
+  // Submit a command-list batch, retaining frame-owned memory and the frontend progress fence until the real flush.
+  ctx.flush(false, 0, OutputMode::PRESENT, false);
+#endif
+DX12_END_CONTEXT_COMMAND
+
+DX12_BEGIN_CONTEXT_COMMAND(TransitionTextureForForeignQueue)
+  DX12_CONTEXT_COMMAND_PARAM(Image *, image)
+
+#if DX12_CONTEXT_COMMAND_IMPLEMENTATION
+  ctx.transitionTextureForForeignQueue(image);
+#endif
+DX12_END_CONTEXT_COMMAND
+
+DX12_BEGIN_CONTEXT_COMMAND(CopySharedTexture)
+  DX12_CONTEXT_COMMAND_PARAM(Image *, image)
+  DX12_CONTEXT_COMMAND_PARAM(ID3D12Resource *, shared)
+  DX12_CONTEXT_COMMAND_PARAM(bool, toShared)
+#if DX12_CONTEXT_COMMAND_IMPLEMENTATION
+  ctx.copySharedTexture(image, shared, toShared);
+#endif
+DX12_END_CONTEXT_COMMAND
+
+DX12_BEGIN_CONTEXT_COMMAND(MailboxReceive)
+  DX12_CONTEXT_COMMAND_PARAM(Image *, ao)
+  DX12_CONTEXT_COMMAND_PARAM(MailboxReceiveDesc, desc)
+#if DX12_CONTEXT_COMMAND_IMPLEMENTATION
+  ctx.mailboxReceive(ao, desc);
+#endif
+DX12_END_CONTEXT_COMMAND
+
+DX12_BEGIN_CONTEXT_COMMAND(SignalForeignFence)
+  DX12_CONTEXT_COMMAND_PARAM(ID3D12Fence *, fence)
+  DX12_CONTEXT_COMMAND_PARAM(uint64_t, value)
+
+#if DX12_CONTEXT_COMMAND_IMPLEMENTATION
+  ctx.signalForeignFence(fence, value);
+#endif
+DX12_END_CONTEXT_COMMAND
+
+DX12_BEGIN_CONTEXT_COMMAND(WaitForeignFence)
+  DX12_CONTEXT_COMMAND_PARAM(ID3D12Fence *, fence)
+  DX12_CONTEXT_COMMAND_PARAM(uint64_t, value)
+
+#if DX12_CONTEXT_COMMAND_IMPLEMENTATION
+  ctx.waitForeignFence(fence, value);
+#endif
+DX12_END_CONTEXT_COMMAND
+
 DX12_BEGIN_CONTEXT_COMMAND(EndSurvey)
   DX12_CONTEXT_COMMAND_PARAM(PredicateInfo, pi)
 

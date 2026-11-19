@@ -185,8 +185,13 @@ namespace nau::PEPEngine::Graphics
             assert("Cant create device. Null Adapter");
         }
 
-        DXGI_ADAPTER_DESC2 desc;
         ThrowIfFailed(adapter->GetDesc2(&desc));
+        name = std::wstring(desc.Description);
+        if (device)
+        {
+            // Nau owns the device and its debug settings.
+            return;
+        }
 
         ThrowIfFailed(D3D12CreateDevice(
             adapter.Get(),
@@ -194,8 +199,6 @@ namespace nau::PEPEngine::Graphics
             IID_PPV_ARGS(&device)));
 
         ThrowIfFailed(device->SetName(desc.Description));
-
-        name = std::wstring(desc.Description);
 
 #if defined(DEBUG) || defined(_DEBUG)
 
@@ -259,7 +262,8 @@ namespace nau::PEPEngine::Graphics
         isInitialized = true;
     }
 
-    GDevice::GDevice(const ComPtr<IDXGIAdapter3>& adapter) : adapter(adapter), crossAdapterTextureSupport(false)
+    GDevice::GDevice(const ComPtr<IDXGIAdapter3>& adapter, ID3D12Device* existingDevice) :
+        device(existingDevice), adapter(adapter), crossAdapterTextureSupport(false)
     {
     }
 
@@ -275,7 +279,7 @@ namespace nau::PEPEngine::Graphics
         TerminatedQueuesWorker();
         for (auto&& queue : queues)
         {
-            queue->Flush();
+            if (queue) queue->Flush();
         }
     }
 
@@ -316,17 +320,18 @@ namespace nau::PEPEngine::Graphics
     {
         for (auto&& queue : queues)
         {
+            if (!queue) continue;
             queue->Signal();
             queue->Flush();
         }
-        ResetAllocators(0);
+        if (isInitialized) ResetAllocators(0);
     }
 
     void GDevice::TerminatedQueuesWorker() const
     {
         for (auto&& queue : queues)
         {
-            queue->HardStop();
+            if (queue) queue->HardStop();
         }
     }
 }

@@ -16,9 +16,43 @@
         }
     },
     "sample": {
+        "scene": "jungleRuins",
         "assetsToReload": [
             "file:/content/textures/rusted_pbr/rusted_albedo_ao.png"
-        ]
+        ],
+        "camera": {
+            "overview": true,
+            "x": 0.0,
+            "y": 1.385,
+            "z": 0.0,
+            "pitch": -0.011868239,
+            "yaw": 0.675966019,
+            "fov": 50.0
+        }
+    },
+    "render": {
+        "showFrameStatistics": true,
+        "ssao": {
+            "enabled": true,
+            "useSecondary": true,
+            "mode": 1,
+            "radius": 0.5,
+            "hbaoRadius": 2.0,
+            "xegtaoRadius": 0.5,
+            "fadeStart": 0.2,
+            "fadeEnd": 1.0,
+            "surfaceEpsilon": 0.05,
+            "blur": true,
+            "variant": 0,
+            "blurDepthThreshold": 0.2
+        }
+    },
+    "dx12": {
+        "multiGpu": true
+    },
+    "video": {
+        "vsync": false,
+        "adaptive_vsync": false
     },
     "graphics": {
         "framePipelining": true,

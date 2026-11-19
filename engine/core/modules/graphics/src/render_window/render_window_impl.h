@@ -4,6 +4,11 @@
 
 #pragma once
 
+#include <chrono>
+#include <fstream>
+#include <mutex>
+
+#include "ambient_occlusion.h"
 #include "graphics_nodes.h"
 #include "graphics_scene.h"
 #include "nau/async/work_queue.h"
@@ -70,6 +75,16 @@ namespace nau::render
 
         int32_t getMainCameraIndex() override;
         void setMainCameraIndex(int32_t ind) override;
+        AmbientOcclusionMode getAmbientOcclusionMode() const override;
+        void setAmbientOcclusionMode(AmbientOcclusionMode mode) override;
+        AmbientOcclusionExecution getAmbientOcclusionExecution() const override;
+        void setAmbientOcclusionExecution(AmbientOcclusionExecution execution) override;
+        AmbientOcclusionVariant getAmbientOcclusionVariant() const override;
+        void setAmbientOcclusionVariant(AmbientOcclusionVariant variant) override;
+        AmbientOcclusionPipeline getAmbientOcclusionPipeline() const override;
+        void setAmbientOcclusionPipeline(const AmbientOcclusionPipeline& pipeline) override;
+        float getFrameRate() const override { return m_frameRate.load(std::memory_order_relaxed); }
+        float getAmbientOcclusionWaitMilliseconds() const override { return m_ambientOcclusionWaitMs.load(std::memory_order_relaxed); }
 
         async::Task<> createRenderGraph();
 
@@ -93,6 +108,7 @@ namespace nau::render
 
     private:
         void createGBufferNodes();
+        void createAmbientOcclusionNode();
         void createOutlineNodes();
 
         // Applies the initial Mgpu switch (MGPU_SHADOWS_ENABLED). The Mgpu path has no nodes of its own: it works inside
@@ -117,6 +133,8 @@ namespace nau::render
         int m_sparseNumCascades = -1;
 
         void resizeResolutions();
+        void updateFrameStatistics();
+        void recordFrameMeasurements(std::chrono::steady_clock::time_point now);
 
     private:
         void setName(eastl::string_view name);
@@ -374,6 +392,12 @@ namespace nau::render
         nau::Uid m_world = nau::NullUid;
         eastl::shared_ptr<GraphicsScene> m_graphicsScene = nullptr;
 
+        eastl::unique_ptr<AmbientOcclusion> m_ambientOcclusion;
+        std::atomic<AmbientOcclusionMode> m_ambientOcclusionMode = AmbientOcclusionMode::lighting;
+        std::atomic<AmbientOcclusionExecution> m_ambientOcclusionExecution = AmbientOcclusionExecution::singleGpu;
+        std::atomic<AmbientOcclusionVariant> m_ambientOcclusionVariant = AmbientOcclusionVariant::current;
+        mutable std::mutex m_ambientOcclusionMutex;
+        AmbientOcclusionPipeline m_ambientOcclusionPipeline;
         eastl::unique_ptr<render::PostFxRenderer> m_postFXRenderer;
         MaterialAssetView::Ptr m_depthOfFieldMaterial;
         bool m_depthOfFieldEnabled = false;
@@ -400,6 +424,14 @@ namespace nau::render
         eastl::string m_name;
         eastl::string m_resolutionName;
         eastl::string m_displayName;
+        bool m_showFrameStatistics = false;
+        std::chrono::steady_clock::time_point m_frameStatisticsStart;
+        uint32_t m_frameStatisticsCount = 0;
+        std::atomic<float> m_frameRate = 0.f;
+        std::atomic<float> m_ambientOcclusionWaitMs = -1.f;
+        bool m_measurementsInitialized = false;
+        std::ofstream m_measurementsCsv;
+        std::chrono::steady_clock::time_point m_measurementsOrigin, m_measurementsPrevious;
         WeakPtr<async::Executor> m_preRenderWorkQueueRef;
 
         eastl::unique_ptr<render::DeferredRenderTarget> m_gBuffer;

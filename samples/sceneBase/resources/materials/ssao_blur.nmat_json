@@ -1,0 +1,1023 @@
+{
+    "name": "ssao_blur",
+    "pipelines": {
+        "default": {
+            "properties": {
+                "aoProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoInverseProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoView": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoParameters": [
+                    0.5,
+                    0.2,
+                    1,
+                    0.05
+                ],
+                "aoFilter": [
+                    0,
+                    0,
+                    0.2,
+                    1
+                ],
+                "aoNormals": "file:/content/textures/white_8x8.png",
+                "aoDepth": "file:/content/textures/white_8x8.png",
+                "aoInput": "file:/content/textures/white_8x8.png",
+                "aoOptions": [
+                    0,
+                    0,
+                    0,
+                    14
+                ],
+                "aoPipeline": [
+                    1,
+                    0,
+                    0,
+                    0
+                ],
+                "aoSizes": [
+                    1,
+                    1,
+                    1,
+                    1
+                ],
+                "aoReconstruction": [
+                    0,
+                    0,
+                    2,
+                    0.2
+                ]
+            },
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psmain]"
+            ],
+            "cullMode": "None",
+            "depthMode": "Disabled",
+            "blendMode": "Opaque"
+        },
+        "debug": {
+            "blendMode": "Opaque",
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psdebug]"
+            ],
+            "cullMode": "None",
+            "properties": {
+                "aoInput": "file:/content/textures/white_8x8.png",
+                "aoProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoInverseProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoView": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoParameters": [
+                    0.5,
+                    0.2,
+                    1,
+                    0.05
+                ],
+                "aoFilter": [
+                    0,
+                    0,
+                    0.2,
+                    1
+                ],
+                "aoOptions": [
+                    0,
+                    0,
+                    0,
+                    14
+                ],
+                "aoPipeline": [
+                    1,
+                    0,
+                    0,
+                    0
+                ],
+                "aoSizes": [
+                    1,
+                    1,
+                    1,
+                    1
+                ],
+                "aoReconstruction": [
+                    0,
+                    0,
+                    2,
+                    0.2
+                ]
+            },
+            "depthMode": "Disabled"
+        },
+        "downsample": {
+            "properties": {
+                "aoNormals": "file:/content/textures/white_8x8.png",
+                "aoDepth": "file:/content/textures/white_8x8.png",
+                "aoProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoInverseProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoView": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoParameters": [
+                    0.5,
+                    0.2,
+                    1,
+                    0.05
+                ],
+                "aoFilter": [
+                    0,
+                    0,
+                    0.2,
+                    1
+                ],
+                "aoOptions": [
+                    0,
+                    0,
+                    0,
+                    14
+                ],
+                "aoPipeline": [
+                    1,
+                    0,
+                    0,
+                    0
+                ],
+                "aoSizes": [
+                    1,
+                    1,
+                    1,
+                    1
+                ],
+                "aoReconstruction": [
+                    0,
+                    0,
+                    2,
+                    0.2
+                ]
+            },
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psdownsample]"
+            ],
+            "cullMode": "None",
+            "depthMode": "Disabled",
+            "blendMode": "Opaque"
+        },
+        "halfBlur": {
+            "properties": {
+                "aoDepth": "file:/content/textures/white_8x8.png",
+                "aoInput": "file:/content/textures/white_8x8.png",
+                "aoProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoInverseProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoView": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoParameters": [
+                    0.5,
+                    0.2,
+                    1,
+                    0.05
+                ],
+                "aoFilter": [
+                    0,
+                    0,
+                    0.2,
+                    1
+                ],
+                "aoOptions": [
+                    0,
+                    0,
+                    0,
+                    14
+                ],
+                "aoPipeline": [
+                    1,
+                    0,
+                    0,
+                    0
+                ],
+                "aoSizes": [
+                    1,
+                    1,
+                    1,
+                    1
+                ],
+                "aoReconstruction": [
+                    0,
+                    0,
+                    2,
+                    0.2
+                ]
+            },
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.pshalfblur]"
+            ],
+            "cullMode": "None",
+            "depthMode": "Disabled",
+            "blendMode": "Opaque"
+        },
+        "upsample": {
+            "properties": {
+                "aoDepth": "file:/content/textures/white_8x8.png",
+                "aoInput": "file:/content/textures/white_8x8.png",
+                "aoFullDepth": "file:/content/textures/white_8x8.png",
+                "aoProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoInverseProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoView": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoParameters": [
+                    0.5,
+                    0.2,
+                    1,
+                    0.05
+                ],
+                "aoFilter": [
+                    0,
+                    0,
+                    0.2,
+                    1
+                ],
+                "aoOptions": [
+                    0,
+                    0,
+                    0,
+                    14
+                ],
+                "aoPipeline": [
+                    1,
+                    0,
+                    0,
+                    0
+                ],
+                "aoSizes": [
+                    1,
+                    1,
+                    1,
+                    1
+                ],
+                "aoReconstruction": [
+                    0,
+                    0,
+                    2,
+                    0.2
+                ]
+            },
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psupsample]"
+            ],
+            "cullMode": "None",
+            "depthMode": "Disabled",
+            "blendMode": "Opaque"
+        },
+        "bogdanov": {
+            "properties": {
+                "aoDepth": "file:/content/textures/white_8x8.png",
+                "aoInput": "file:/content/textures/white_8x8.png",
+                "aoNormals": "file:/content/textures/white_8x8.png",
+                "aoProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoInverseProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoView": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoParameters": [
+                    0.5,
+                    0.2,
+                    1,
+                    0.05
+                ],
+                "aoFilter": [
+                    0,
+                    0,
+                    0.2,
+                    1
+                ],
+                "aoOptions": [
+                    0,
+                    0,
+                    0,
+                    14
+                ],
+                "aoPipeline": [
+                    1,
+                    0,
+                    0,
+                    0
+                ],
+                "aoSizes": [
+                    1,
+                    1,
+                    1,
+                    1
+                ],
+                "aoReconstruction": [
+                    0,
+                    0,
+                    2,
+                    0.2
+                ]
+            },
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psbogdanov]"
+            ],
+            "cullMode": "None",
+            "depthMode": "Disabled",
+            "blendMode": "Opaque"
+        },
+        "fullInputs": {
+            "properties": {
+                "aoNormals": "file:/content/textures/white_8x8.png",
+                "aoDepth": "file:/content/textures/white_8x8.png",
+                "aoProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoInverseProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoView": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoParameters": [
+                    0.5,
+                    0.2,
+                    1,
+                    0.05
+                ],
+                "aoFilter": [
+                    0,
+                    0,
+                    0.2,
+                    1
+                ],
+                "aoOptions": [
+                    0,
+                    0,
+                    0,
+                    14
+                ],
+                "aoPipeline": [
+                    1,
+                    0,
+                    0,
+                    0
+                ],
+                "aoSizes": [
+                    1,
+                    1,
+                    1,
+                    1
+                ],
+                "aoReconstruction": [
+                    0,
+                    0,
+                    2,
+                    0.2
+                ]
+            },
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psfullinputs]"
+            ],
+            "cullMode": "None",
+            "depthMode": "Disabled",
+            "blendMode": "Opaque"
+        },
+        "debugBilinear": {
+            "blendMode": "Opaque",
+            "shaders": [
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.vs.vsmain]",
+                "file:/res/shaders/cache/shader_cache.nsbc+[ssao_blur.ps.psdebugbilinear]"
+            ],
+            "cullMode": "None",
+            "properties": {
+                "aoInput": "file:/content/textures/white_8x8.png",
+                "aoFullDepth": "file:/content/textures/white_8x8.png",
+                "aoProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoInverseProjection": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoView": [
+                    [
+                        1,
+                        0,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        1,
+                        0,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        1,
+                        0
+                    ],
+                    [
+                        0,
+                        0,
+                        0,
+                        1
+                    ]
+                ],
+                "aoParameters": [
+                    0.5,
+                    0.2,
+                    1,
+                    0.05
+                ],
+                "aoFilter": [
+                    0,
+                    0,
+                    0.2,
+                    1
+                ],
+                "aoOptions": [
+                    0,
+                    0,
+                    0,
+                    14
+                ],
+                "aoPipeline": [
+                    1,
+                    0,
+                    0,
+                    0
+                ],
+                "aoSizes": [
+                    1,
+                    1,
+                    1,
+                    1
+                ],
+                "aoReconstruction": [
+                    0,
+                    0,
+                    2,
+                    0.2
+                ]
+            },
+            "depthMode": "Disabled"
+        }
+    }
+}

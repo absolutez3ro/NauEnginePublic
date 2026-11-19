@@ -31,7 +31,7 @@ namespace nau::mgpu::bridge
         DofBridge(const DofBridge&) = delete;
         DofBridge& operator=(const DofBridge&) = delete;
 
-        bool prepare(void* primaryDevice, void* primaryQueue, uint32_t width, uint32_t height);
+        bool prepare(void* primaryDevice, void* secondaryDevice, void* primaryQueue, uint32_t width, uint32_t height);
         DofResult execute(void* color, void* linearDepth, void* colorFilled, void* filtered,
                           const DofParameters& parameters);
         const char* lastError() const;

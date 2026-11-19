@@ -49,6 +49,7 @@ target_include_directories(${TargetName} PUBLIC
 
 target_link_libraries(${TargetName} PRIVATE
     Render
+    GpuProfiler
     PlatformAppApi
     CoreScene
     CoreInput

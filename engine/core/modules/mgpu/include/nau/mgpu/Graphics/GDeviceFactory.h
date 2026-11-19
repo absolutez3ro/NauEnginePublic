@@ -4,6 +4,8 @@
 #include "nau/mgpu/Allocator/MemoryAllocator.h"
 #include "nau/mgpu/Utils/Lazy.h"
 
+struct ID3D12Device;
+
 using namespace Microsoft::WRL;
 
 namespace nau::PEPEngine::Graphics
@@ -57,6 +59,9 @@ namespace nau::PEPEngine::Graphics
         static std::shared_ptr<GDevice>& GetDevice(UINT adapterIndex = GraphicAdapterPrimary);
 
         static std::vector<std::shared_ptr<GDevice>>& GetAllDevices(bool useWrap = false);
+
+        // Wrap the exact hardware device already selected by Nau.
+        static std::shared_ptr<GDevice> GetNauDevice(ID3D12Device* device);
 
         static bool IsTearingSupport();
     };

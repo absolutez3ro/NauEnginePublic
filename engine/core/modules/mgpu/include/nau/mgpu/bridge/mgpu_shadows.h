@@ -145,7 +145,7 @@ namespace nau::mgpu::shadows
         CascadeRenderer& operator=(const CascadeRenderer&) = delete;
 
         /// nauAdapterName: d3d::get_device_name() (nullptr in standalone tests). Needs two distinct hardware adapters.
-        bool initialize(const char* nauAdapterName);
+        bool initialize(void* primaryDevice, void* secondaryDevice);
         bool isReady() const;
         /// Waits for the work in flight on both GPUs and releases everything.
         void shutdown();
@@ -187,7 +187,7 @@ namespace nau::mgpu::shadows
     class CascadeRenderer
     {
     public:
-        bool initialize(const char*) { return false; }
+        bool initialize(void*, void*) { return false; }
         bool isReady() const { return false; }
         void shutdown() {}
         bool hasMesh(uint64_t) const { return false; }

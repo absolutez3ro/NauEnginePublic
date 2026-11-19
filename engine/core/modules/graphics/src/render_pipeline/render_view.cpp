@@ -24,6 +24,10 @@ nau::RenderView::RenderView(eastl::string_view viewName) :
     {
         nau::shader_globals::addVariable("normalMatrix", sizeof(math::Matrix4));
     }
+    if (!nau::shader_globals::containsName("prepassView"))
+    {
+        nau::shader_globals::addVariable("prepassView", sizeof(math::Matrix4));
+    }
     if (!nau::shader_globals::containsName("worldMatrix"))
     {
         nau::shader_globals::addVariable("worldMatrix", sizeof(math::Matrix4));
@@ -120,7 +124,7 @@ void nau::RenderView::renderInstanced(const nau::math::Matrix4& vp) const
     }
 }
 
-void nau::RenderView::renderZPrepass(const nau::math::Matrix4& vp, nau::MaterialAssetView* zPrepassMat) const
+void nau::RenderView::renderZPrepass(const nau::math::Matrix4& vp, nau::MaterialAssetView* zPrepassMat, bool writeNormals) const
 {
     if (m_instanceData == nullptr)
     {
@@ -130,9 +134,12 @@ void nau::RenderView::renderZPrepass(const nau::math::Matrix4& vp, nau::Material
     NAU_ASSERT(zPrepassMat);
     zPrepassMat->setRoBuffer("default", "instanceBuffer", m_instanceData);
     zPrepassMat->setRoBuffer("skinned", "instanceBuffer", m_instanceData);
+    zPrepassMat->setRoBuffer("normals", "instanceBuffer", m_instanceData);
+    zPrepassMat->setRoBuffer("skinnedNormals", "instanceBuffer", m_instanceData);
     if (zPrepassMat->hasPipeline("masked"))
     {
         zPrepassMat->setRoBuffer("masked", "instanceBuffer", m_instanceData);
+        zPrepassMat->setRoBuffer("maskedNormals", "instanceBuffer", m_instanceData);
     }
 
     for (auto& list : m_lists)
@@ -141,11 +148,11 @@ void nau::RenderView::renderZPrepass(const nau::math::Matrix4& vp, nau::Material
         {
             if (!drawInstanced(ent))
             {
-                ent.renderZPrepass(vp, zPrepassMat);
+                ent.renderZPrepass(vp, zPrepassMat, writeNormals);
             }
             else
             {
-                ent.renderZPrepassInstanced(vp, zPrepassMat);
+                ent.renderZPrepassInstanced(vp, zPrepassMat, writeNormals);
             }
         }
     }

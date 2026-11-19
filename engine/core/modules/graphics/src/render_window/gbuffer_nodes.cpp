@@ -1,16 +1,16 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
+#include <EASTL/optional.h>
 
 #include "graphics_assets/texture_asset.h"
+#include "nau/debugRenderer/debug_render_system.h"
 #include "nau/gui/imguiInput.h"
 #include "nau/image/dag_texPixel.h"
-#include "nau/shaders/shader_globals.h"
 #include "nau/shaders/dag_renderStateId.h"
-#include "nau/debugRenderer/debug_render_system.h"
+#include "nau/shaders/shader_globals.h"
 #include "render/daBfg/bfg.h"
 #include "render_window_impl.h"
-
 
 namespace nau::render
 {
@@ -30,14 +30,32 @@ namespace nau::render
                                  .useAs(dabfg::Usage::COLOR_ATTACHMENT)
                                  .handle();
 
-            return [=, this]()
+            eastl::optional<dabfg::VirtualResourceHandle<BaseTexture, true, false>> normalsTarget;
+            if (m_ambientOcclusion)
+            {
+                normalsTarget = registry
+                                    .createTexture2d(nau::utils::format("prepass_normals_{}", m_swapchain).c_str(),
+                                                     dabfg::History::No,
+                                                     dabfg::Texture2dCreateInfo{TEXFMT_G16R16F | TEXCF_RTARGET,
+                                                                                registry.getResolution(m_resolutionName.c_str())})
+                                    .atStage(dabfg::Stage::POST_RASTER)
+                                    .useAs(dabfg::Usage::COLOR_ATTACHMENT)
+                                    .handle();
+            }
+
+            return [this, uidTarget, normalsTarget]()
             {
                 d3d::set_render_target(const_cast<BaseTexture*>(uidTarget.get()), 0);
+                if (normalsTarget)
+                {
+                    d3d::set_render_target(1, normalsTarget->get(), 0);
+                }
                 d3d::set_depth(m_gBuffer->getDepth(), DepthAccess::RW);
                 d3d::clearview(CLEAR_TARGET | CLEAR_ZBUFFER | CLEAR_STENCIL, nau::math::E3DCOLOR(0, 0, 0, 0), 0, 0);
 
-                m_graphicsScene->renderDepth();
+                m_graphicsScene->renderDepth(normalsTarget.has_value());
                 d3d::set_depth(nullptr, DepthAccess::RW);
+                d3d::set_render_target();
             };
         }));
 
@@ -200,6 +218,14 @@ namespace nau::render
             dabfg::register_node(nau::utils::format("{}_{}", "gbuffer_resolve", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
             registry.orderMeAfter(nau::utils::format("{}_{}", "CSM", m_swapchain).c_str());
+            eastl::optional<dabfg::VirtualResourceHandle<const BaseTexture, true, false>> ambientOcclusion;
+            if (m_ambientOcclusion)
+            {
+                ambientOcclusion = registry.readTexture(nau::utils::format("ssao_texture_{}", m_swapchain).c_str())
+                                       .atStage(dabfg::Stage::PS_OR_CS)
+                                       .useAs(dabfg::Usage::SHADER_RESOURCE)
+                                       .handle();
+            }
 
             auto resolveTarget = registry
                                      .createTexture2d(nau::utils::format("{}_{}", "resolve_texture", m_swapchain).c_str(), dabfg::History::ClearZeroOnFirstFrame,
@@ -209,7 +235,7 @@ namespace nau::render
                                      .useAs(dabfg::Usage::COLOR_ATTACHMENT)
                                      .handle();
 
-            return [resolveTarget, this]()
+            return [resolveTarget, ambientOcclusion, this]()
             {
                 if (m_graphicsScene->hasCamera())
                 {
@@ -242,6 +268,12 @@ namespace nau::render
                     const auto envIntensityVec = math::Vector4(envIntensity, 0, 0, 0);
                     shader_globals::setVariable("envIntensity", &envIntensityVec);
 
+                    const math::Vector4 ssaoControl = m_ambientOcclusion ? m_ambientOcclusion->getResolveControl() : math::Vector4(0.0f);
+                    shader_globals::setVariable("ssaoControl", &ssaoControl);
+                    // Bind an existing G-buffer SRV when SSAO is absent; the shader bypasses it.
+                    BaseTexture* aoTexture = ambientOcclusion ? const_cast<BaseTexture*>(ambientOcclusion->get()) : m_gBuffer->getRt(0);
+                    d3d::settex(6, m_ambientOcclusion ? m_ambientOcclusion->getResolveTexture(aoTexture) : aoTexture);
+                    if (m_ambientOcclusion) m_ambientOcclusion->bindResolveInputs();
 #if defined(NAU_ENABLE_MGPU)
                     if (m_mgpuShadows.hasAtlas)
                     {
@@ -270,7 +302,8 @@ namespace nau::render
                     m_graphicsScene->renderLights();
 
                     m_gBuffer->flushResolve();
-
+                    d3d::settex(6, nullptr);
+                    d3d::settex(7, nullptr);
                 }
             };
         }));
@@ -345,6 +378,63 @@ namespace nau::render
                 d3d::set_depth(m_gBuffer->getDepth(), DepthAccess::RW);
 
                 m_graphicsScene->renderTranslucency();
+            };
+        }));
+    }
+
+    void RenderWindowImpl::createAmbientOcclusionNode()
+    {
+        if (!m_ambientOcclusion)
+        {
+            return;
+        }
+        m_gBufferNodes.addNode(dabfg::register_node(nau::utils::format("ssao_submit_{}", m_swapchain).c_str(), DABFG_PP_NODE_SRC,
+                                                    [this](dabfg::Registry registry)
+        {
+            registry.orderMeAfter(nau::utils::format("z-prepass_{}", m_swapchain).c_str());
+            registry.orderMeBefore(nau::utils::format("fill_gbuffer_{}", m_swapchain).c_str());
+            registry.executionHas(dabfg::SideEffects::External);
+            const auto normals = registry.readTexture(nau::utils::format("prepass_normals_{}", m_swapchain).c_str())
+                                     .atStage(dabfg::Stage::PS_OR_CS)
+                                     .useAs(dabfg::Usage::SHADER_RESOURCE)
+                                     .handle();
+            return [this, normals]()
+            {
+                if (m_graphicsScene->hasCamera())
+                {
+                    const CameraNode& camera = m_graphicsScene->getMainCamera();
+                    d3d::setview(0, 0, m_gBuffer->getWidth(), m_gBuffer->getHeight(), 0.0f, 1.0f);
+                    m_ambientOcclusion->prepareFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), const_cast<BaseTexture*>(normals.get()), m_gBuffer->getDepth());
+                }
+            };
+        }));
+        m_gBufferNodes.addNode(dabfg::register_node(nau::utils::format("ssao_receive_{}", m_swapchain).c_str(), DABFG_PP_NODE_SRC,
+                                                    [this](dabfg::Registry registry)
+        {
+            registry.orderMeAfter(nau::utils::format("CSM_{}", m_swapchain).c_str());
+            registry.orderMeBefore(nau::utils::format("gbuffer_resolve_{}", m_swapchain).c_str());
+            registry.executionHas(dabfg::SideEffects::External);
+            const auto createTarget = [this, &registry](const char* name, uint32_t format)
+            {
+                return registry.createTexture2d(nau::utils::format("{}_{}", name, m_swapchain).c_str(), dabfg::History::No,
+                                                dabfg::Texture2dCreateInfo{format | TEXCF_RTARGET, math::IVector2(1, 1)})
+                    .atStage(dabfg::Stage::POST_RASTER)
+                    .useAs(dabfg::Usage::COLOR_ATTACHMENT)
+                    .handle();
+            };
+            const auto output = createTarget("ssao_texture", TEXFMT_R8);
+            return [this, output]()
+            {
+                if (!m_graphicsScene->hasCamera())
+                {
+                    d3d::set_render_target();
+                    d3d::set_depth(nullptr, DepthAccess::RW);
+                    d3d::set_render_target(output.get(), 0);
+                    d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
+                    d3d::set_render_target();
+                    return;
+                }
+                m_ambientOcclusion->render(output.get());
             };
         }));
     }

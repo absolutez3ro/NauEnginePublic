@@ -909,7 +909,7 @@ namespace nau::render
 
             state.fullRedraw = true;
             // The primary Mgpu device is the one on the adapter Nau renders on: the shared heaps are copied from there.
-            if (state.renderer.initialize(d3d::get_device_name()))
+            if (state.renderer.initialize(d3d::get_device(), d3d::get_device(d3d::SECONDARY_GPU)))
             {
                 NAU_LOG_INFO("mgpu shadows: the shadow cascades are drawn by '{}', the scene by '{}'",
                              state.renderer.secondaryAdapterName(), state.renderer.primaryAdapterName());

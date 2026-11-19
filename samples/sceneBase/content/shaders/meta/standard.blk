@@ -11,6 +11,19 @@ compile_configs {
 
 permutations {
     permutation {
+        name:t="masked"
+        defines {
+            define_alpha:t="ALPHA_TEST=1"
+        }
+    }
+    permutation {
+        name:t="maskedInstanced"
+        defines {
+            define_alpha:t="ALPHA_TEST=1"
+            define_inst:t="INSTANCED=1"
+        }
+    }
+    permutation {
         name:t="regular"
         defines {
         }
@@ -19,12 +32,6 @@ permutations {
         name:t="instanced"
         defines {
             define_inst:t="INSTANCED=1"
-        }
-    }
-    permutation {
-        name:t="masked"
-        defines {
-            define_masked:t="ALPHA_MASK=1"
         }
     }
     permutation {

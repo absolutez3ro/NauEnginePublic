@@ -12,6 +12,7 @@ target_link_libraries(${TargetName} PUBLIC
     PlatformAppApi
     NauFramework
     CoreInput
+    Graphics
     imgui
 )
 

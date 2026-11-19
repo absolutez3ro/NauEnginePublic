@@ -268,12 +268,20 @@ void ShadowMaskedPS(MaskedVertex input)
             return primaryDevice->GetCommandQueue(gfx::GQueueType::Copy);
         }
 
-        bool Initialize(const char* nauAdapterName)
+        bool Initialize(ID3D12Device* primary, ID3D12Device* secondary)
         {
             try
             {
-                if (!bridge::detail::SelectDevices(nauAdapterName, primaryDevice, secondaryDevice, error))
+                if (!primary || !secondary || primary == secondary)
                 {
+                    error = "Nau did not initialize a second DX12 device";
+                    return false;
+                }
+                primaryDevice = gfx::GDeviceFactory::GetNauDevice(primary);
+                secondaryDevice = gfx::GDeviceFactory::GetNauDevice(secondary);
+                if (!primaryDevice || !secondaryDevice)
+                {
+                    error = "Nau's DX12 pair is not available as two hardware devices";
                     return false;
                 }
                 primaryName = bridge::detail::ToUtf8(primaryDevice->GetName());
@@ -1333,13 +1341,13 @@ void ShadowMaskedPS(MaskedVertex input)
         shutdown();
     }
 
-    bool CascadeRenderer::initialize(const char* nauAdapterName)
+    bool CascadeRenderer::initialize(void* primary, void* secondary)
     {
         if (m_impl->ready)
         {
             return true;
         }
-        return m_impl->Initialize(nauAdapterName);
+        return m_impl->Initialize(static_cast<ID3D12Device*>(primary), static_cast<ID3D12Device*>(secondary));
     }
 
     bool CascadeRenderer::isReady() const

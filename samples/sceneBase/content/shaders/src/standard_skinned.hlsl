@@ -19,7 +19,7 @@ struct VsInput
 
 struct VsOutput
 {
-    float4 position : SV_Position;
+    precise float4 position : SV_Position;
     float3 normal : NORMAL;
     float2 texCoord  : TEXCOORD0;
     float3 tangent : TANGENT;

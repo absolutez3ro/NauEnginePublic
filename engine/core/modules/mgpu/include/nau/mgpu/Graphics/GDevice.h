@@ -63,7 +63,7 @@ namespace nau::PEPEngine::Graphics
         bool isInitialized = false;
 
     public:
-        GDevice(const ComPtr<IDXGIAdapter3>& adapter);
+        GDevice(const ComPtr<IDXGIAdapter3>& adapter, ID3D12Device* existingDevice = nullptr);
 
         ~GDevice();
 

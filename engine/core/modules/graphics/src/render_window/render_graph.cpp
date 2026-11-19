@@ -1,7 +1,7 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
-
+#include <EASTL/optional.h>
 #include <nau/assets/asset_manager.h>
 #include <atomic>
 #include <imgui.h>
@@ -53,7 +53,6 @@ namespace
     }
 }
 
-
 namespace nau::render
 {
 
@@ -94,6 +93,17 @@ namespace nau::render
 
         NAU_LOG("NAU_DOF_HDR_REFERENCE_20260928: HDR pipeline, reference PatchMatch, default DOF OFF");
         async::TaskCollection loadTasks;
+        async::Task<> loadAmbientOcclusion;
+        if (m_swapchain == DEFAULT_SWAPID && AmbientOcclusion::isRequested())
+        {
+            m_ambientOcclusion = eastl::make_unique<AmbientOcclusion>();
+            const AmbientOcclusion::Settings settings = AmbientOcclusion::getInitialSettings();
+            setAmbientOcclusionMode(settings.mode);
+            setAmbientOcclusionExecution(settings.execution);
+            setAmbientOcclusionVariant(settings.pipeline.algorithm);
+            setAmbientOcclusionPipeline(settings.pipeline);
+            loadAmbientOcclusion = m_ambientOcclusion->loadAssets();
+        }
 
         MaterialAssetView::Ptr matPPTonemap;
         loadTasks.push(openMaterialAsset({"file:/res/materials/pp_tonemap.nmat_json"}, matPPTonemap));
@@ -125,7 +135,32 @@ namespace nau::render
 
         co_await loadTasks.awaitCompletion();
 
+        if (loadAmbientOcclusion)
+        {
+            Result<> result = co_await loadAmbientOcclusion.doTry();
+            if (!result)
+            {
+                NAU_LOG_ERROR("SSAO disabled: {}", result.getError()->getMessage());
+                m_ambientOcclusion.reset();
+                setAmbientOcclusionMode(AmbientOcclusionMode::off);
+            }
+        }
+
+        if (!shader_globals::containsName("ssaoControl"))
+        {
+            const math::Vector4 disabled(0.0f);
+            shader_globals::addVariable("ssaoControl", sizeof(disabled), &disabled);
+        }
+        if (!shader_globals::containsName("ssaoReconstruction"))
+        {
+            const math::Vector4 defaults(2.f, 0.2f, 0.f, 0.f);
+            shader_globals::addVariable("ssaoReconstruction", sizeof(defaults), &defaults);
+        }
         matPPResolve->enableAutoSetTextures(false);
+        if (m_ambientOcclusion)
+        {
+            m_ambientOcclusion->configureResolveSampler(*matPPResolve);
+        }
         matPPTonemap->enableAutoSetTextures(false);
         m_depthOfFieldMaterial->enableAutoSetTextures(false);
 
@@ -169,6 +204,7 @@ namespace nau::render
         m_outlineRenderer = eastl::make_unique<render::PostFxRenderer>(outlineTonemap);
 
         createGBufferNodes();
+        createAmbientOcclusionNode();
 
         m_environmentNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "render_envi", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
@@ -232,7 +268,7 @@ namespace nau::render
             return [this]()
             {
 #if defined(_WIN32)
-                const SHORT dofKey = GetAsyncKeyState(VK_F9);
+                const SHORT dofKey = GetAsyncKeyState(VK_F10);
                 const bool dofToggleDown = (dofKey & 0x8000) != 0;
                 if ((dofToggleDown && !m_depthOfFieldToggleWasDown) || ((dofKey & 1) && !m_depthOfFieldToggleWasDown))
                 {
@@ -242,7 +278,7 @@ namespace nau::render
                 }
                 m_depthOfFieldToggleWasDown = dofToggleDown;
 
-                const SHORT debugKey = GetAsyncKeyState(VK_F10);
+                const SHORT debugKey = GetAsyncKeyState(VK_F11);
                 const bool debugToggleDown = (debugKey & 0x8000) != 0;
                 if ((debugToggleDown && !m_depthOfFieldDebugToggleWasDown) || ((debugKey & 1) && !m_depthOfFieldDebugToggleWasDown))
                 {
@@ -253,7 +289,7 @@ namespace nau::render
                 m_depthOfFieldDebugToggleWasDown = debugToggleDown;
 
 #if defined(NAU_ENABLE_MGPU)
-                const bool multiDown = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
+                const bool multiDown = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
                 if (multiDown && !m_dofMultiGpuToggleWasDown)
                 {
                     m_dofMultiGpuEnabled = !m_dofMultiGpuEnabled;
@@ -360,7 +396,7 @@ namespace nau::render
                 color.get()->getinfo(info, 0);
                 void* queue = nullptr;
                 d3d::driver_command(DRV3D_COMMAND_GET_RENDERING_COMMAND_QUEUE, &queue, nullptr, nullptr);
-                if (m_dofBridge.prepare(d3d::get_device(), queue, info.w, info.h))
+                if (m_dofBridge.prepare(d3d::get_device(), d3d::get_device(d3d::SECONDARY_GPU), queue, info.w, info.h))
                 {
                     auto* colorTexture = const_cast<BaseTexture*>(color.get());
                     auto* depthTexture = const_cast<BaseTexture*>(depth.get());
@@ -703,6 +739,14 @@ namespace nau::render
         m_postFxNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "post_fx_nodes", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
+            eastl::optional<dabfg::VirtualResourceHandle<const BaseTexture, true, false>> ambientOcclusion;
+            if (m_ambientOcclusion)
+            {
+                ambientOcclusion = registry.readTexture(nau::utils::format("ssao_texture_{}", m_swapchain).c_str())
+                                       .atStage(dabfg::Stage::PS_OR_CS)
+                                       .useAs(dabfg::Usage::SHADER_RESOURCE)
+                                       .handle();
+            }
             auto resolveTexture = registry.readTexture(nau::utils::format("{}_{}", "resolve_texture", m_swapchain).c_str())
                                       .atStage(dabfg::Stage::PS_OR_CS)
                                       .useAs(dabfg::Usage::SHADER_RESOURCE)
@@ -719,6 +763,11 @@ namespace nau::render
             {
                 setRenderTarget();
                 d3d::clearview(CLEAR_TARGET | CLEAR_ZBUFFER | CLEAR_STENCIL, nau::math::E3DCOLOR(0, 0, 0), 0, 0);
+                if (m_ambientOcclusion && m_ambientOcclusion->isDebugView())
+                {
+                    m_ambientOcclusion->drawDebug(d3d::get_back_buffer_rt(m_swapchain), const_cast<BaseTexture*>(ambientOcclusion->get()));
+                    return;
+                }
                 d3d::set_srgb_backbuffer_write(true);
 
                 if (m_depthOfFieldEnabled)
@@ -737,7 +786,6 @@ namespace nau::render
                 d3d::set_srgb_backbuffer_write(false);
             };
         }));
-
 
         m_uidNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "billboard_render", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
@@ -819,15 +867,18 @@ namespace nau::render
 
         if (m_swapchain == DEFAULT_SWAPID)
         {
+            // Initialize the UI before game updates can cache their first frame.
+            // A graph declaration can run later, concurrently with those updates.
+            imgui_switch_state();
+            imgui_update();
+            imgui_endframe();
+
             m_debugNodes.addNode(
                 dabfg::register_node(nau::utils::format("{}_{}", "debug_gui", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
             {
                 registry.orderMeAfter(nau::utils::format("{}_{}", "nau_gui", m_swapchain).c_str());
                 registry.executionHas(dabfg::SideEffects::External);
 
-                imgui_switch_state();
-                imgui_update();  // invoke init on demand
-                imgui_endframe();
                 return [this]()
                 {
                     setRenderTarget();

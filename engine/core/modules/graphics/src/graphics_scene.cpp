@@ -309,14 +309,17 @@ namespace nau
         {
             auto iter = std::remove_if(container.begin(), container.end(), [&](const auto& node)
             {
-                return componentRemoved(node.componentUid);
+                if (!componentRemoved(node.componentUid))
+                {
+                    return false;
+                }
+                // Destroy each removed light before remove_if compacts the nodes.
+                // The erased tail can contain moved nodes and is not a list of removed light IDs.
+                m_lights.destroyLight(node.lightId);
+                return true;
             });
 
-            if (iter != container.end())
-            {
-                m_lights.destroyLight(iter->lightId);
-                container.erase(iter, container.end());
-            }
+            container.erase(iter, container.end());
         };
 
         removeObjects(m_skinnedMeshes);
@@ -404,7 +407,7 @@ namespace nau
         m_renderScene->renderScene(viewProjectionMatrix);
     }
 
-    void GraphicsScene::renderDepth()
+    void GraphicsScene::renderDepth(bool writeNormals)
     {
         if (m_staticMeshes.empty() && m_skinnedMeshes.empty())
         {
@@ -417,7 +420,9 @@ namespace nau
         }
 
         auto& activeCamera = getMainCamera();
-        m_renderScene->renderDepth(activeCamera.getViewProjectionMatrix());
+        const math::Matrix4 prepassView = activeCamera.getViewMatrix();
+        shader_globals::setVariable("prepassView", &prepassView);
+        m_renderScene->renderDepth(activeCamera.getViewProjectionMatrix(), writeNormals);
     }
 
     void GraphicsScene::renderOutlineMask()
