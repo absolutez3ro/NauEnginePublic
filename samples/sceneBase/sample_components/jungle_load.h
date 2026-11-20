@@ -67,6 +67,7 @@ namespace nau::sample
         std::array<eastl::vector<Item>,4> m_items;
         float m_elapsed = 0.f;
         uint32_t m_originalShadowSize = 2048;
+        uint32_t m_automationShadowCasters = 0;
         bool m_automated = false, m_automationReady = false, m_cameraMotion = true, m_pulseLoads = false;
         uint32_t m_automationMask = 0, m_automationPhase = 0;
         float m_warmupSeconds = 5.f, m_measureSeconds = 15.f, m_settleSeconds = 0.f;

@@ -48,8 +48,9 @@ namespace nau::sample
             m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount, m_cpuLoadThreads, sizeof(CpuAgent));
         if (m_automated)
         {
-            // Automated scenarios can use only objects, particles and lights. Never extra shadows.
-            m_automationMask = properties.getValue<uint32_t>("sample/automation/loadMask").value_or(0) & 7u;
+            // A shadow workload is opt-in for the whole capture. Do not resize the atlas during a capture.
+            m_automationShadowCasters = eastl::min(properties.getValue<uint32_t>("sample/automation/shadowCasters").value_or(0), 2048u);
+            m_automationMask = properties.getValue<uint32_t>("sample/automation/loadMask").value_or(0) & (m_automationShadowCasters ? 15u : 7u);
             m_warmupSeconds = eastl::clamp(properties.getValue<float>("sample/automation/warmupSeconds").value_or(5.f), 1.f, 120.f);
             m_measureSeconds = eastl::clamp(properties.getValue<float>("sample/automation/measureSeconds").value_or(15.f), 1.f, 300.f);
             m_settleSeconds = eastl::clamp(properties.getValue<float>("sample/automation/settleSeconds").value_or(0.f), 0.f, 30.f);
@@ -57,9 +58,9 @@ namespace nau::sample
             m_cameraMotion = properties.getValue<bool>("sample/automation/cameraMotion").value_or(true);
             m_pulseLoads = properties.getValue<bool>("sample/automation/pulseLoads").value_or(false);
             m_cameraStart = camera.getWorldTransform();
-            for (size_t i=0; i<3; ++i) m_enabled[i] = (m_automationMask & (1u << i)) != 0;
+            for (size_t i = 0; i < m_enabled.size(); ++i) m_enabled[i] = (m_automationMask & (1u << i)) != 0;
             properties.setValue("sample/automation/activeLoadMask", m_automationMask).ignore();
-            NAU_LOG_INFO("AUTORUN: initialized, loadMask={}, extraShadows=false", m_automationMask);
+            NAU_LOG_INFO("AUTORUN: initialized, loadMask={}, extraShadows={}", m_automationMask, m_enabled[3]);
         }
     }
 
@@ -89,7 +90,7 @@ namespace nau::sample
             const auto forward = rotate(transform.getRotation(), math::vec3(0,0,-1));
             group->setTranslation(transform.getTranslation() + forward * 10.f);
         }
-        const uint32_t count = category == 0 ? 128 : category == 1 ? 1024 : category == 2 ? 48 : 256;
+        const uint32_t count = category == 0 ? 128 : category == 1 ? 1024 : category == 2 ? 48 : m_automated ? m_automationShadowCasters : 256;
         auto& items = m_items[category];
         items.reserve(count);
         for (uint32_t i=0; i<count; ++i)
@@ -155,7 +156,7 @@ namespace nau::sample
                 else if (ImGui::Checkbox(names[category], &active)) toggle(category);
                 ImGui::PopID();
             }
-            if (m_automated) ImGui::TextUnformatted("Automated run: extra shadows locked OFF.");
+            if (m_automated) ImGui::Text("Automated extra shadows: %s", m_enabled[3] ? "ON (4096)" : "OFF");
             ImGui::TextWrapped("Independent loads spawn in front of the camera. Disable removes the added objects; shadows restore the original map size.");
             ImGui::Separator();
             if (m_automated)
@@ -208,6 +209,7 @@ namespace nau::sample
         {
             if (m_enabled[category] && !m_groups[category]) spawn(category);
             else if (!m_enabled[category] && m_groups[category]) clear(category);
+            if (m_automated && category == 3) continue;
             for (auto& item : m_items[category])
                 if (auto* object = item.object.get())
                 {
@@ -432,12 +434,11 @@ namespace nau::sample
 
     void JungleLoad::updateAutomation()
     {
-        m_enabled[3] = false;
         auto& properties = getServiceProvider().get<GlobalProperties>();
         const auto now = std::chrono::steady_clock::now();
         if (!m_automationReady)
         {
-            for (size_t i=0; i<3; ++i)
+            for (size_t i = 0; i < m_enabled.size(); ++i)
                 if (m_enabled[i] && (!m_groups[i] || m_groups[i]->getActivationState() != scene::ActivationState::Active)) return;
             m_automationReady = true;
             m_automationStart = now;
@@ -452,7 +453,7 @@ namespace nau::sample
         {
             m_automationPhase = phase;
             properties.setValue("sample/automation/phase", phase).ignore();
-            NAU_LOG_INFO("AUTORUN: phase={}, extraShadows=false", phase);
+            NAU_LOG_INFO("AUTORUN: phase={}, extraShadows={}", phase, m_enabled[3]);
         }
         if (phase == 3)
         {
@@ -462,7 +463,7 @@ namespace nau::sample
         }
         const float t = phase == 2 ? elapsed - measurementStart : elapsed;
         m_elapsed = t;
-        const uint32_t mask = m_pulseLoads && phase == 2 && (static_cast<uint32_t>(t / 3.f) & 1u) ? 0u : m_automationMask;
+        const uint32_t mask = m_pulseLoads && phase == 2 && (static_cast<uint32_t>(t / 3.f) & 1u) ? (m_automationMask & 8u) : m_automationMask;
         for (size_t i=0; i<3; ++i)
             if (m_enabled[i] != ((mask & (1u << i)) != 0)) toggle(i);
         properties.setValue("sample/automation/activeLoadMask", mask).ignore();

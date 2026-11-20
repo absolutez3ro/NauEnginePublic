@@ -5,6 +5,7 @@
 #include "graphics_assets/static_meshes/static_mesh.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #include "nau/3d/dag_d3dResource.h"
@@ -80,13 +81,24 @@ namespace
         }
     }
 
-    // A buffer in video memory: a vertex fetched from the upload heap goes over the bus (Thunderbolt for an external GPU) in
-    // every pass. The data reaches it through the temporary upload memory of the driver.
+    // Only the benchmark requests the old dynamic vertex/index allocation path.
+    int benchmarkGeometryFlags()
+    {
+        static const int flags = [] {
+            const char* mode = std::getenv("NAU_BENCHMARK_GEOMETRY_UPLOAD");
+            const bool upload = mode && std::strcmp(mode, "1") == 0;
+            NAU_LOG_INFO("Benchmark static geometry: {}", upload ? "dynamic-upload" : "device-local");
+            return upload ? SBCF_DYNAMIC : 0;
+        }();
+        return flags;
+    }
+
+    // The default path uploads once into a static vertex/index buffer.
     template <typename T>
     Sbuffer* createGeometryBuffer(const T* data, size_t count, Sbuffer* (*create)(int, int, const char8_t*), int flags, const char8_t* name)
     {
         const size_t size = count * sizeof(T);
-        Sbuffer* buffer = create(static_cast<int>(size), flags, name);
+        Sbuffer* buffer = create(static_cast<int>(size), flags | benchmarkGeometryFlags(), name);
 
         void* memory = nullptr;
         buffer->lock(0, static_cast<uint32_t>(size), &memory, VBLOCK_WRITEONLY);

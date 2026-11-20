@@ -1,6 +1,8 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
+#include <algorithm>
+#include <cstdlib>
 #include <EASTL/optional.h>
 
 #include "graphics_assets/texture_asset.h"
@@ -190,7 +192,17 @@ namespace nau::render
                     }
                     m_mgpuShadows.timings.gpuNauCascades.begin();
 #endif
-                    m_csm->renderShadowsCascades();
+                    // Repeat atlas draws only when explicitly requested by the workload benchmark.
+                    static const int shadowPasses = [] {
+                        const char* passes = std::getenv("NAU_BENCHMARK_SHADOW_PASSES");
+                        const int count = passes ? std::clamp(std::atoi(passes), 1, 16) : 1;
+                        NAU_LOG_INFO("Benchmark local cascade passes: {}", count);
+                        return count;
+                    }();
+                    for (int pass = 0; pass < shadowPasses; ++pass)
+                    {
+                        m_csm->renderShadowsCascades();
+                    }
 #if defined(NAU_ENABLE_MGPU)
                     m_mgpuShadows.timings.gpuNauCascades.end();
 #endif
