@@ -56,3 +56,6 @@ logs.*.log
 *.nsbc
 *imgui.ini
 package-lock.json
+# GPU profiler run output (NAU_GPU_PROFILER_CSV, default gpu_timings.csv + gpu_timings.json)
+gpu_timings*.csv
+gpu_timings*.json
