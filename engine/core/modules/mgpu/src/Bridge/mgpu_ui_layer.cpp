@@ -75,6 +75,12 @@ namespace nau::mgpu::ui_layer
         std::shared_ptr<gfx::GDevice> primaryDevice; // GPU0, Nau's adapter
         std::shared_ptr<gfx::GDevice> secondaryDevice; // GPU1
 
+        // QueueMode::Own / OwnHigh: queues of this bridge only. Empty with QueueMode::Shared (the devices' queues,
+        // shared with the shadow and DOF bridges).
+        QueueMode queueMode = QueueMode::Shared;
+        std::shared_ptr<gfx::GCommandQueue> ownGraphics1;
+        std::shared_ptr<gfx::GCommandQueue> ownCopy0;
+
         // The layer on GPU1. One is enough: the work of all slots is ordered on one queue.
         std::shared_ptr<gfx::GResource> layer;
         gfx::GDescriptor layerRtv;
@@ -85,17 +91,17 @@ namespace nau::mgpu::ui_layer
         uint64_t nextSequence = 0;
         RendererStats stats;
 
-        std::shared_ptr<gfx::GCommandQueue>& GraphicsQueue1() const
+        std::shared_ptr<gfx::GCommandQueue> GraphicsQueue1() const
         {
-            return secondaryDevice->GetCommandQueue(gfx::GQueueType::Graphics);
+            return ownGraphics1 ? ownGraphics1 : secondaryDevice->GetCommandQueue(gfx::GQueueType::Graphics);
         }
 
-        std::shared_ptr<gfx::GCommandQueue>& CopyQueue0() const
+        std::shared_ptr<gfx::GCommandQueue> CopyQueue0() const
         {
-            return primaryDevice->GetCommandQueue(gfx::GQueueType::Copy);
+            return ownCopy0 ? ownCopy0 : primaryDevice->GetCommandQueue(gfx::GQueueType::Copy);
         }
 
-        bool Initialize(const char* nauAdapterName)
+        bool Initialize(const char* nauAdapterName, const QueueMode mode)
         {
             try
             {
@@ -105,6 +111,17 @@ namespace nau::mgpu::ui_layer
                 }
                 primaryName = bridge::detail::ToUtf8(primaryDevice->GetName());
                 secondaryName = bridge::detail::ToUtf8(secondaryDevice->GetName());
+
+                queueMode = mode;
+                if (mode != QueueMode::Shared)
+                {
+                    const D3D12_COMMAND_QUEUE_PRIORITY priority =
+                        mode == QueueMode::OwnHigh ? D3D12_COMMAND_QUEUE_PRIORITY_HIGH : D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+                    ownGraphics1 = std::make_shared<gfx::GCommandQueue>(secondaryDevice, D3D12_COMMAND_LIST_TYPE_DIRECT, priority);
+                    ownGraphics1->GetD3D12CommandQueue()->SetName(L"MgpuUiLayer Graphics Queue (GPU1)");
+                    ownCopy0 = std::make_shared<gfx::GCommandQueue>(primaryDevice, D3D12_COMMAND_LIST_TYPE_COPY, priority);
+                    ownCopy0->GetD3D12CommandQueue()->SetName(L"MgpuUiLayer Copy Queue (GPU0)");
+                }
 
                 stats = {};
                 ready = true;
@@ -409,7 +426,15 @@ namespace nau::mgpu::ui_layer
         {
             ready = false;
 
-            // Waits for all work in flight on both GPUs.
+            // Waits for all work in flight on both GPUs: the bridge's own queues first, then the devices' queues.
+            if (ownGraphics1)
+            {
+                ownGraphics1->Flush();
+            }
+            if (ownCopy0)
+            {
+                ownCopy0->Flush();
+            }
             if (primaryDevice)
             {
                 primaryDevice->Flush();
@@ -423,6 +448,9 @@ namespace nau::mgpu::ui_layer
             {
                 slot = Slot();
             }
+            ownGraphics1.reset();
+            ownCopy0.reset();
+            queueMode = QueueMode::Shared;
             layerRtv = gfx::GDescriptor();
             layer.reset();
             layerWidth = 0;
@@ -441,13 +469,13 @@ namespace nau::mgpu::ui_layer
         shutdown();
     }
 
-    bool LayerRenderer::initialize(const char* nauAdapterName)
+    bool LayerRenderer::initialize(const char* nauAdapterName, const QueueMode queueMode)
     {
         if (m_impl->ready)
         {
             return true;
         }
-        return m_impl->Initialize(nauAdapterName);
+        return m_impl->Initialize(nauAdapterName, queueMode);
     }
 
     bool LayerRenderer::isReady() const

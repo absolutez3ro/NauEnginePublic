@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #include "nau/3d/dag_drv3d.h"
@@ -110,7 +111,21 @@ namespace nau::render
     void RenderWindowImpl::initializeMgpu()
     {
 #if defined(NAU_ENABLE_MGPU)
-        static const bool switchApplied = (nau::mgpu::bridge::setEnabled(MGPU_SHADOWS_ENABLED), true);
+        // NAU_MGPU=0 / 1 sets the initial state of the switch (key M of SceneBaseSample) for repeatable measurements,
+        // like NAU_VSYNC; without it MGPU_SHADOWS_ENABLED.
+        static const bool switchApplied = []
+        {
+            bool enabled = MGPU_SHADOWS_ENABLED;
+            const char* variable = std::getenv("NAU_MGPU");
+            if (variable != nullptr && (variable[0] == '0' || variable[0] == '1') && variable[1] == '\0')
+            {
+                enabled = variable[0] == '1';
+            }
+            NAU_LOG_INFO("mgpu: shadows on the second GPU {} at start{}", enabled ? "on" : "off",
+                         variable != nullptr ? " (NAU_MGPU)" : "");
+            nau::mgpu::bridge::setEnabled(enabled);
+            return true;
+        }();
         static_cast<void>(switchApplied);
 #endif
     }
@@ -666,10 +681,12 @@ namespace nau::render
                 state.releaseEventsCreated = true;
             }
 
-            if (state.renderer.initialize(d3d::get_device_name()))
+            if (state.renderer.initialize(d3d::get_device_name(), state.queueMode))
             {
-                NAU_LOG_INFO("mgpu UI layer: the UI layer is drawn by '{}', the scene by '{}' (synchronous)",
-                             state.renderer.secondaryAdapterName(), state.renderer.primaryAdapterName());
+                NAU_LOG_INFO("mgpu UI layer: the UI layer is drawn by '{}', the scene by '{}' ({}, queues: {})",
+                             state.renderer.secondaryAdapterName(), state.renderer.primaryAdapterName(),
+                             state.synchronous ? "synchronous, NAU_UI_GPU1_SYNC=1" : "asynchronous",
+                             ui_layer::toString(state.queueMode));
             }
             else
             {
@@ -713,12 +730,18 @@ namespace nau::render
         frame.fillRect[2] = rectWidth;
         frame.fillRect[3] = rectHeight;
         frame.userToken = state.frame;
-        frame.waitForResult = true;
-        state.renderer.submit(frame);
+        frame.waitForResult = state.synchronous;
 
-        ui_layer::ReadyLayer ready;
-        if (state.renderer.takeReady(ready))
+        // The newest layer that has arrived goes into Nau's texture. A layer drawn for another window size is
+        // dropped; until one of the new size arrives the texture keeps the old layer.
+        const auto takeNewestLayer = [&]()
         {
+            ui_layer::ReadyLayer ready;
+            if (!state.renderer.takeReady(ready))
+            {
+                return;
+            }
+
             bool copied = false;
             if (ready.width == width && ready.height == height)
             {
@@ -731,6 +754,7 @@ namespace nau::render
                                                     TEXFMT_R8G8B8A8 | TEXCF_RTARGET, 1, "ui_layer_gpu1");
                     state.textureWidth = width;
                     state.textureHeight = height;
+                    state.textureHasLayer = false;
                 }
 
                 BaseTexture* target = state.texture.getBaseTex();
@@ -744,7 +768,10 @@ namespace nau::render
                     d3d::resource_barrier({target, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
                     d3d::driver_command(DRV3D_COMMAND_REGISTER_FRAME_COMPLETION_EVENT, &state.releaseEvents[ready.slot], nullptr, nullptr);
                     state.releasePending[ready.slot] = true;
-                    state.hasLayer = true;
+                    state.textureHasLayer = true;
+                    // Age: Nau frames between the frame the layer was drawn for and the frame that shows it.
+                    state.lastAge = static_cast<uint32_t>(state.frame - ready.userToken);
+                    state.ageSumSinceReport += state.lastAge;
                     ++state.layersSinceReport;
                 }
                 else if (state.copyFailures++ == 0)
@@ -758,7 +785,23 @@ namespace nau::render
                 // Drawn for another window size, or refused by the driver: the slot is free right away.
                 state.renderer.release(ready.slot);
             }
+        };
+
+        if (state.synchronous)
+        {
+            // GPU0 waits until GPU1 has drawn this frame's layer and it is in local memory of GPU0: age 0.
+            state.renderer.submit(frame);
+            takeNewestLayer();
         }
+        else
+        {
+            // As the shadows: take the newest finished layer, then hand this frame to GPU1 if it is free. Nothing
+            // waits; a frame without a new layer shows the previous one.
+            takeNewestLayer();
+            state.renderer.submit(frame);
+        }
+
+        state.hasLayer = state.textureHasLayer && state.texture.getBaseTex() != nullptr;
 
         const ui_layer::RendererStats& stats = state.renderer.stats();
         if (stats.failed != state.reportedFailures)
@@ -772,12 +815,18 @@ namespace nau::render
         const float elapsed = std::chrono::duration<float>(now - state.lastReport).count();
         if (elapsed >= MGPU_REPORT_PERIOD_SECONDS)
         {
-            NAU_LOG_INFO("mgpu UI layer: {:.1f} layers/s from '{}' for {:.1f} frames/s, {}x{}, latency {:.2f} ms (transfer {:.2f} ms), "
-                         "{} completed, {} skipped (busy), {} failed",
-                         static_cast<float>(state.layersSinceReport) / elapsed, state.renderer.secondaryAdapterName(),
-                         static_cast<float>(state.framesSinceReport) / elapsed, width, height, stats.lastLatencyMs,
-                         stats.lastTransferMs, stats.completed, stats.skippedBusy, stats.failed + state.copyFailures);
+            const float averageAge = state.layersSinceReport != 0
+                                         ? static_cast<float>(state.ageSumSinceReport) / static_cast<float>(state.layersSinceReport)
+                                         : 0.0f;
+            NAU_LOG_INFO("mgpu UI layer ({}, {} queues): {:.1f} layers/s from '{}' for {:.1f} frames/s, {}x{}, layer age {:.2f} frames "
+                         "(last {}), latency {:.2f} ms (transfer {:.2f} ms), {} completed, {} skipped (busy), {} failed",
+                         state.synchronous ? "sync" : "async", ui_layer::toString(state.queueMode),
+                         static_cast<float>(state.layersSinceReport) / elapsed,
+                         state.renderer.secondaryAdapterName(), static_cast<float>(state.framesSinceReport) / elapsed, width,
+                         height, averageAge, state.lastAge, stats.lastLatencyMs, stats.lastTransferMs, stats.completed,
+                         stats.skippedBusy, stats.failed + state.copyFailures);
             state.layersSinceReport = 0;
+            state.ageSumSinceReport = 0;
             state.framesSinceReport = 0;
             state.lastReport = now;
         }

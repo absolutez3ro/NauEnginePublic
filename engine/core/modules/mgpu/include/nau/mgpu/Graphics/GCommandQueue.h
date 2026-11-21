@@ -26,7 +26,10 @@ namespace nau::PEPEngine::Graphics
     class GCommandQueue : public std::enable_shared_from_this<GCommandQueue>
     {
     public:
-        GCommandQueue(const std::shared_ptr<GDevice>& device, D3D12_COMMAND_LIST_TYPE type);
+        // priority: D3D12_COMMAND_QUEUE_PRIORITY_NORMAL for the queues of GDevice; the UI layer bridge can ask for HIGH
+        // (bridge/mgpu_ui_layer.h, QueueMode::OwnHigh).
+        GCommandQueue(const std::shared_ptr<GDevice>& device, D3D12_COMMAND_LIST_TYPE type,
+                      D3D12_COMMAND_QUEUE_PRIORITY priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL);
         virtual ~GCommandQueue();
 
         std::shared_ptr<GCommandList> GetCommandList();

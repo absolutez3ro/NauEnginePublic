@@ -5,6 +5,7 @@
 #include <nau/assets/asset_manager.h>
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <imgui.h>
 
 #if defined(_WIN32)
@@ -924,9 +925,33 @@ namespace nau::render
         // NAU_UI_GPU1=1: GPU1 draws a UI layer as well (stage A: a test rectangle), composited before Nau's ui_layer.
         const char* gpu1Variable = std::getenv("NAU_UI_GPU1");
         m_mgpuUiLayer.requested = gpu1Variable != nullptr && gpu1Variable[0] == '1' && gpu1Variable[1] == '\0';
+        // NAU_UI_GPU1_SYNC=1: GPU0 waits for the layer of each frame (debugging); asynchronous otherwise.
+        const char* syncVariable = std::getenv("NAU_UI_GPU1_SYNC");
+        m_mgpuUiLayer.synchronous = syncVariable != nullptr && syncVariable[0] == '1' && syncVariable[1] == '\0';
+        // NAU_UI_GPU1_QUEUE=shared / own / high: shared queues with the shadow and DOF bridges (default), own queues,
+        // own queues with high priority.
+        const char* queueVariable = std::getenv("NAU_UI_GPU1_QUEUE");
+        if (queueVariable != nullptr && std::strcmp(queueVariable, "own") == 0)
+        {
+            m_mgpuUiLayer.queueMode = nau::mgpu::ui_layer::QueueMode::Own;
+        }
+        else if (queueVariable != nullptr && std::strcmp(queueVariable, "high") == 0)
+        {
+            m_mgpuUiLayer.queueMode = nau::mgpu::ui_layer::QueueMode::OwnHigh;
+        }
+        else
+        {
+            if (queueVariable != nullptr && std::strcmp(queueVariable, "shared") != 0)
+            {
+                NAU_LOG_WARNING("UI layer: NAU_UI_GPU1_QUEUE='{}' is not shared / own / high, shared queues are used", queueVariable);
+            }
+            m_mgpuUiLayer.queueMode = nau::mgpu::ui_layer::QueueMode::Shared;
+        }
         if (m_mgpuUiLayer.requested && m_swapchain == DEFAULT_SWAPID)
         {
-            NAU_LOG_INFO("UI layer: GPU1 layer requested (NAU_UI_GPU1=1)");
+            NAU_LOG_INFO("UI layer: GPU1 layer requested (NAU_UI_GPU1=1, {}, queues: {})",
+                         m_mgpuUiLayer.synchronous ? "synchronous, NAU_UI_GPU1_SYNC=1" : "asynchronous",
+                         nau::mgpu::ui_layer::toString(m_mgpuUiLayer.queueMode));
         }
 #endif
 

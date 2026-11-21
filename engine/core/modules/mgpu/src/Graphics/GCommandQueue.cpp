@@ -10,14 +10,15 @@
 
 namespace nau::PEPEngine::Graphics
 {
-    GCommandQueue::GCommandQueue(const std::shared_ptr<GDevice>& device, const D3D12_COMMAND_LIST_TYPE type) :
+    GCommandQueue::GCommandQueue(const std::shared_ptr<GDevice>& device, const D3D12_COMMAND_LIST_TYPE type,
+                                 const D3D12_COMMAND_QUEUE_PRIORITY priority) :
         type(type)
         , device(device)
         , FenceValue(0), IsExecutorAlive(true)
     {
         D3D12_COMMAND_QUEUE_DESC desc = {};
         desc.Type = type;
-        desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+        desc.Priority = priority;
         desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
         desc.NodeMask = device->GetNodeMask();
 
