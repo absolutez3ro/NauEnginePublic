@@ -3,6 +3,7 @@
 
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "nau/3d/dag_drv3d.h"
@@ -593,6 +594,193 @@ namespace nau::render
         }
 
         return state.hasAtlas;
+    }
+
+    RenderWindowImpl::MgpuUiLayerState::~MgpuUiLayerState()
+    {
+        if (!releaseEventsCreated)
+        {
+            return;
+        }
+
+        for (size_t slot = 0; slot < releaseEvents.size(); ++slot)
+        {
+            // The driver signals the event when the frame with the copy has finished; it must not be closed earlier.
+            if (releasePending[slot])
+            {
+                os_event_wait(&releaseEvents[slot], 1000);
+            }
+            os_event_destroy(&releaseEvents[slot]);
+        }
+        // The renderer is destroyed after this and waits for GPU1.
+    }
+
+    bool RenderWindowImpl::releaseMgpuUiLayerSlots()
+    {
+        auto& state = m_mgpuUiLayer;
+
+        bool waiting = false;
+        for (uint32_t slot = 0; slot < nau::mgpu::ui_layer::SLOT_COUNT; ++slot)
+        {
+            if (!state.releasePending[slot])
+            {
+                continue;
+            }
+
+            if (os_event_wait(&state.releaseEvents[slot], 0) == OS_WAIT_OK)
+            {
+                state.releasePending[slot] = false;
+                state.renderer.release(slot);
+            }
+            else
+            {
+                waiting = true;
+            }
+        }
+        return !waiting;
+    }
+
+    void RenderWindowImpl::updateMgpuUiLayer()
+    {
+        namespace ui_layer = nau::mgpu::ui_layer;
+        auto& state = m_mgpuUiLayer;
+
+        state.hasLayer = false;
+        if (!state.requested || m_swapchain != DEFAULT_SWAPID)
+        {
+            return;
+        }
+        ++state.frame;
+
+        if (!state.initAttempted)
+        {
+            state.initAttempted = true;
+            state.lastReport = std::chrono::steady_clock::now();
+
+            if (!state.releaseEventsCreated)
+            {
+                for (os_event_t& event : state.releaseEvents)
+                {
+                    os_event_create(&event);
+                }
+                state.releaseEventsCreated = true;
+            }
+
+            if (state.renderer.initialize(d3d::get_device_name()))
+            {
+                NAU_LOG_INFO("mgpu UI layer: the UI layer is drawn by '{}', the scene by '{}' (synchronous)",
+                             state.renderer.secondaryAdapterName(), state.renderer.primaryAdapterName());
+            }
+            else
+            {
+                NAU_LOG_WARNING("mgpu UI layer: second GPU not available, the layer of GPU1 is not drawn: {}",
+                                state.renderer.lastError());
+            }
+        }
+
+        if (!state.renderer.isReady())
+        {
+            return;
+        }
+
+        releaseMgpuUiLayerSlots();
+        ++state.framesSinceReport;
+
+        BaseTexture* backBuffer = d3d::get_back_buffer_rt(m_swapchain);
+        TextureInfo info;
+        if (backBuffer == nullptr || backBuffer->getinfo(info) == 0 || info.w <= 0 || info.h <= 0)
+        {
+            return;
+        }
+        const auto width = static_cast<uint32_t>(info.w);
+        const auto height = static_cast<uint32_t>(info.h);
+
+        // Stage A test content: a translucent cyan rectangle that moves left and right across the middle of the
+        // window, so it is visible that GPU1 draws a new layer every frame.
+        ui_layer::FrameDesc frame;
+        frame.width = width;
+        frame.height = height;
+        constexpr float Alpha = 0.5f;
+        frame.fillColor[0] = 0.0f * Alpha; // premultiplied
+        frame.fillColor[1] = 0.6f * Alpha;
+        frame.fillColor[2] = 0.8f * Alpha;
+        frame.fillColor[3] = Alpha;
+        const auto rectWidth = static_cast<uint32_t>(width * 0.4f);
+        const auto rectHeight = static_cast<uint32_t>(height * 0.25f);
+        const float phase = 0.5f + 0.5f * std::sin(static_cast<float>(state.frame) * 0.02f);
+        frame.fillRect[0] = static_cast<uint32_t>(static_cast<float>(width - rectWidth) * phase);
+        frame.fillRect[1] = (height - rectHeight) / 2;
+        frame.fillRect[2] = rectWidth;
+        frame.fillRect[3] = rectHeight;
+        frame.userToken = state.frame;
+        frame.waitForResult = true;
+        state.renderer.submit(frame);
+
+        ui_layer::ReadyLayer ready;
+        if (state.renderer.takeReady(ready))
+        {
+            bool copied = false;
+            if (ready.width == width && ready.height == height)
+            {
+                if (state.texture.getBaseTex() == nullptr || state.textureWidth != width || state.textureHeight != height)
+                {
+                    // TEXCF_RTARGET, as Nau's ui_layer: without initial data and without it drv3d_DX12 gives the
+                    // texture a stub image (texture.cpp), which the external copy cannot write into.
+                    state.texture.close();
+                    state.texture = dag::create_tex(nullptr, static_cast<int>(width), static_cast<int>(height),
+                                                    TEXFMT_R8G8B8A8 | TEXCF_RTARGET, 1, "ui_layer_gpu1");
+                    state.textureWidth = width;
+                    state.textureHeight = height;
+                }
+
+                BaseTexture* target = state.texture.getBaseTex();
+                if (target != nullptr)
+                {
+                    // GPU0: the layer from local memory of GPU0 into Nau's texture, on Nau's queue.
+                    copied = d3d::driver_command(DRV3D_COMMAND_D3D12_COPY_FROM_EXTERNAL_RESOURCE, ready.resource, target, nullptr) != 0;
+                }
+                if (copied)
+                {
+                    d3d::resource_barrier({target, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+                    d3d::driver_command(DRV3D_COMMAND_REGISTER_FRAME_COMPLETION_EVENT, &state.releaseEvents[ready.slot], nullptr, nullptr);
+                    state.releasePending[ready.slot] = true;
+                    state.hasLayer = true;
+                    ++state.layersSinceReport;
+                }
+                else if (state.copyFailures++ == 0)
+                {
+                    NAU_LOG_ERROR("mgpu UI layer: the driver did not copy the layer of GPU1");
+                }
+            }
+
+            if (!copied)
+            {
+                // Drawn for another window size, or refused by the driver: the slot is free right away.
+                state.renderer.release(ready.slot);
+            }
+        }
+
+        const ui_layer::RendererStats& stats = state.renderer.stats();
+        if (stats.failed != state.reportedFailures)
+        {
+            NAU_LOG_ERROR("mgpu UI layer: {} layer(s) FAILED on GPU1: {}", stats.failed - state.reportedFailures,
+                          state.renderer.lastError());
+            state.reportedFailures = stats.failed;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const float elapsed = std::chrono::duration<float>(now - state.lastReport).count();
+        if (elapsed >= MGPU_REPORT_PERIOD_SECONDS)
+        {
+            NAU_LOG_INFO("mgpu UI layer: {:.1f} layers/s from '{}' for {:.1f} frames/s, {}x{}, latency {:.2f} ms (transfer {:.2f} ms), "
+                         "{} completed, {} skipped (busy), {} failed",
+                         static_cast<float>(state.layersSinceReport) / elapsed, state.renderer.secondaryAdapterName(),
+                         static_cast<float>(state.framesSinceReport) / elapsed, width, height, stats.lastLatencyMs,
+                         stats.lastTransferMs, stats.completed, stats.skippedBusy, stats.failed + state.copyFailures);
+            state.layersSinceReport = 0;
+            state.framesSinceReport = 0;
+            state.lastReport = now;
+        }
     }
 
 #endif

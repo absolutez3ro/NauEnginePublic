@@ -24,6 +24,7 @@
 #include "nau/mgpu/bridge/mgpu_bridge.h"
 #include "nau/mgpu/bridge/mgpu_shadows.h"
 #include "nau/mgpu/bridge/dof_bridge.h"
+#include "nau/mgpu/bridge/mgpu_ui_layer.h"
 #include "nau/osApiWrappers/dag_events.h"
 #endif
 
@@ -221,6 +222,45 @@ namespace nau::render
         void publishMgpuStatus() const;
 
         MgpuShadowsState m_mgpuShadows;
+
+        // Mgpu path of the UI layer (nau::mgpu::ui_layer, mgpu_nodes.cpp). GPU1 draws a layer of the window size
+        // (stage A: a test rectangle), Nau copies it into `texture` in ui_layer_begin and ui_composite blends it over
+        // the frame before Nau's own ui_layer. NAU_UI_GPU1=1 switches it on at start (off by default). For now
+        // synchronous: GPU0 waits until the layer of the frame has arrived.
+        struct MgpuUiLayerState
+        {
+            ~MgpuUiLayerState();
+
+            bool requested = false; // NAU_UI_GPU1=1
+            bool initAttempted = false; // the second GPU is tried once
+            nau::mgpu::ui_layer::LayerRenderer renderer;
+
+            // Nau's copy of the layer of GPU1, TEXFMT_R8G8B8A8 | TEXCF_RTARGET (R8G8B8A8_UNORM, the format of the
+            // bridge), window size.
+            UniqueTex texture;
+            uint32_t textureWidth = 0;
+            uint32_t textureHeight = 0;
+            bool hasLayer = false; // this frame: `texture` holds the layer GPU1 drew for it
+            uint64_t frame = 0;
+
+            // A slot handed to Nau is released once the Nau frame with its copy has finished on the GPU.
+            bool releaseEventsCreated = false;
+            eastl::array<os_event_t, nau::mgpu::ui_layer::SLOT_COUNT> releaseEvents = {};
+            eastl::array<bool, nau::mgpu::ui_layer::SLOT_COUNT> releasePending = {};
+
+            uint64_t copyFailures = 0; // layers the driver did not copy into `texture`
+            uint64_t reportedFailures = 0;
+            uint32_t layersSinceReport = 0;
+            uint32_t framesSinceReport = 0;
+            std::chrono::steady_clock::time_point lastReport;
+        };
+
+        // Called by ui_layer_begin: GPU1 draws the layer of this frame, Nau copies it into m_mgpuUiLayer.texture.
+        void updateMgpuUiLayer();
+        // Releases the slots whose copy has executed; returns true when no slot is waiting any more.
+        bool releaseMgpuUiLayerSlots();
+
+        MgpuUiLayerState m_mgpuUiLayer;
 #endif
 
         eastl::map<NauRenderStage, GraphNodes&> m_graphStages = {

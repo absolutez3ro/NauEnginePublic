@@ -920,6 +920,16 @@ namespace nau::render
         m_uiLayerRequested = !(variable != nullptr && variable[0] == '0' && variable[1] == '\0');
         NAU_LOG_INFO("UI layer: {} at start{}", m_uiLayerRequested ? "on" : "off", variable != nullptr ? " (NAU_UI_LAYER)" : "");
 
+#if defined(NAU_ENABLE_MGPU)
+        // NAU_UI_GPU1=1: GPU1 draws a UI layer as well (stage A: a test rectangle), composited before Nau's ui_layer.
+        const char* gpu1Variable = std::getenv("NAU_UI_GPU1");
+        m_mgpuUiLayer.requested = gpu1Variable != nullptr && gpu1Variable[0] == '1' && gpu1Variable[1] == '\0';
+        if (m_mgpuUiLayer.requested && m_swapchain == DEFAULT_SWAPID)
+        {
+            NAU_LOG_INFO("UI layer: GPU1 layer requested (NAU_UI_GPU1=1)");
+        }
+#endif
+
         // 1. Decides the mode of this frame and clears the layer. The layer has the size of the back buffer
         //    (m_resolutionName follows the window, resizeResolutions) and is premultiplied RGBA8, not sRGB: the UI is
         //    drawn with set_srgb_backbuffer_write(false), as before.
@@ -940,6 +950,10 @@ namespace nau::render
             return [uiLayer, this]()
             {
                 updateUiLayerSwitch();
+#if defined(NAU_ENABLE_MGPU)
+                // GPU1 draws its layer for this frame; Nau copies it into m_mgpuUiLayer.texture (ui_composite).
+                updateMgpuUiLayer();
+#endif
                 if (!m_uiLayerActive)
                 {
                     return;
@@ -967,14 +981,30 @@ namespace nau::render
 
             return [uiLayer, this]()
             {
-                if (!m_uiLayerActive)
+                BaseTexture* gpu1Layer = nullptr;
+#if defined(NAU_ENABLE_MGPU)
+                if (m_mgpuUiLayer.hasLayer)
+                {
+                    gpu1Layer = m_mgpuUiLayer.texture.getBaseTex();
+                }
+#endif
+                if (m_uiCompositeRenderer == nullptr || (!m_uiLayerActive && gpu1Layer == nullptr))
                 {
                     return;
                 }
                 setRenderTarget();
                 d3d::set_srgb_backbuffer_write(false);
-                d3d::settex(0, const_cast<BaseTexture*>(uiLayer.get()));
-                m_uiCompositeRenderer->render("Regular");
+                // The layer of GPU1 first, then Nau's own ui_layer over it (same blend: premultiplied over).
+                if (gpu1Layer != nullptr)
+                {
+                    d3d::settex(0, gpu1Layer);
+                    m_uiCompositeRenderer->render("Regular");
+                }
+                if (m_uiLayerActive)
+                {
+                    d3d::settex(0, const_cast<BaseTexture*>(uiLayer.get()));
+                    m_uiCompositeRenderer->render("Regular");
+                }
                 d3d::settex(0, nullptr);
             };
         }));
