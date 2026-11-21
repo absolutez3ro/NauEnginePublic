@@ -9,12 +9,17 @@
 #include <chrono>
 #include <exception>
 #include <string>
+#include <vector>
+
+#include "imgui.h"
+#include "imgui_impl_dx12.h"
 
 #include "nau/mgpu/Utils/d3dUtil.h"
 #include "nau/mgpu/Utils/d3dx12.h"
 #include "nau/mgpu/Graphics/GCommandList.h"
 #include "nau/mgpu/Graphics/GCommandQueue.h"
 #include "nau/mgpu/Graphics/GDescriptor.h"
+#include "nau/mgpu/Graphics/GDescriptorHeap.h"
 #include "nau/mgpu/Graphics/GDevice.h"
 #include "nau/mgpu/Graphics/GResource.h"
 #include "nau/mgpu/Common/GCrossAdapterResource.h"
@@ -35,6 +40,10 @@ namespace nau::mgpu::ui_layer
         // conversion, as into Nau's ui_layer.
         constexpr DXGI_FORMAT kLayerFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
         constexpr DXGI_FORMAT kLayerViewFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+        // Vertex/index buffers Dear ImGui's backend keeps in a ring. The bridge starts a layer only when GPU1 has
+        // finished the previous one, so one is in flight at a time; three leave room.
+        constexpr int kImGuiFramesInFlight = 3;
     }
 
     struct LayerRenderer::Impl
@@ -90,6 +99,13 @@ namespace nau::mgpu::ui_layer
         std::array<Slot, kSlotCount> slots;
         uint64_t nextSequence = 0;
         RendererStats stats;
+
+        // Dear ImGui's D3D12 backend on GPU1 (one Dear ImGui context, one backend: Nau draws the same frame on GPU0
+        // with its own renderer when the layer is off).
+        bool imguiReady = false;
+        gfx::GDescriptor fontDescriptor; // shader-visible SRV of the font atlas on GPU1
+        ImTextureID gpu1FontTexId = nullptr; // what the backend expects in ImDrawCmd::TextureId
+        std::vector<ImTextureID> savedTexIds; // Nau's texture ids while GPU1 draws the frame
 
         std::shared_ptr<gfx::GCommandQueue> GraphicsQueue1() const
         {
@@ -195,6 +211,112 @@ namespace nau::mgpu::ui_layer
             slot.height = height;
         }
 
+        // Dear ImGui's backend keeps one device in static state and takes over io.Fonts->TexID when it uploads its own
+        // font atlas. Nau's renderer uses that field for its own texture on GPU0, so it is given back right away and
+        // the id of GPU1 is kept here; the frame's draw commands get it in DrawImGui().
+        bool EnsureImGui()
+        {
+            if (imguiReady)
+            {
+                return true;
+            }
+            if (ImGui::GetCurrentContext() == nullptr)
+            {
+                return false; // Nau has not initialized Dear ImGui yet
+            }
+
+            if (fontDescriptor.IsNull())
+            {
+                fontDescriptor = secondaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
+            }
+
+            ImGuiIO& io = ImGui::GetIO();
+            const ImTextureID nauFontTexId = io.Fonts->TexID;
+            if (!ImGui_ImplDX12_Init(secondaryDevice->GetDXDevice().Get(), kImGuiFramesInFlight, kLayerViewFormat,
+                                     fontDescriptor.GetDescriptorHeap()->GetDirectxHeap(), fontDescriptor.GetCPUHandle(),
+                                     fontDescriptor.GetGPUHandle()))
+            {
+                error = "ImGui_ImplDX12_Init failed on GPU1";
+                return false;
+            }
+            // Uploads the font atlas to GPU1 (blocking, once) and sets io.Fonts->TexID to its descriptor.
+            if (!ImGui_ImplDX12_CreateDeviceObjects())
+            {
+                error = "ImGui_ImplDX12_CreateDeviceObjects failed on GPU1";
+                ImGui_ImplDX12_Shutdown();
+                io.Fonts->SetTexID(nauFontTexId);
+                return false;
+            }
+            gpu1FontTexId = io.Fonts->TexID;
+            io.Fonts->SetTexID(nauFontTexId);
+
+            imguiReady = true;
+            return true;
+        }
+
+        void ShutdownImGui()
+        {
+            if (!imguiReady)
+            {
+                return;
+            }
+            imguiReady = false;
+            gpu1FontTexId = nullptr;
+
+            // Shutdown clears io.Fonts->TexID, which belongs to Nau's renderer here.
+            if (ImGui::GetCurrentContext() != nullptr)
+            {
+                ImGuiIO& io = ImGui::GetIO();
+                const ImTextureID nauFontTexId = io.Fonts->TexID;
+                ImGui_ImplDX12_Shutdown();
+                io.Fonts->SetTexID(nauFontTexId);
+            }
+            else
+            {
+                ImGui_ImplDX12_Shutdown();
+            }
+        }
+
+        // Every draw command of the frame is drawn with the font atlas of GPU1: the sample's windows use no other
+        // texture. The ids of Nau are put back after the frame is recorded.
+        void ReplaceTextureIds(ImDrawData* drawData)
+        {
+            savedTexIds.clear();
+            for (int list = 0; list < drawData->CmdListsCount; ++list)
+            {
+                ImVector<ImDrawCmd>& commands = drawData->CmdLists[list]->CmdBuffer;
+                for (int command = 0; command < commands.Size; ++command)
+                {
+                    savedTexIds.push_back(commands[command].TextureId);
+                    commands[command].TextureId = gpu1FontTexId;
+                }
+            }
+        }
+
+        void RestoreTextureIds(ImDrawData* drawData)
+        {
+            size_t index = 0;
+            for (int list = 0; list < drawData->CmdListsCount; ++list)
+            {
+                ImVector<ImDrawCmd>& commands = drawData->CmdLists[list]->CmdBuffer;
+                for (int command = 0; command < commands.Size && index < savedTexIds.size(); ++command)
+                {
+                    commands[command].TextureId = savedTexIds[index++];
+                }
+            }
+        }
+
+        // The render target is already set and cleared by Submit(); the backend sets the viewport, the scissor of
+        // every command, the pipeline and the buffers of this frame itself.
+        void DrawImGui(const std::shared_ptr<gfx::GCommandList>& cmdList, ImDrawData* drawData)
+        {
+            cmdList->SetDescriptorsHeap(&fontDescriptor);
+            ReplaceTextureIds(drawData);
+            ImGui_ImplDX12_NewFrame();
+            ImGui_ImplDX12_RenderDrawData(drawData, cmdList->GetGraphicsCommandList().Get());
+            RestoreTextureIds(drawData);
+        }
+
         Slot* FreeSlot()
         {
             for (Slot& slot : slots)
@@ -235,21 +357,30 @@ namespace nau::mgpu::ui_layer
                 auto queue = GraphicsQueue1();
                 auto cmdList = queue->GetCommandList();
 
-                // Stage A content: transparent layer with one test rectangle.
                 cmdList->TransitionBarrier(*layer, D3D12_RESOURCE_STATE_RENDER_TARGET);
                 cmdList->FlushResourceBarriers();
+                cmdList->SetRenderTargets(1, &layerRtv, 0, nullptr, 0);
                 const FLOAT transparent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
                 cmdList->ClearRenderTarget(&layerRtv, 0, transparent);
 
-                const uint32_t x = std::min(frame.fillRect[0], frame.width);
-                const uint32_t y = std::min(frame.fillRect[1], frame.height);
-                const uint32_t right = std::min(frame.fillRect[0] + frame.fillRect[2], frame.width);
-                const uint32_t bottom = std::min(frame.fillRect[1] + frame.fillRect[3], frame.height);
-                if (right > x && bottom > y)
+                auto* drawData = static_cast<ImDrawData*>(const_cast<void*>(frame.imguiDrawData));
+                if (drawData != nullptr && drawData->CmdListsCount > 0 && EnsureImGui())
                 {
-                    const D3D12_RECT rect = {static_cast<LONG>(x), static_cast<LONG>(y), static_cast<LONG>(right),
-                                             static_cast<LONG>(bottom)};
-                    cmdList->ClearRenderTarget(&layerRtv, 0, frame.fillColor, &rect, 1);
+                    DrawImGui(cmdList, drawData);
+                }
+                else
+                {
+                    // Stage A content: one test rectangle, when the caller passes no ImGui frame.
+                    const uint32_t x = std::min(frame.fillRect[0], frame.width);
+                    const uint32_t y = std::min(frame.fillRect[1], frame.height);
+                    const uint32_t right = std::min(frame.fillRect[0] + frame.fillRect[2], frame.width);
+                    const uint32_t bottom = std::min(frame.fillRect[1] + frame.fillRect[3], frame.height);
+                    if (right > x && bottom > y)
+                    {
+                        const D3D12_RECT rect = {static_cast<LONG>(x), static_cast<LONG>(y), static_cast<LONG>(right),
+                                                 static_cast<LONG>(bottom)};
+                        cmdList->ClearRenderTarget(&layerRtv, 0, frame.fillColor, &rect, 1);
+                    }
                 }
 
                 // Layer -> shared heap, then both back to COMMON (as the shadow atlas).
@@ -425,6 +556,7 @@ namespace nau::mgpu::ui_layer
         void Release()
         {
             ready = false;
+            ShutdownImGui();
 
             // Waits for all work in flight on both GPUs: the bridge's own queues first, then the devices' queues.
             if (ownGraphics1)
@@ -451,6 +583,8 @@ namespace nau::mgpu::ui_layer
             ownGraphics1.reset();
             ownCopy0.reset();
             queueMode = QueueMode::Shared;
+            fontDescriptor = gfx::GDescriptor();
+            savedTexIds.clear();
             layerRtv = gfx::GDescriptor();
             layer.reset();
             layerWidth = 0;

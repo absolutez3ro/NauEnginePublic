@@ -235,6 +235,12 @@ namespace nau::render
 
             bool requested = false; // NAU_UI_GPU1=1
             bool synchronous = false; // NAU_UI_GPU1_SYNC=1
+            // NAU_UI_GPU1_CACHE=1: a frame whose UI is the same as the last one handed to GPU1 (hash of the ImGui
+            // draw data and the layer size) is not drawn or transferred again; the texture keeps the layer.
+            bool cacheUnchanged = false;
+            bool hasSubmittedHash = false;
+            uint64_t lastSubmittedHash = 0;
+            uint32_t reusedSinceReport = 0; // frames that kept the layer because the UI had not changed
             // NAU_UI_GPU1_QUEUE=shared (default) / own / high: the queues the layer uses on GPU1 and GPU0, see
             // nau::mgpu::ui_layer::QueueMode.
             nau::mgpu::ui_layer::QueueMode queueMode = nau::mgpu::ui_layer::QueueMode::Shared;
@@ -248,6 +254,8 @@ namespace nau::render
             uint32_t textureHeight = 0;
             bool textureHasLayer = false; // `texture` holds a layer of GPU1 (false right after it is recreated)
             bool hasLayer = false; // this frame: ui_composite blends `texture`
+            // This frame the layer holds Nau's ImGui frame drawn by GPU1, so the debug_gui node draws nothing on GPU0.
+            bool drawsImGui = false;
             uint64_t frame = 0;
             uint32_t lastAge = 0; // Nau frames between drawing the newest copied layer and showing it
 

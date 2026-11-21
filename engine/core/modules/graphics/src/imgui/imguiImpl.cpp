@@ -378,6 +378,11 @@ void imgui_render_copied_data()
     }
 }
 
+ImDrawData* imgui_get_copied_data()
+{
+    return copiedDrawData;
+}
+
 //nau::DataBlock *imgui_get_blk() { return imgui_blk.get(); }
 
 void imgui_save_blk()

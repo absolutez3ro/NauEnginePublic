@@ -59,8 +59,13 @@ namespace nau::mgpu::ui_layer
         uint32_t width = 0; // layer size in pixels, the size of Nau's window
         uint32_t height = 0;
 
-        // Stage A test content: the whole layer is cleared to transparent, then this rectangle is filled with this
-        // colour. Premultiplied alpha (rgb already multiplied by a), as ui_composite expects.
+        // ImDrawData* of Nau's ImGui frame (imgui_get_copied_data()), drawn into the layer by Dear ImGui's own D3D12
+        // backend on GPU1. The layer is cleared to transparent first. While it is set, the test rectangle below is not
+        // drawn; the caller keeps the snapshot alive until submit() returns.
+        const void* imguiDrawData = nullptr;
+
+        // Stage A test content, used when imguiDrawData is null: the whole layer is cleared to transparent, then this
+        // rectangle is filled with this colour. Premultiplied alpha (rgb already multiplied by a), as ui_composite expects.
         float fillColor[4] = {};
         uint32_t fillRect[4] = {}; // x, y, width, height in layer pixels (y from the top); width 0 = no rectangle
 

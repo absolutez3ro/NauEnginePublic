@@ -14,11 +14,19 @@ nau_collect_files(PublicHeaders
   MASK "*.h" "*.hpp"
 )
 
+# Dear ImGui's own D3D12 backend (MIT, unmodified, v1.82 = the version in engine/3rdparty_libs/imgui): the UI layer
+# bridge draws Nau's ImGui frame with it on GPU1 (src/Bridge/mgpu_ui_layer.cpp). It is compiled here and not in the
+# imgui target, so the D3D12 dependency stays inside Mgpu.
+set(ImGuiBackendDir ${CMAKE_CURRENT_SOURCE_DIR}/../../../3rdparty_libs/imgui/backends)
+
 nau_add_module(${TargetName}
-  SOURCES ${Sources} ${PublicHeaders}
+  SOURCES ${Sources} ${PublicHeaders} ${ImGuiBackendDir}/imgui_impl_dx12.cpp ${ImGuiBackendDir}/imgui_impl_dx12.h
   FOLDER "${NauEngineFolder}/core/modules"
   EXPORT_AS_LIBRARY
 )
+
+target_include_directories(${TargetName} PRIVATE ${ImGuiBackendDir})
+target_link_libraries(${TargetName} PRIVATE imgui)
 
 # Third-party dependencies of the MGPU infrastructure (A: packages.config)
 find_package(directxtex CONFIG REQUIRED)

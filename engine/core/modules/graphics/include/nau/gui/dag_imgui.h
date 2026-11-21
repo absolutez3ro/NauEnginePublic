@@ -11,6 +11,8 @@ namespace nau
     class DataBlock;
 }
 
+struct ImDrawData;
+
 enum class ImGuiState
 {
   OFF,
@@ -36,6 +38,10 @@ void imgui_render();
 NAU_GRAPHICS_EXPORT void imgui_cache_render_data();
 NAU_GRAPHICS_EXPORT void imgui_copy_render_data();
 void imgui_render_copied_data();
+// The frame imgui_render_copied_data() would draw: the snapshot the main thread handed to the render thread
+// (imgui_copy_render_data). The render thread may use it until the next imgui_copy_render_data(); nullptr before the
+// first one. Used by the Mgpu UI layer, where GPU1 draws this snapshot instead (mgpu/bridge/mgpu_ui_layer.h).
+NAU_GRAPHICS_EXPORT ImDrawData* imgui_get_copied_data();
 //nau::DataBlock *imgui_get_blk();
 void imgui_save_blk();
 void imgui_window_set_visible(const char *group, const char *name, const bool visible);

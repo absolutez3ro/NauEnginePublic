@@ -10,6 +10,9 @@
 #include "nau/3d/dag_drv3d.h"
 #include "nau/3d/dag_drv3dCmd.h"
 #include "nau/diag/logging.h"
+#include "nau/gui/dag_imgui.h"
+
+#include <imgui.h>
 #include "nau/gpu_profiler/gpu_profiler.h"
 #include "render_window_impl.h"
 
@@ -611,6 +614,74 @@ namespace nau::render
         return state.hasAtlas;
     }
 
+    namespace
+    {
+        // 64-bit hash of what GPU1 would draw: eight bytes per step, so even a heavy ImGui frame (a few MB of
+        // vertices) costs a fraction of a millisecond.
+        struct UiFrameHash
+        {
+            uint64_t value = 1469598103934665603ull;
+
+            void add(const void* data, const size_t size)
+            {
+                const auto* bytes = static_cast<const uint8_t*>(data);
+                size_t i = 0;
+                for (; i + sizeof(uint64_t) <= size; i += sizeof(uint64_t))
+                {
+                    uint64_t word = 0;
+                    std::memcpy(&word, bytes + i, sizeof(word));
+                    value = (value ^ word) * 1099511628211ull;
+                    value ^= value >> 29;
+                }
+                for (; i < size; ++i)
+                {
+                    value = (value ^ bytes[i]) * 1099511628211ull;
+                }
+            }
+
+            template <class T>
+            void add(const T& item)
+            {
+                add(&item, sizeof(T));
+            }
+        };
+
+        // The layer GPU1 draws for this frame is the same as the last one when the layer size and the ImGui draw data
+        // (vertices, indices, clip rectangles, textures) are the same; without ImGui data, the test rectangle.
+        uint64_t hashUiFrame(const ImDrawData* drawData, const nau::mgpu::ui_layer::FrameDesc& frame)
+        {
+            UiFrameHash hash;
+            hash.add(frame.width);
+            hash.add(frame.height);
+            if (drawData == nullptr)
+            {
+                hash.add(frame.fillColor);
+                hash.add(frame.fillRect);
+                return hash.value;
+            }
+
+            hash.add(drawData->DisplayPos);
+            hash.add(drawData->DisplaySize);
+            hash.add(drawData->CmdListsCount);
+            for (int list = 0; list < drawData->CmdListsCount; ++list)
+            {
+                const ImDrawList* drawList = drawData->CmdLists[list];
+                hash.add(drawList->VtxBuffer.Data, static_cast<size_t>(drawList->VtxBuffer.Size) * sizeof(ImDrawVert));
+                hash.add(drawList->IdxBuffer.Data, static_cast<size_t>(drawList->IdxBuffer.Size) * sizeof(ImDrawIdx));
+                for (const ImDrawCmd& command : drawList->CmdBuffer)
+                {
+                    hash.add(command.ClipRect);
+                    hash.add(command.TextureId);
+                    hash.add(command.VtxOffset);
+                    hash.add(command.IdxOffset);
+                    hash.add(command.ElemCount);
+                    hash.add(command.UserCallback != nullptr);
+                }
+            }
+            return hash.value;
+        }
+    }  // namespace
+
     RenderWindowImpl::MgpuUiLayerState::~MgpuUiLayerState()
     {
         if (!releaseEventsCreated)
@@ -661,6 +732,7 @@ namespace nau::render
         auto& state = m_mgpuUiLayer;
 
         state.hasLayer = false;
+        state.drawsImGui = false;
         if (!state.requested || m_swapchain != DEFAULT_SWAPID)
         {
             return;
@@ -712,11 +784,16 @@ namespace nau::render
         const auto width = static_cast<uint32_t>(info.w);
         const auto height = static_cast<uint32_t>(info.h);
 
-        // Stage A test content: a translucent cyan rectangle that moves left and right across the middle of the
-        // window, so it is visible that GPU1 draws a new layer every frame.
+        // Nau's ImGui frame of this update (the snapshot the debug_gui node would draw on GPU0). GPU1 draws it with
+        // Dear ImGui's own D3D12 backend; without it the stage A test rectangle below is drawn instead.
+        ImDrawData* imguiDrawData = imgui_get_copied_data();
+
         ui_layer::FrameDesc frame;
+        frame.imguiDrawData = imguiDrawData;
         frame.width = width;
         frame.height = height;
+        // Stage A test content: a translucent cyan rectangle that moves left and right across the middle of the
+        // window, so it is visible that GPU1 draws a new layer every frame.
         constexpr float Alpha = 0.5f;
         frame.fillColor[0] = 0.0f * Alpha; // premultiplied
         frame.fillColor[1] = 0.6f * Alpha;
@@ -782,15 +859,39 @@ namespace nau::render
 
             if (!copied)
             {
-                // Drawn for another window size, or refused by the driver: the slot is free right away.
+                // Drawn for another window size, or refused by the driver: the slot is free right away. The cache must
+                // not keep a layer that never reached the texture.
                 state.renderer.release(ready.slot);
+                state.hasSubmittedHash = false;
+            }
+        };
+
+        // NAU_UI_GPU1_CACHE=1: the same UI as the last frame handed to GPU1 is neither drawn nor transferred; the
+        // texture keeps that layer (or gets it when it arrives). Until the texture holds a layer, GPU1 always draws.
+        bool submitThisFrame = true;
+        uint64_t frameHash = 0;
+        if (state.cacheUnchanged)
+        {
+            frameHash = hashUiFrame(imguiDrawData, frame);
+            submitThisFrame = !(state.textureHasLayer && state.hasSubmittedHash && frameHash == state.lastSubmittedHash);
+            if (!submitThisFrame)
+            {
+                ++state.reusedSinceReport;
+            }
+        }
+        const auto submitFrame = [&]()
+        {
+            if (submitThisFrame && state.renderer.submit(frame))
+            {
+                state.lastSubmittedHash = frameHash;
+                state.hasSubmittedHash = state.cacheUnchanged;
             }
         };
 
         if (state.synchronous)
         {
             // GPU0 waits until GPU1 has drawn this frame's layer and it is in local memory of GPU0: age 0.
-            state.renderer.submit(frame);
+            submitFrame();
             takeNewestLayer();
         }
         else
@@ -798,10 +899,13 @@ namespace nau::render
             // As the shadows: take the newest finished layer, then hand this frame to GPU1 if it is free. Nothing
             // waits; a frame without a new layer shows the previous one.
             takeNewestLayer();
-            state.renderer.submit(frame);
+            submitFrame();
         }
 
         state.hasLayer = state.textureHasLayer && state.texture.getBaseTex() != nullptr;
+        // While the layer holds the UI, the debug_gui node of GPU0 draws nothing. Until the first layer arrives (and
+        // whenever a copy fails) Nau keeps drawing ImGui itself, so the UI never disappears.
+        state.drawsImGui = state.hasLayer && imguiDrawData != nullptr;
 
         const ui_layer::RendererStats& stats = state.renderer.stats();
         if (stats.failed != state.reportedFailures)
@@ -818,15 +922,19 @@ namespace nau::render
             const float averageAge = state.layersSinceReport != 0
                                          ? static_cast<float>(state.ageSumSinceReport) / static_cast<float>(state.layersSinceReport)
                                          : 0.0f;
-            NAU_LOG_INFO("mgpu UI layer ({}, {} queues): {:.1f} layers/s from '{}' for {:.1f} frames/s, {}x{}, layer age {:.2f} frames "
+            NAU_LOG_INFO("mgpu UI layer ({}, {}, {} queues, cache {}): {:.1f} reused/s (unchanged UI), {:.1f} layers/s from '{}' "
+                         "for {:.1f} frames/s, {}x{}, layer age {:.2f} frames "
                          "(last {}), latency {:.2f} ms (transfer {:.2f} ms), {} completed, {} skipped (busy), {} failed",
+                         imguiDrawData != nullptr ? "imgui" : "test rectangle",
                          state.synchronous ? "sync" : "async", ui_layer::toString(state.queueMode),
+                         state.cacheUnchanged ? "on" : "off", static_cast<float>(state.reusedSinceReport) / elapsed,
                          static_cast<float>(state.layersSinceReport) / elapsed,
                          state.renderer.secondaryAdapterName(), static_cast<float>(state.framesSinceReport) / elapsed, width,
                          height, averageAge, state.lastAge, stats.lastLatencyMs, stats.lastTransferMs, stats.completed,
                          stats.skippedBusy, stats.failed + state.copyFailures);
             state.layersSinceReport = 0;
             state.ageSumSinceReport = 0;
+            state.reusedSinceReport = 0;
             state.framesSinceReport = 0;
             state.lastReport = now;
         }

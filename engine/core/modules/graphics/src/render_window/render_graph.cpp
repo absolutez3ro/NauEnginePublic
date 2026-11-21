@@ -867,6 +867,14 @@ namespace nau::render
                 imgui_endframe();
                 return [uiLayer, this]()
                 {
+#if defined(NAU_ENABLE_MGPU)
+                    // GPU1 has drawn this ImGui frame into its own layer (mgpu_nodes.cpp, updateMgpuUiLayer) and
+                    // ui_composite blends it over the frame.
+                    if (m_mgpuUiLayer.drawsImGui)
+                    {
+                        return;
+                    }
+#endif
                     if (m_uiLayerActive)
                     {
                         d3d::set_render_target();
@@ -928,6 +936,9 @@ namespace nau::render
         // NAU_UI_GPU1_SYNC=1: GPU0 waits for the layer of each frame (debugging); asynchronous otherwise.
         const char* syncVariable = std::getenv("NAU_UI_GPU1_SYNC");
         m_mgpuUiLayer.synchronous = syncVariable != nullptr && syncVariable[0] == '1' && syncVariable[1] == '\0';
+        // NAU_UI_GPU1_CACHE=1: an unchanged UI is not drawn and transferred again (off by default).
+        const char* cacheVariable = std::getenv("NAU_UI_GPU1_CACHE");
+        m_mgpuUiLayer.cacheUnchanged = cacheVariable != nullptr && cacheVariable[0] == '1' && cacheVariable[1] == '\0';
         // NAU_UI_GPU1_QUEUE=shared / own / high: shared queues with the shadow and DOF bridges (default), own queues,
         // own queues with high priority.
         const char* queueVariable = std::getenv("NAU_UI_GPU1_QUEUE");
@@ -949,9 +960,10 @@ namespace nau::render
         }
         if (m_mgpuUiLayer.requested && m_swapchain == DEFAULT_SWAPID)
         {
-            NAU_LOG_INFO("UI layer: GPU1 layer requested (NAU_UI_GPU1=1, {}, queues: {})",
+            NAU_LOG_INFO("UI layer: GPU1 layer requested (NAU_UI_GPU1=1, {}, queues: {}, cache of unchanged UI: {})",
                          m_mgpuUiLayer.synchronous ? "synchronous, NAU_UI_GPU1_SYNC=1" : "asynchronous",
-                         nau::mgpu::ui_layer::toString(m_mgpuUiLayer.queueMode));
+                         nau::mgpu::ui_layer::toString(m_mgpuUiLayer.queueMode),
+                         m_mgpuUiLayer.cacheUnchanged ? "on, NAU_UI_GPU1_CACHE=1" : "off");
         }
 #endif
 
