@@ -19,6 +19,12 @@
                "isOptional":true
             },
             {
+               "mountPoint":"/res",
+               "path":"$folder{ExecutableLocation}/ui_res",
+               "enabled":true,
+               "isOptional":true
+            },
+            {
                "mountPoint":"/content",
                "path":"${sampleProjectDir}/content.packs/content.nau_pack",
                "enabled":false

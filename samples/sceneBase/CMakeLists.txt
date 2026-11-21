@@ -16,6 +16,7 @@ target_link_libraries(${TargetName} PRIVATE
     Physics
     Graphics
     VFX
+    ui
 )
 
 # Mgpu transfer bridge (root option NAU_ENABLE_MGPU, preset win_vs2022_x64_mgpu): the MgpuToggle component only uses
@@ -63,6 +64,19 @@ nau_target_link_modules(${TargetName}
     Physics
     PhysicsJolt
     VFX
+    ui
+)
+
+# cocos2d-x UI (nau_gui node, sample_components/cocos_ui_demo.cpp). The cocos backend loads its shaders from
+# /res/ui/shaders/cache/shader_cache.nsbc. That file is built by the ui module (not kept in git), so it is copied
+# next to the executable into ui_res/, which config/vfs.json mounts as a second /res. The fonts and images of the
+# demo are in resources/ (the first /res).
+set(UiResDir "$<TARGET_FILE_DIR:${TargetName}>/ui_res")
+add_custom_command(TARGET ${TargetName} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${UiResDir}/ui/shaders/cache"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../engine/core/modules/ui/src/shaders/cache/shader_cache.nsbc"
+    "${UiResDir}/ui/shaders/cache/shader_cache.nsbc"
 )
 
 if(NauSDKLibraries)

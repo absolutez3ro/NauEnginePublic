@@ -6,6 +6,7 @@
 
 
 #include "./sample_components/asset_reloader.h"
+#include "./sample_components/cocos_ui_demo.h"
 #include "./sample_components/mgpu_toggle.h"
 #include "./sample_components/ui_stress.h"
 #include "./sample_components/scene_reloader.h"
@@ -324,6 +325,9 @@ namespace nau::sample
         sceneLoaders.push(sceneManager.activateScene(sample::makeBillboardsScene({-10.0f, 0, 40.0f}, false)));
 
         co_await sceneLoaders.awaitCompletion();
+
+        // cocos2d-x UI next to the ImGui windows (nau_gui node of the render graph).
+        co_await setupCocosUiDemo();
     }
 
     // ./sample_app_delegate.cpp

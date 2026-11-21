@@ -4,6 +4,7 @@
 
 #include "nau/samples/sample_app_delegate.h"
 #include "./sample_components/asset_reloader.h"
+#include "./sample_components/cocos_ui_demo.h"
 #include "./sample_components/mgpu_toggle.h"
 #include "./sample_components/ui_stress.h"
 #include "./sample_components/scene_reloader.h"
@@ -75,6 +76,7 @@ namespace nau::sample
             getServiceProvider().addClass<nau::sample::WindowMaker>();
             getServiceProvider().addClass<nau::sample::MgpuToggle>();
             getServiceProvider().addClass<nau::sample::UiStress>();
+            getServiceProvider().addClass<nau::sample::CocosUiDemo>();
 
             return ResultSuccess;
         }
