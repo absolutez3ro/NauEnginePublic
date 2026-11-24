@@ -17,8 +17,12 @@ namespace drv3d_dx12
         bool virtualDisplay = false;
     };
 
-    // LUIDs can alias the same physical board through indirect/remote display drivers.
-    // An unavailable identity remains unknown; PCI model IDs are never treated as unique.
+    /**
+     * @brief Queries hardware identity and virtual-display status for a DXGI adapter.
+     * Multiple LUIDs can refer to the same board through indirect or remote display drivers.
+     * @param luid Adapter identifier to query through D3DKMT.
+     * @return Available identity data. A missing hardware key leaves physical identity unknown.
+     */
     inline PhysicalAdapterIdentity query_physical_adapter_identity(LUID luid)
     {
         PhysicalAdapterIdentity result;

@@ -39,6 +39,7 @@ namespace drv3d_dx12
         bool packedFrameworkNormals = false;
     };
 
+    /** @brief Shared textures and backing heaps as seen by one adapter. */
     struct FrameworkSsaoTextures
     {
         ID3D12Resource* normals = nullptr;
@@ -47,6 +48,7 @@ namespace drv3d_dx12
         ID3D12Heap* heaps[3] = {};
     };
 
+    /** @brief Input dependency and output resources for a native GPU1 mailbox job. */
     struct MailboxSsaoJob
     {
         CrossAdapterSyncPoint inputsReady;
@@ -61,12 +63,12 @@ namespace drv3d_dx12
 
     struct MailboxSsaoCompletion
     {
-        uint64_t dataReady = 0;
-        uint64_t published = 0;
+        uint64_t dataReady = 0;  ///< Completion fence value for AO and its frame ID.
+        uint64_t published = 0;  ///< Completion fence value including mailbox metadata publication.
     };
 
     /**
-     * @brief Native SSAO on GPU1, with a framework shared-texture path and a protected comparison path.
+     * @brief Native GPU1 AO for the mailbox, shared-texture and protected transports.
      * Framework mode uses one local resource set and three command/constant recordings. It reads
      * shared inputs at execution, never waits for the other adapter and skips submission if all
      * three recordings are busy. Protected mode uses two resource sets and queue waits for their
@@ -84,22 +86,51 @@ namespace drv3d_dx12
         ~DeviceSsaoPass();
 
         HRESULT init(const DeviceSsaoPassDesc& desc);
+        /**
+         * @brief Waits for native submissions and outstanding output readers before releasing resources.
+         * @param timeoutMs Maximum wait in milliseconds.
+         * @return S_OK on success. On timeout the pass retains its resources for another reset attempt.
+         */
         HRESULT reset(DWORD timeoutMs = 10000);
         HRESULT execute(const d3d::mgpu::SsaoConstants& constants, CrossAdapterSyncPoint normalsReady = {}, CrossAdapterSyncPoint depthReady = {}, uint64_t frame = 0, uint32_t resourceIndex = 0);
-        // Copies shared inputs, computes AO, and publishes shared output in one direct list.
-        // S_FALSE means all three command/constant recordings are busy; never waits or grows the budget.
+        /**
+         * @brief Copies shared inputs, computes AO and publishes the result in one direct list.
+         * @param constants AO settings and matrices.
+         * @param shared Shared textures as opened on GPU1.
+         * @param frame Source frame ID for profiling.
+         * @return S_OK when queued, S_FALSE when all three recordings are busy, or a failure HRESULT.
+         */
         HRESULT executeFramework(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared, uint64_t frame = 0);
+        /**
+         * @brief Queues GPU1 AO after the input dependency, then publishes its output.
+         * @param constants AO settings and matrices for the input data.
+         * @param shared Input and output textures as opened on GPU1.
+         * @param job Fence and metadata resources for the assigned mailbox slots.
+         * @param frame Source frame ID written alongside the output.
+         * @param[out] completion Fence values for the output and its publication.
+         * @return S_OK when queued, S_FALSE when no recording is free, or a failure HRESULT.
+         */
         HRESULT executeMailbox(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared, const MailboxSsaoJob& job, uint64_t frame, MailboxSsaoCompletion& completion);
         void retainMailboxResources(const eastl::shared_ptr<void>& resources);
         d3d::mgpu::SsaoGpuTiming pollTiming();
-        // The output-copy dependency is applied only when this set is rendered again or reset.
+        /**
+         * @brief Records the last reader of an output resource set.
+         * The dependency is applied when the set is rendered again or the pass is reset.
+         * @param released Fence point after the reader finishes.
+         * @param resourceIndex Index of the resource set.
+         * @return S_OK on success, or a failure HRESULT for an invalid or already pending release.
+         */
         HRESULT releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex = 0);
         CrossAdapterSyncPoint getReadyPoint(uint32_t resourceIndex = 0) const;
         ID3D12Resource* getNormals(uint32_t resourceIndex = 0) const;
         ID3D12Resource* getDepth(uint32_t resourceIndex = 0) const;
         ID3D12Resource* getResult(uint32_t resourceIndex = 0) const;
-        // Borrowed queue for native integration/profiling; lifetime follows this pass.
+        /** @brief Returns the native queue borrowed for the lifetime of the initialized pass. */
         ID3D12CommandQueue* getQueue() const;
+        /**
+         * @brief Releases retired GPU1 resources whose work has completed, without blocking.
+         * @return Number of retired pass states still pending.
+         */
         static size_t collectRetiredResources();
 
     private:

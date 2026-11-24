@@ -1814,13 +1814,25 @@ public:
   void copyFromExternalResource(ID3D12Resource *src, Image *dst);
   void resolveMultiSampleImage(Image *src, Image *dst);
   void flushDraws();
-  // Hands the work recorded so far to a queue outside this context, e.g. a multi-GPU copy queue: optionally moves
-  // subresource 0 of image to COMMON, submits everything recorded so far and signals fence with value on the graphics
-  // queue after it.
+  /**
+   * @brief Submits recorded graphics work before handing off to a foreign queue.
+   * @param image Optional image whose subresource 0 is transitioned to COMMON.
+   * @param fence Fence to signal on the graphics queue after submission.
+   * @param value Fence value released to the foreign queue.
+   */
   void releaseToForeignQueue(Image *image, ID3D12Fence *fence, uint64_t value);
   void copySharedTexture(Image *image, ID3D12Resource *shared, bool toShared);
+  /**
+   * @brief Records a mailbox receive on the primary graphics queue without waiting for GPU1.
+   * @param ao Destination image whose contents persist when no ready slot is selected.
+   * @param desc Borrowed resources and selection parameters for the receive.
+   */
   void mailboxReceive(Image *ao, const MailboxReceiveDesc &desc);
-  // Submit the recorded graphics batch and signal without retiring frontend/frame storage.
+  /**
+   * @brief Submits the recorded graphics batch without retiring the frontend frame slot.
+   * @param fence Fence to signal after the batch.
+   * @param value Fence value for the foreign queue to wait on.
+   */
   void signalForeignFenceAfterSubmit(ID3D12Fence *fence, uint64_t value);
   void releaseToForeignQueue(Image *const *images, uint32_t count, ID3D12Fence *fence, uint64_t value);
   void waitForForeignQueue(ID3D12Fence *fence, uint64_t value);

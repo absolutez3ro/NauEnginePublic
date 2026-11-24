@@ -12,21 +12,23 @@
 
 namespace d3d::mgpu
 {
+    /** @brief Describes the AO shaders, resource dimensions and transport for GPU1. */
     struct SsaoProducerDesc
     {
         uint32_t width = 0;
         uint32_t height = 0;
-        uint32_t inputWidth = 0;   // Zero uses the AO output width.
-        uint32_t inputHeight = 0;  // Zero uses the AO output height.
+        uint32_t inputWidth = 0;   ///< Zero uses the AO output width.
+        uint32_t inputHeight = 0;  ///< Zero uses the AO output height.
         const void* vertexBytecode = nullptr;
         size_t vertexBytecodeSize = 0;
         const void* rawBytecode = nullptr;
         size_t rawBytecodeSize = 0;
-        // Optional 8x8 compute raw-AO pass with the same constants/SRVs and an R8 output at u0.
-        // The pixel raw pass remains available when the secondary cannot store typed R8 UAVs.
+        /**
+         * @brief Optional 8x8 compute pass with the same constants and SRVs as the pixel pass.
+         * Writes R8 AO at u0. Devices without typed R8 UAV stores use the pixel pass.
+         */
         const void* rawComputeBytecode = nullptr;
         size_t rawComputeBytecodeSize = 0;
-        // XeGTAO uses depth prefilter, high-quality GTAO, two denoise passes and R8 composite.
         const void* xePrefilterBytecode = nullptr;
         size_t xePrefilterBytecodeSize = 0;
         const void* xeMainBytecode = nullptr;
@@ -50,14 +52,24 @@ namespace d3d::mgpu
     };
 
     struct SsaoProducer;
-    /** @brief Creates the selected mailbox/shared-texture producer, or the protected comparison producer otherwise. */
+    /**
+     * @brief Creates a mailbox, shared-texture or protected AO producer on the render thread.
+     * @param desc Shader bytecode, resource dimensions and transport settings.
+     * @return A producer owned by the caller, or nullptr if creation fails. Destroy it with destroySsaoProducer().
+     */
     NAU_RENDER_EXPORT SsaoProducer* createSsaoProducer(const SsaoProducerDesc& desc);
     /**
      * @brief Queues RG16F/R32F inputs at their declared size, raw R8 AO, and its return copy.
      * Keep endpoints alive until destruction or resize drains both devices. The caller records
      * wait_for_primary_transfer() before filtering destination, after its independent graphics work,
      * or consumes a completed destination after is_primary_transfer_complete() returns true.
-     * A null fence reports failure; no readiness polling or CPU wait is performed.
+     * @param producer Protected producer.
+     * @param constants AO settings and matrices for the submitted frame.
+     * @param normals Input normals, unused when reconstructed from depth.
+     * @param depth Input depth texture.
+     * @param destination Primary-device R8 AO texture.
+     * @param frame Source frame ID for profiling.
+     * @return Completion point for the returned AO, or a null fence on failure. This call never waits on the CPU.
      */
     NAU_RENDER_EXPORT PrimarySyncPoint submitSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, uint64_t frame = 0);
     /**
@@ -65,17 +77,49 @@ namespace d3d::mgpu
      * Always publishes inputs and reads shared AO, irrespective of GPU1 readiness. GPU1 copies/computes/
      * publishes in one direct list when one of its three command recordings is free. No intermediate
      * submit, copy queue or cross-adapter fence is used. Concurrent read/write races are intentional.
-     * True means the transport remains usable; submitted reports whether a GPU1 list was queued.
+     * @param producer Shared-texture producer.
+     * @param constants AO settings and matrices for the submitted frame.
+     * @param normals Input normals, unused when reconstructed from depth.
+     * @param depth Input depth texture.
+     * @param destination Persistent primary-device AO texture, initially cleared to white by the caller.
+     * @param frame Source frame ID for profiling.
+     * @param[out] submitted Whether a GPU1 list was queued.
+     * @return True while the transport remains usable, even when all GPU1 recordings are busy.
      */
     NAU_RENDER_EXPORT bool exchangeFrameworkSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, BaseTexture* destination, uint64_t frame, bool& submitted);
-    // Mailbox publishes frame-owned inputs early; reception is explicitly recorded later, before resolve.
-    // Neither function waits for GPU1 on the CPU or GPU0. Busy slots skip submission, preserving the old AO.
-    // GPU selection is experimental: mailbox metadata is read concurrently with GPU1 publication.
+    /**
+     * @brief Submits frame inputs early, before the primary GPU's independent graphics passes.
+     * Busy slots or backlog skip submission without waiting for GPU1 on the CPU or GPU0.
+     * @param producer Mailbox producer.
+     * @param constants AO settings and matrices associated with the inputs.
+     * @param normals Input normals, unused when reconstructed from depth.
+     * @param depth Input depth texture.
+     * @param frame Nonzero source frame ID that fits in 32 bits.
+     * @param[out] submitted Whether a GPU1 AO job was queued.
+     * @param freezeInputsReady Allows the frozen-input diagnostic to pin a fully warmed-up frame.
+     * @return True while the transport remains usable, including when submission was skipped.
+     */
     NAU_RENDER_EXPORT bool submitMailboxSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, uint64_t frame, bool& submitted, bool freezeInputsReady = false);
+    /**
+     * @brief Records selection and copy of the latest published AO before lighting resolve.
+     * Retains the previous result when no newer one is available. This call does not wait for GPU1.
+     * @warning GPU selection reads mailbox metadata concurrently with GPU1 publication.
+     * @param producer Mailbox producer.
+     * @param destination Persistent primary-device AO texture.
+     * @param frame Consumer frame ID used for AO age readback.
+     * @return True if the transport remains usable. It may retain the previous result.
+     */
     NAU_RENDER_EXPORT bool receiveMailboxSsao(SsaoProducer* producer, BaseTexture* destination, uint64_t frame);
-    /** @brief Latest completed GPU 1 timestamps, read without waiting; frame zero means unavailable. */
+    /**
+     * @brief Polls completed GPU1 timings and mailbox observations without waiting.
+     * @param producer Producer to sample. May be nullptr.
+     * @return Latest snapshot. A zero timing frame means GPU1 timestamps are unavailable.
+     */
     NAU_RENDER_EXPORT SsaoGpuTiming pollSsaoTiming(SsaoProducer* producer);
-    /** @brief Drains transfers and retires native resources before endpoint destruction, resize or driver shutdown. */
+    /**
+     * @brief Destroys the producer and retires native resources before endpoint destruction, resize or driver shutdown.
+     * @param producer Producer returned by createSsaoProducer(), or nullptr.
+     */
     NAU_RENDER_EXPORT void destroySsaoProducer(SsaoProducer* producer);
     /** @brief Collects retired native resources on the render thread without waiting. */
     NAU_RENDER_EXPORT void collectSsaoResources();

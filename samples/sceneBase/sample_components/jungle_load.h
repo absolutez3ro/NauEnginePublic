@@ -26,6 +26,11 @@ namespace nau::sample
 
     public:
         ~JungleLoad() override;
+        /**
+         * @brief Configures the sample workloads and benchmark automation.
+         * @param camera Camera used for workload placement and the benchmark path.
+         * @param sun Light whose shadow atlas is resized when extra casters are enabled.
+         */
         void initialize(scene::SceneObject& camera, scene::DirectionalLightComponent& sun);
 
     private:

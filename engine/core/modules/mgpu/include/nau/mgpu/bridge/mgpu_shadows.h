@@ -145,6 +145,12 @@ namespace nau::mgpu::shadows
         CascadeRenderer& operator=(const CascadeRenderer&) = delete;
 
         /// nauAdapterName: d3d::get_device_name() (nullptr in standalone tests). Needs two distinct hardware adapters.
+        /**
+         * @brief Binds the shadow renderer to Nau's selected DX12 devices.
+         * @param primaryDevice Native ID3D12Device that consumes the shadow atlas.
+         * @param secondaryDevice Distinct native ID3D12Device that draws the atlas.
+         * @return True when ready. On failure, lastError() describes the reason.
+         */
         bool initialize(void* primaryDevice, void* secondaryDevice);
         bool isReady() const;
         /// Waits for the work in flight on both GPUs and releases everything.

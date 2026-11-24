@@ -95,27 +95,43 @@ namespace nau::gpu_profiler
         Destination
     };
 
+    /** @brief Supplies timestamps from a single GPU command stream. */
     class ITimestampSource
     {
     public:
         virtual ~ITimestampSource() = default;
 
-        // Timestamp ticks per second, 0 when the queue cannot provide timestamps.
+        /** @brief Returns timestamp ticks per second, or 0 if unavailable. */
         virtual uint64_t getFrequency() = 0;
-        // False while there is no command stream to write a timestamp into; scopes opened then are not measured.
+        /** @brief Returns whether the source can record a timestamp now. */
         virtual bool canIssue()
         {
             return true;
         }
-        // Writes a timestamp into the command stream. A null query is created by the source; a query handed back by
-        // the profiler after its value was read is reused.
+        /**
+         * @brief Writes a timestamp into the command stream.
+         * @param[in,out] query Query to reuse after readback, or nullptr to acquire a new query.
+         */
         virtual void issue(void*& query) = 0;
-        // Non-blocking: true and the value once the GPU has written the timestamp.
+        /**
+         * @brief Polls a timestamp without waiting for the GPU.
+         * @param query Previously issued query.
+         * @param[out] value Timestamp ticks if the result is ready.
+         * @return True if a result was read.
+         */
         virtual bool tryGetValue(void* query, uint64_t& value) = 0;
-        // The query is not used by the profiler any more; the GPU may still write it.
+        /**
+         * @brief Releases a query from profiler use. The GPU may still write it.
+         * @param query Query to release.
+         */
         virtual void release(void* query) = 0;
-        // A GPU timestamp and the CPU counter sampled at the same moment (ID3D12CommandQueue::GetClockCalibration).
-        // cpuFrequency: ticks per second of cpuTicks, 0 for QueryPerformanceCounter. False when unavailable.
+        /**
+         * @brief Samples the GPU and CPU counters at the same instant.
+         * @param[out] gpuTicks GPU timestamp sample.
+         * @param[out] cpuTicks CPU counter sample.
+         * @param[out] cpuFrequency CPU ticks per second, or 0 for QueryPerformanceCounter.
+         * @return True if calibration was available.
+         */
         virtual bool getClockCalibration(uint64_t& gpuTicks, uint64_t& cpuTicks, uint64_t& cpuFrequency)
         {
             return false;
@@ -164,18 +180,22 @@ namespace nau::gpu_profiler
         uint64_t transfersInFlightAtShutdown = 0;
     };
 
+    /** @brief Collects queue-local GPU timings and render-thread measurements without waiting for results. */
     class NAU_GPU_PROFILER_API GpuProfiler
     {
     public:
         static GpuProfiler& instance();
 
-        // Reads the environment (see the top of this file). Does nothing when the profiler is disabled.
+        /** @brief Initializes from the profiler environment variables if enabled. */
         void init();
         void init(const Config& config);
-        // Collects what has arrived, writes the summary and closes the CSV. Sources stay registered until then.
+        /** @brief Collects available results and closes the run. Keep sources alive until this returns. */
         void shutdown();
 
-        // Where the profiler's messages go (stderr by default). May be set before init().
+        /**
+         * @brief Sets where profiler messages are sent. May be called before init().
+         * @param sink Log callback. The default sink writes to stderr.
+         */
         void setLogSink(LogSink sink);
 
         bool isEnabled() const
@@ -185,12 +205,24 @@ namespace nau::gpu_profiler
         const Config& config() const;
         const Counters& counters() const;
 
-        // The source must stay alive until unregisterSource() or shutdown(). Returns InvalidSource when the profiler
-        // is disabled or the source has no timestamps. queueName goes to the "queue" column ("gfx0", "copy0.csm"...).
+        /**
+         * @brief Registers a queue timestamp source.
+         * @param gpu GPU that owns the queue.
+         * @param queueName Queue label written to the CSV.
+         * @param source Borrowed source, which must outlive its registration.
+         * @return Source ID, or InvalidSource when profiling or timestamps are unavailable.
+         */
         SourceId registerSource(GpuIndex gpu, const char* queueName, ITimestampSource* source);
-        // Scopes of the source still in flight are dropped.
+        /**
+         * @brief Unregisters the source and drops its pending scopes.
+         * @param source Registered source ID.
+         */
         void unregisterSource(SourceId source);
-        // The source of gpu that can record right now; a raw source with an open command list goes before Nau's driver.
+        /**
+         * @brief Finds a source that can record now, preferring an open native command list.
+         * @param gpu GPU the source must belong to.
+         * @return A source ID, or InvalidSource if none can record.
+         */
         SourceId findSource(GpuIndex gpu) const;
 
         void beginFrame();
@@ -200,22 +232,43 @@ namespace nau::gpu_profiler
         void beginScope(const char* name, SourceId source);
         void endScope(SourceId source);
 
-        // One half of a transfer from srcGpu to dstGpu, timed on `source` (the queue doing that half); closed with
-        // endScope(source). token matches the halves; FrameToken: the current frame. bytes: payload size (0: unknown),
-        // written to the "bytes" column so the bandwidth of each half can be computed.
+        /**
+         * @brief Begins timing one half of a cross-GPU transfer. Close it with endScope(source).
+         * @param name Transfer name used to match the two halves.
+         * @param srcGpu GPU producing the payload.
+         * @param dstGpu GPU receiving the payload.
+         * @param half Which half this command stream executes.
+         * @param token Transfer identifier shared by both halves. FrameToken uses the current frame.
+         * @param source Timestamp source for the queue executing this half.
+         * @param bytes Payload size in bytes, or 0 if unknown.
+         */
         void beginTransfer(const char* name, GpuIndex srcGpu, GpuIndex dstGpu, TransferHalf half, uint64_t token, SourceId source, uint64_t bytes = 0);
-        // The current frame uses the result of the transfer (name, token): gives its age. FrameToken: the current frame.
+        /**
+         * @brief Marks the transfer result as used in the current frame, which determines its age.
+         * @param name Recorded transfer name.
+         * @param token Recorded transfer identifier. FrameToken uses the current frame.
+         */
         void markTransferConsumed(const char* name, uint64_t token = FrameToken);
-        // The bridge dropped the result (a newer one superseded it): written without waiting for a missing half and
-        // counted as unused, not as incomplete.
+        /**
+         * @brief Records a discarded result as unused without waiting for a missing half.
+         * @param name Recorded transfer name.
+         * @param token Recorded transfer identifier.
+         */
         void markTransferDiscarded(const char* name, uint64_t token);
 
-        // CPU time of work on the render thread (QueryPerformanceCounter), written with gpu = "cpu".
+        /**
+         * @brief Begins measuring render-thread time with QueryPerformanceCounter.
+         * @param name Scope name written to the CSV.
+         */
         void beginCpuScope(const char* name);
         void endCpuScope();
 
-        // Where a feature actually ran in the current frame (not where it was requested). Reset by beginFrame(); a
-        // feature not set in a frame is not in its "features". The frame is "2gpu" when a feature used GPU 1.
+        /**
+         * @brief Records the actual placement of a feature for the current frame.
+         * beginFrame() clears the feature list. A frame uses the 2gpu label when a feature used GPU1.
+         * @param feature Name written to the features column.
+         * @param placement Execution location observed for this frame.
+         */
         void setPlacement(const char* feature, Placement placement);
 
         // Run metadata, written next to the CSV (<csv name>.json): adapter of a GPU, any key/value of the run

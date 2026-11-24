@@ -90,19 +90,18 @@ namespace nau::render
         virtual void setMainCameraIndex(int32_t ind) = 0;
 
         /**
-         * @brief Returns the most recently requested SSAO mode. Thread safe.
-         * @return The requested mode, independent of whether SSAO was enabled at startup.
+         * @brief Returns the most recently requested AO mode. Thread safe.
+         * @return The requested mode, independent of whether AO was enabled at startup.
          */
         virtual AmbientOcclusionMode getAmbientOcclusionMode() const = 0;
         /**
-         * @brief Requests a mode for SSAO enabled at startup, preserving its resources. Thread safe.
-         * With render/ssao/enabled=false this has no rendering effect and cannot enable SSAO at runtime.
-         * @param mode The requested SSAO mode.
+         * @brief Requests a mode for an existing AO pipeline while preserving its resources. Thread safe.
+         * @param mode The requested AO mode. Requires render/ssao/enabled at startup.
          */
         virtual void setAmbientOcclusionMode(AmbientOcclusionMode mode) = 0;
 
         /**
-         * @brief Returns the requested SSAO execution mode. Thread safe.
+         * @brief Returns the requested AO execution mode. Thread safe.
          */
         virtual AmbientOcclusionExecution getAmbientOcclusionExecution() const = 0;
         /**
@@ -111,16 +110,20 @@ namespace nau::render
          */
         virtual void setAmbientOcclusionExecution(AmbientOcclusionExecution execution) = 0;
         /**
-         * @brief Returns the requested complete SSAO variant. Thread safe.
+         * @brief Returns the requested AO variant. Thread safe.
          */
         virtual AmbientOcclusionVariant getAmbientOcclusionVariant() const = 0;
         /**
          * @brief Requests inputs, noise, AO formula, blur and reconstruction independently of GPU selection. Thread safe.
-         * @param variant The complete SSAO implementation to compare.
+         * @param variant The AO variant to apply.
          */
         virtual void setAmbientOcclusionVariant(AmbientOcclusionVariant variant) = 0;
-        /** @brief Thread-safe snapshot/request of independent SSAO stages, applied at the next frame boundary. */
+        /** @brief Returns a thread-safe snapshot of the requested AO pipeline settings. */
         virtual AmbientOcclusionPipeline getAmbientOcclusionPipeline() const = 0;
+        /**
+         * @brief Requests AO stage settings to apply at the next frame boundary. Thread safe.
+         * @param pipeline The requested inputs, algorithm, filter and upsample settings.
+         */
         virtual void setAmbientOcclusionPipeline(const AmbientOcclusionPipeline& pipeline) = 0;
         virtual float getFrameRate() const = 0;
         /** @brief GPU timestamp interval around the AO queue wait; negative until available. */

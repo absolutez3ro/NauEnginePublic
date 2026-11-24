@@ -8,8 +8,10 @@
 
 namespace drv3d_dx12
 {
-    // Experimental framework transport: one physical row-major texture per payload, opened on both
-    // adapters. There are deliberately no copy queues, shared fences, tickets or protected slots.
+    /**
+     * @brief Owns one row-major texture per payload, opened on both adapters.
+     * @warning The experimental shared-texture transport does not synchronize readers and writers.
+     */
     class FrameworkSsaoResources
     {
         SharedSsaoTexture m_normals, m_depth, m_result;

@@ -21,8 +21,13 @@ namespace d3d::mgpu
         double frameSlotWaitMilliseconds = 0;
     };
 
-    // Call once per render frame. The compatibility path retires a frontend slot at every handoff.
+    /**
+     * @brief Configures foreign queue handoffs and resets their counters at the start of a render frame.
+     * @param submitOnly Submit queued commands without retiring the current frontend frame slot.
+     * @param measure Collect CPU timing for the handoffs in this frame.
+     */
     NAU_RENDER_EXPORT void begin_foreign_queue_frame(bool submitOnly, bool measure);
+    /** @brief Returns the handoff counters and timings for the current render frame. */
     NAU_RENDER_EXPORT ForeignQueueMeasurements get_foreign_queue_measurements();
 
     /**
@@ -98,7 +103,10 @@ namespace d3d::mgpu
      * @brief Transitions all endpoints to COMMON with one graphics submit and signal.
      * Pass this point to subsequent sends/receives instead of releasing each endpoint again.
      * The fence belongs to fence_owner; drain all channels using the point before destroying that owner.
-     * A null fence means validation failed and nothing was released.
+     * @param fence_owner Channel whose fence signals the batch.
+     * @param textures Primary-device endpoints to release.
+     * @param count Number of endpoints in textures.
+     * @return Point to pass to subsequent sends or receives. A null fence means validation failed.
      */
     NAU_RENDER_EXPORT PrimarySyncPoint release_primary_resources(TransferChannelHandle fence_owner, BaseTexture* const* textures, uint32_t count);
 
@@ -106,30 +114,37 @@ namespace d3d::mgpu
      * @brief Sends a persistent texture without waiting on the primary graphics queue.
      * Keep the source alive until sourceReleased completes, including after a partial job failure.
      * Order later GPU writes after that point or a dependency that includes it. Poll only before CPU reuse.
-     * A zero ticket means no copy was submitted.
-     * source_ready may be the point from release_primary_resources() covering this source; otherwise it is released here.
+     * @param channel Primary-to-secondary transfer channel.
+     * @param source Primary texture to copy.
+     * @param source_ready Batch release point covering source. An empty point releases it here.
+     * @return Transfer ticket and source release point. A zero ticket means no copy was submitted.
      */
     NAU_RENDER_EXPORT PrimarySend send_from_primary_deferred(TransferChannelHandle channel, BaseTexture* source, PrimarySyncPoint source_ready = {});
 
     /**
      * @brief Starts a receive without waiting on the primary graphics queue.
-     * Keep destination alive and unused until the returned point completes. A null fence means failure.
+     * Keep destination alive and unused until the returned point completes.
      * Record wait_for_primary_transfer() before graphics consumes the destination.
-     * destination_free may be a pre-released batch point covering destination; otherwise it is released here.
+     * @param channel Secondary-to-primary transfer channel.
+     * @param ticket Source transfer ticket.
+     * @param destination Primary texture to receive the result.
+     * @param destination_free Batch release point covering destination. An empty point releases it here.
+     * @return Completion point for the receive, or a null fence on failure.
      */
     NAU_RENDER_EXPORT PrimarySyncPoint begin_receive_on_primary(TransferChannelHandle channel, TransferTicket ticket, BaseTexture* destination, PrimarySyncPoint destination_free = {});
 
-    /** @brief Orders the primary graphics queue after a local receive copy, without blocking the CPU. */
+    /**
+     * @brief Orders the primary graphics queue after a local receive copy, without blocking the CPU.
+     * @param point Completion point returned by begin_receive_on_primary().
+     */
     NAU_RENDER_EXPORT void wait_for_primary_transfer(PrimarySyncPoint point);
 
-    /** @brief Polls a primary copy fence. Never waits; device removal is reported as incomplete. */
+    /**
+     * @brief Polls the primary copy fence without waiting.
+     * @param point Point to query.
+     * @return True once the point completes. Device removal is reported as incomplete.
+     */
     NAU_RENDER_EXPORT bool is_primary_transfer_complete(PrimarySyncPoint point);
-
-    // Slot reuse: ticket t occupies slot t % slotCount. A send waits on the GPU only for receives that were already
-    // issued for the ticket in that slot. If the consumer skipped that ticket and already received a newer one, the slot
-    // is reused without waiting. If the consumer has not received that ticket or a newer one yet, the send is dropped and
-    // returns ticket 0 instead of waiting, so a consumer that skips frames can never hang the producer GPU. A send or
-    // receive grows its command-storage pool when the CPU runs ahead of a GPU; it never drops work for that reason.
 
     /**
      * @brief Creates a transfer channel.
@@ -140,22 +155,29 @@ namespace d3d::mgpu
      *
      * Call on the render thread while the driver is initialized. All channels must be destroyed before driver shutdown
      * and before device recovery; after recovery create them again.
+     * @note A send can reuse a slot after its ticket has been received or skipped by the consumer receiving a newer
+     * ticket. Otherwise the send returns ticket 0 instead of waiting for a receive that has not been issued.
      */
     NAU_RENDER_EXPORT TransferChannelHandle create_transfer_channel(const TransferChannelDesc& desc);
 
     /**
-     * @brief Destroys a channel. Waits on the CPU until the GPUs no longer use its shared resources. Accepts nullptr.
+     * @brief Destroys a channel after both GPUs have finished using its resources. Can block the CPU.
+     * @param channel Channel to destroy, or nullptr.
      */
     NAU_RENDER_EXPORT void destroy_transfer_channel(TransferChannelHandle channel);
 
     /**
      * @brief Checks whether a format can be moved by a transfer channel on the current pair of GPUs.
+     * @param format Engine texture format.
+     * @return True if the pair supports the transfer.
      */
     NAU_RENDER_EXPORT bool is_transfer_format_supported(uint32_t format);
 
     /**
      * @brief Polls whether a ticket's source copy has finished. Does not record commands or wait on either GPU.
-     * False for unknown/overwritten tickets and removed devices. A subsequent receive still performs its local copy.
+     * @param channel Transfer channel that issued the ticket.
+     * @param ticket Source transfer ticket.
+     * @return True if the source copy completed. Unknown or overwritten tickets and removed devices return false.
      */
     NAU_RENDER_EXPORT bool is_transfer_ready(TransferChannelHandle channel, TransferTicket ticket);
 

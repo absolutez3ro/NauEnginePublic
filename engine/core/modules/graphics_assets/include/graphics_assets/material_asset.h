@@ -110,7 +110,10 @@ namespace nau
         BaseTexture* findTexture(eastl::string_view pipelineName, eastl::string_view propertyName);
 
         /**
-         * @brief Same as findTexture for the asset view behind the texture (nullptr for a texture set directly).
+         * @brief Retrieves the asset view behind a texture property.
+         * @param pipelineName Name of the material pipeline.
+         * @param propertyName Name of the texture property.
+         * @return The asset view, or nullptr if there is no asset view, including directly assigned textures.
          */
         nau::Ptr<TextureAssetView> findTextureView(eastl::string_view pipelineName, eastl::string_view propertyName);
 
@@ -356,7 +359,7 @@ namespace nau
          *
          * @param [in] pipelineName The name of the pipeline.
          * @param [in] bufferName   The name of the buffer to set.
-         * @param [in] rwBuffer     The buffer to assign to the pipeline.
+         * @param [in] roBuffer     The buffer to assign to the pipeline.
          */
         void setRoBuffer(eastl::string_view pipelineName, eastl::string_view bufferName, Sbuffer* roBuffer);
 

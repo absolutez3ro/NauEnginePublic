@@ -60,6 +60,13 @@ namespace nau::PEPEngine::Graphics
 
         static std::vector<std::shared_ptr<GDevice>>& GetAllDevices(bool useWrap = false);
 
+        /**
+         * @brief Returns the MGPU wrapper for a DX12 device already selected by Nau.
+         * Repeated calls reuse the wrapper for the same native device.
+         * @param device Native DX12 device. The wrapper retains a COM reference to it.
+         * @return The wrapper, or an empty pointer if the device is absent, removed or cannot be resolved
+         *         to a hardware adapter.
+         */
         static std::shared_ptr<GDevice> getNauDevice(ID3D12Device* device);
 
         static bool IsTearingSupport();

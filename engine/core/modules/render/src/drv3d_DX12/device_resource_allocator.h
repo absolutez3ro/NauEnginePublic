@@ -45,11 +45,20 @@ namespace drv3d_dx12
 
         /** @brief Returns the borrowed device used by every allocation. */
         virtual ID3D12Device* getDevice() const = 0;
-        /** @brief Creates a resource; failure leaves the output resource and token empty. */
+        /**
+         * @brief Creates a resource on the allocator's device.
+         * @param request Resource description and initial state.
+         * @param[out] resource Native resource. Empty on failure.
+         * @param[out] token Allocation identifier. Zero on failure.
+         * @return HRESULT of the allocation.
+         */
         virtual HRESULT allocate(const DeviceResourceRequest& request,
                                  Microsoft::WRL::ComPtr<ID3D12Resource>& resource,
                                  uint64_t& token) = 0;
-        /** @brief Releases a successful allocation after its resource and GPU use have ended. */
+        /**
+         * @brief Releases memory after the native resource and its GPU uses have ended.
+         * @param token Identifier returned by allocate().
+         */
         virtual void releaseAllocation(uint64_t token) = 0;
     };
 }  // namespace drv3d_dx12

@@ -9,6 +9,7 @@
 
 namespace drv3d_dx12
 {
+    /** @brief Tracks input, output and readback slot ownership on the render thread. */
     class MailboxSsaoState
     {
     public:
@@ -52,6 +53,10 @@ namespace drv3d_dx12
             return result;
         }
 
+        /**
+         * @brief Retires completed work and reads available AO age samples without waiting.
+         * @return False if either fence reports device removal.
+         */
         bool poll()
         {
             const uint64_t f0 = inputsReady.completedValue(), f1 = resultsReady.completedValue();
@@ -122,6 +127,7 @@ namespace drv3d_dx12
             return true;
         }
 
+        /** @brief Returns an input slot with no pending GPU1 readers, or -1. */
         int freeInput() const
         {
             const uint64_t completed = resultsReady.completedValue();
@@ -134,6 +140,12 @@ namespace drv3d_dx12
             }
             return -1;
         }
+        /**
+         * @brief Finds an output slot while keeping the latest published result available.
+         * A retired slot is eligible when the new GPU1 input wait also covers its old GPU0 readers.
+         * @param inputValue Reserved GPU0 input fence value for the new job.
+         * @return Slot index, or -1 when none can be written safely.
+         */
         int reusableOutput(uint64_t inputValue) const
         {
             if (!inputValue || inputValue > inputsReady.issuedValue())
@@ -147,10 +159,6 @@ namespace drv3d_dx12
                     return static_cast<int>(i);
                 }
             }
-            // GPU1 already waits for inputValue before executing the new job. That same F0
-            // signal follows the old GPU0 receives, so a retired slot can be reserved now
-            // without waiting for the CPU to observe their completion. Keep the newest
-            // published slot pinned, and prefer the oldest eligible retired payload.
             int oldest = -1;
             for (UINT i = 0; i < MAILBOX_OUT_SLOTS; ++i)
             {

@@ -31,6 +31,15 @@ namespace nau::mgpu::bridge
         DofBridge(const DofBridge&) = delete;
         DofBridge& operator=(const DofBridge&) = delete;
 
+        /**
+         * @brief Prepares the bridge for the pair of DX12 devices already selected by Nau.
+         * @param primaryDevice Native ID3D12Device that owns the scene render targets.
+         * @param secondaryDevice Native ID3D12Device that will compute DOF.
+         * @param primaryQueue Native ID3D12CommandQueue on the primary device.
+         * @param width Target width in pixels.
+         * @param height Target height in pixels.
+         * @return True if the bridge is ready. False latches the fallback path until the bridge is recreated.
+         */
         bool prepare(void* primaryDevice, void* secondaryDevice, void* primaryQueue, uint32_t width, uint32_t height);
         DofResult execute(void* color, void* linearDepth, void* colorFilled, void* filtered,
                           const DofParameters& parameters);

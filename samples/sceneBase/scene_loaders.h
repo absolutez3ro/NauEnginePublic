@@ -7,6 +7,7 @@
 
 namespace nau::sample
 {
+    /** @brief Loads Jungle Ruins and installs the sample's camera and benchmark controls. */
     async::Task<> startupJungleRuins();
 
     /**

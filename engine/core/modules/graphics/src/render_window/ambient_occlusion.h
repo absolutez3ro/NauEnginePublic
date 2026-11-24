@@ -13,6 +13,7 @@
 
 namespace nau::render
 {
+    /** @brief Render-thread AO pipeline spanning the prepass, late receive and lighting resolve. */
     class AmbientOcclusion final
     {
     public:
@@ -33,14 +34,37 @@ namespace nau::render
         static bool isRequested();
         static Settings getInitialSettings();
         async::Task<> loadAssets();
+        /**
+         * @brief Applies settings at the start of a frame and prepares the render targets.
+         * Changes to the input layout or transport can invalidate the previous AO history.
+         * @param width Render target width in pixels.
+         * @param height Render target height in pixels.
+         * @param settings Requested AO mode, execution and algorithm settings.
+         */
         void beginFrame(uint32_t width, uint32_t height, const Settings& settings);
+        /**
+         * @brief Records AO input preparation and submits secondary work before G-buffer and shadows.
+         * @param view View matrix for the inputs.
+         * @param projection Projection matrix for the inputs.
+         * @param normals Prepass normals, optional when the algorithm only needs depth.
+         * @param depth Prepass depth from the same frame as the view and projection.
+         */
         void prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, BaseTexture* normals, BaseTexture* depth);
+        /**
+         * @brief Resolves the AO result after G-buffer and shadows, before lighting consumes it.
+         * @param output Framegraph AO target. White represents no occlusion.
+         */
         void render(BaseTexture* output);
         void drawDebug(BaseTexture* target, BaseTexture* source);
         bool isDebugView() const;
         math::Vector4 getResolveControl() const;
         const char* getExecutionLabel() const;
         const char* getVariantLabel() const;
+        /**
+         * @brief Chooses the texture for lighting resolve according to the configured upsample path.
+         * @param fullSize Fallback used when this frame has no internal resolve source.
+         * @return A borrowed texture, or fullSize if there is no internal source.
+         */
         BaseTexture* getResolveTexture(BaseTexture* fullSize) const;
         void configureResolveSampler(MaterialAssetView& material) const;
         void bindResolveInputs();
@@ -49,6 +73,10 @@ namespace nau::render
             return m_usingSecondary && !m_frameworkTransport && !m_mailboxMode && m_settings.pipeline.waitForSecondary && m_settings.mode != AmbientOcclusionMode::off ? m_waitMilliseconds : -1.f;
         }
         const char* getWaitLabel() const;
+        /**
+         * @brief Per-frame AO snapshot for benchmark capture.
+         * GPU timings and mailbox readbacks may describe older frames than the current frame.
+         */
         struct Measurements
         {
             uint64_t frame = 0, aoFrame = 0, timingFrame = 0, chainFrame = 0;
@@ -56,7 +84,7 @@ namespace nau::render
             bool gpu1 = false, aoValid = false;
             bool frameworkTransport = false;
             bool mailboxTransport = false;
-            uint32_t transportMode = 1;  // Protected, framework, CPU mailbox (2a), GPU mailbox (2b).
+            uint32_t transportMode = 1;  ///< 0 protected, 1 framework, 2 CPU mailbox (2a), 3 GPU mailbox (2b).
             d3d::mgpu::MailboxDiagnostic mailboxDiagnostic = d3d::mgpu::MailboxDiagnostic::disabled;
             int readyAtConsumer = -1;
             float overlapMs = -1.f, waitMs = -1.f, chainObservedMs = -1.f;

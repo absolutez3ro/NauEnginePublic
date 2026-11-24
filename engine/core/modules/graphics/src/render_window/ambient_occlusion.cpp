@@ -565,7 +565,6 @@ namespace nau::render
                 d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &m_currentTiming->begin, nullptr, nullptr);
                 d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &m_currentTiming->end, nullptr, nullptr);
             }
-            // This wait is recorded after G-buffer/CSM, immediately before consuming this frame's AO.
             if (m_mailboxMode)
             {
                 if (!d3d::mgpu::receiveMailboxSsao(m_secondary, m_jobs[0].result, m_frameIndex))

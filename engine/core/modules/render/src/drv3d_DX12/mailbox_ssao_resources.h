@@ -17,8 +17,11 @@
 
 namespace drv3d_dx12
 {
-    // Owns every shared/native resource used by one mailbox producer. The producer drains both
-    // adapters before destruction; borrowing these handles never transfers resource-state ownership.
+    /**
+     * @brief Owns the shared and native resources of one mailbox producer.
+     * The producer drains both adapters before destruction. Borrowing a handle does not transfer
+     * responsibility for its resource state.
+     */
     class MailboxSsaoResources
     {
         struct RetiredSetup

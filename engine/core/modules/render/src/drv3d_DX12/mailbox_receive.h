@@ -12,8 +12,11 @@ namespace drv3d_dx12
     // Outputs cover the pinned latest result and receives already recorded by Nau's CPU frontend.
     constexpr uint32_t MAILBOX_OUT_SLOTS = 8;
 
-    // Borrowed resources remain alive until the primary graphics stream has completed.
-    // Native resources are COMMON between calls, except readback, which stays COPY_DEST.
+    /**
+     * @brief Records a primary-side mailbox receive using borrowed resources.
+     * All resources must stay alive until the primary graphics commands finish.
+     * Native resources remain in COMMON between calls, except readback in COPY_DEST.
+     */
     struct MailboxReceiveDesc
     {
         ID3D12Resource* mailbox = nullptr;
@@ -23,8 +26,7 @@ namespace drv3d_dx12
         uint64_t readbackOffset = 0;
         ID3D12Resource* ao[MAILBOX_OUT_SLOTS] = {};
         ID3D12Resource* id[MAILBOX_OUT_SLOTS] = {};
-        // Ascending source-frame order at recording time: a torn two-entry mailbox then leaves the newer AO last.
-        uint32_t copyOrder[MAILBOX_OUT_SLOTS] = {};
+        uint32_t copyOrder[MAILBOX_OUT_SLOTS] = {};  ///< Ascending source-frame order so the newer result wins if two entries are visible.
         uint32_t slotCount = MAILBOX_OUT_SLOTS;
         bool gpuSelection = true;
         int32_t cpuSlot = -1;

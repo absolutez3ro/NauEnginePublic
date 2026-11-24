@@ -9,7 +9,7 @@
 
 namespace drv3d_dx12
 {
-    // A single allocation opened on both adapters. Texture states are owned by each caller's queue.
+    /** @brief One shared allocation opened on both adapters. Each caller manages its own texture state. */
     struct SharedSsaoTexture
     {
         Microsoft::WRL::ComPtr<ID3D12Heap> heaps[2];

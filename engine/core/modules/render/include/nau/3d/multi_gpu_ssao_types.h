@@ -7,7 +7,7 @@
 
 namespace d3d::mgpu
 {
-    // Benchmark controls; disabled preserves the normal Mailbox 2b pipeline.
+    /** @brief Diagnostic subsets of the AO mailbox pipeline. Use disabled for normal execution. */
     enum class MailboxDiagnostic : uint32_t
     {
         disabled,
@@ -39,21 +39,22 @@ namespace d3d::mgpu
         return mode == MailboxDiagnostic::idle || mode == MailboxDiagnostic::splitOnly || mode == MailboxDiagnostic::copyOnly;
     }
 
+    /**
+     * @brief AO timing and mailbox counters collected from different queues.
+     * Queue-local intervals must not be added to infer end-to-end latency. Negative intervals are unavailable.
+     */
     struct SsaoGpuTiming
     {
         uint64_t frame = 0;
         float rawMilliseconds = -1.f;
-        float totalMilliseconds = -1.f;
-        // GPU1's own queue intervals. totalMilliseconds retains its raw + blur meaning.
-        // Input includes unpack when enabled; these copy intervals are available only for framework transport.
-        float inputMilliseconds = -1.f;
+        float totalMilliseconds = -1.f;  ///< Raw AO plus blur on GPU1.
+        float inputMilliseconds = -1.f;  ///< Input copy and optional unpack measured by the shared-texture transport.
         float blurMilliseconds = -1.f;
         float outputMilliseconds = -1.f;
         float jobMilliseconds = -1.f;
         uint64_t submittedJobs = 0;
         uint64_t completedJobs = 0;
         uint64_t skippedSubmissions = 0;
-        // GPU0 intervals are measured on its queue and must not be summed to infer end-to-end latency.
         uint64_t primaryFrame = 0;
         float primaryPublishMilliseconds = -1.f;
         float primaryReceiveMilliseconds = -1.f;
@@ -62,7 +63,7 @@ namespace d3d::mgpu
         bool mailbox = false;
         bool gpuMailbox = false;
         uint64_t displayedFrame = 0, displayedAoFrame = 0, ageSamples = 0;
-        uint64_t ageHistogram[8] = {};  // 0..6 frames, then 7 or more; based on the paired GPU-copied ID.
+        uint64_t ageHistogram[8] = {};  ///< Bins 0 to 6 frames, then 7 or more, from GPU-copied source IDs.
         uint64_t skippedInput = 0, skippedOutput = 0, skippedBacklog = 0;
         uint64_t submitOnlySignals = 0, badFrameIds = 0, unavailableAoFrames = 0, droppedAgeSamples = 0;
         uint64_t primaryInputCopyFrames = 0, frozenInputFrame = 0;

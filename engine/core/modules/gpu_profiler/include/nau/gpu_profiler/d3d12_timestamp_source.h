@@ -47,32 +47,53 @@ namespace nau::gpu_profiler
 
         NAU_GPU_PROFILER_API D3D12TimestampSource();
         NAU_GPU_PROFILER_API ~D3D12TimestampSource() override;
-        // Also used by Nau's driver-backed primary timestamp source.
+        /**
+         * @brief Records adapter metadata for the profiler, including for Nau's primary device.
+         * @param device Native DX12 device to identify.
+         * @param gpu Profiler GPU index for the device.
+         */
         NAU_GPU_PROFILER_API static void setDeviceInfo(ID3D12Device* device, GpuIndex gpu);
 
         D3D12TimestampSource(const D3D12TimestampSource&) = delete;
         D3D12TimestampSource& operator=(const D3D12TimestampSource&) = delete;
 
-        // Creates the D3D12 objects and registers the source with the profiler. Does nothing (returns false) when the
-        // profiler is disabled or the queue cannot provide timestamps.
+        /**
+         * @brief Creates a timestamp source for one D3D12 queue and registers it with the profiler.
+         * @param device Device that owns the queue.
+         * @param queue Queue whose timestamps are measured.
+         * @param completionFence Queue owner's fence used to check whether submitted queries can be read.
+         * @param gpu Profiler GPU index for the queue.
+         * @param queueName Queue label recorded in the profiler output.
+         * @param capacity Maximum number of timestamp slots.
+         * @return True if registered. False if profiling is disabled, unsupported or initialization fails.
+         */
         NAU_GPU_PROFILER_API bool init(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Fence* completionFence, GpuIndex gpu, const char* queueName, uint32_t capacity = DefaultCapacity);
-        // Unregisters the source. Must be called before the device or the queue is destroyed.
+        /** @brief Unregisters the source before the device or queue is destroyed. */
         void shutdown();
 
         bool isValid() const
         {
             return m_id != InvalidSource;
         }
-        // NAU_GPU_TIMER_SRC(source.id(), ...); InvalidSource when not measured (the timers do nothing then).
+        /** @brief Returns the source ID for NAU_GPU_TIMER_SRC, or InvalidSource when inactive. */
         SourceId id() const
         {
             return m_id;
         }
 
+        /**
+         * @brief Sets the command list that receives timestamp writes.
+         * @param list Borrowed recording command list, or nullptr to stop recording.
+         */
         NAU_GPU_PROFILER_API void setCommandList(ID3D12GraphicsCommandList* list);
+        /** @brief Records timestamp readback for the current command list before it is closed. */
         NAU_GPU_PROFILER_API void resolve();
+        /**
+         * @brief Associates resolved timestamps with a submitted command list.
+         * @param fenceValue Completion fence value signaled after execution of the list.
+         */
         NAU_GPU_PROFILER_API void submitted(uint64_t fenceValue);
-        // Discard query writes recorded into an abandoned command list.
+        /** @brief Discards timestamp writes from an abandoned command list. */
         NAU_GPU_PROFILER_API void cancelRecording();
 
         // ITimestampSource
