@@ -1,4 +1,5 @@
 #pragma once
+#include <d3d12.h>
 #include <wrl/client.h>
 #include  "dxgi1_6.h"
 #include "nau/mgpu/Allocator/MemoryAllocator.h"
@@ -33,7 +34,6 @@ namespace nau::PEPEngine::Graphics
         static bool CheckTearingSupport();
         static Lazy<bool> isTearingSupport;
 
-        static std::vector<std::shared_ptr<GDevice>> CreateDevices();
         static std::vector<std::shared_ptr<GDevice>> hardwareDevices;
         static std::shared_ptr<GDevice> wrapDevice;
         static std::vector<std::shared_ptr<GDevice>> devicesWithWarp;
@@ -57,6 +57,11 @@ namespace nau::PEPEngine::Graphics
         static std::shared_ptr<GDevice>& GetDevice(UINT adapterIndex = GraphicAdapterPrimary);
 
         static std::vector<std::shared_ptr<GDevice>>& GetAllDevices(bool useWrap = false);
+
+        /** @brief Returns the registered device for a LUID, adopting an existing device when supplied. */
+        static std::shared_ptr<GDevice> AcquireDevice(LUID luid, ID3D12Device* existingDevice = nullptr);
+        /** @brief Releases registered devices after all clients have retired their GPU work. */
+        static void Shutdown();
 
         static bool IsTearingSupport();
     };

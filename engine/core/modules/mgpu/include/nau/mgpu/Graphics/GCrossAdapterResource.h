@@ -30,6 +30,14 @@ namespace nau::PEPEngine::Graphics
 
         const GResource& GetPrimeResource() const;
 
+        /** @brief Creates shared storage sized and aligned for both resource views. */
+        GCrossAdapterResource(const D3D12_RESOURCE_DESC& primaryDesc, const D3D12_RESOURCE_DESC& secondaryDesc,
+                              const std::shared_ptr<GDevice>& primary, const std::shared_ptr<GDevice>& secondary,
+                              const std::wstring& name = L"Shared resource",
+                              D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON,
+                              const D3D12_CLEAR_VALUE* clearValue = nullptr);
+        ID3D12Heap* GetHeap(UINT side) const { return side < 2 ? crossAdapterResourceHeap[side].Get() : nullptr; }
+
         const GResource& GetSharedResource() const;
         void Reset();
 

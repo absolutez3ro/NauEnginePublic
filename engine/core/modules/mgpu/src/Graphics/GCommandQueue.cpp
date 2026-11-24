@@ -291,6 +291,14 @@ namespace nau::PEPEngine::Graphics
             IsExecutorAlive = false;
             CommandListExecutorThread.join();
         }
+        std::shared_ptr<GCommandList> available;
+        while (availableCommandLists.TryPop(available))
+        {
+            available.reset();
+        }
+        createdCommandList.clear();
+        timestampResultBuffer = Lazy<GResource>();
+        timestampQueryHeap = Lazy<ComPtr<ID3D12QueryHeap>>();
     }
 
 
