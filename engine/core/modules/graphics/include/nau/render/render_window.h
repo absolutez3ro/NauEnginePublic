@@ -45,6 +45,7 @@ namespace nau::render
     {
         ssao = 0,
         hbao = 2,
+        xegtao = 3
     };
 
     struct NAU_ABSTRACT_TYPE IRenderWindow : public virtual IRefCounted

@@ -29,7 +29,8 @@
             "pixelShader": "file:/res/shaders/cache/shader_cache.nsbc+[ssao.ps.psmain]",
             "hbaoMaterial": "file:/res/materials/hbao.nmat_json",
             "hbaoPixelShader": "file:/res/shaders/cache/shader_cache.nsbc+[hbao.ps.psmain]",
-            "hbaoComputeShader": "file:/res/shaders/cache/shader_cache.nsbc+[hbao.cs.csmain]"
+            "hbaoComputeShader": "file:/res/shaders/cache/shader_cache.nsbc+[hbao.cs.csmain]",
+            "xegtaoShaderCache": "file:/res/shaders/cache/shader_cache.nsbc"
         }
     },
     "contentPath": "test",

@@ -44,7 +44,7 @@ namespace nau::render
 
     bool AmbientOcclusion::usesPrepassNormals() const
     {
-        return readSetting<bool>("render/ssao/prepassNormals", false);
+        return readSetting<bool>("render/ssao/prepassNormals", false) || !readSetting<eastl::string>("render/ssao/xegtaoShaderCache", {}).empty();
     }
 
     AmbientOcclusion::Settings AmbientOcclusion::getInitialSettings()
@@ -54,9 +54,11 @@ namespace nau::render
         settings.execution = readSetting<bool>("render/ssao/useSecondary", false)
                                  ? AmbientOcclusionExecution::multiGpu
                                  : AmbientOcclusionExecution::singleGpu;
-        if (readSetting<uint32_t>("render/ssao/algorithm", 0) == static_cast<uint32_t>(AmbientOcclusionAlgorithm::hbao))
+        const uint32_t algorithm = readSetting<uint32_t>("render/ssao/algorithm", 0);
+        if (algorithm == static_cast<uint32_t>(AmbientOcclusionAlgorithm::hbao) ||
+            algorithm == static_cast<uint32_t>(AmbientOcclusionAlgorithm::xegtao))
         {
-            settings.algorithm = AmbientOcclusionAlgorithm::hbao;
+            settings.algorithm = static_cast<AmbientOcclusionAlgorithm>(algorithm);
         }
         return settings;
     }
@@ -81,10 +83,14 @@ namespace nau::render
         m_linearWrap = d3d::create_sampler(sampler);
         sampler.address_mode_u = sampler.address_mode_v = sampler.address_mode_w = d3d::AddressMode::Clamp;
         m_linearClamp = d3d::create_sampler(sampler);
-        for (const auto id : {AmbientOcclusionAlgorithm::ssao, AmbientOcclusionAlgorithm::hbao})
+        for (const auto id : {AmbientOcclusionAlgorithm::ssao, AmbientOcclusionAlgorithm::hbao, AmbientOcclusionAlgorithm::xegtao})
         {
             auto algorithm = ao::createAlgorithm(id);
             if (id == AmbientOcclusionAlgorithm::hbao && readSetting<eastl::string>("render/ssao/hbaoMaterial", {}).empty())
+            {
+                continue;
+            }
+            if (id == AmbientOcclusionAlgorithm::xegtao && readSetting<eastl::string>("render/ssao/xegtaoShaderCache", {}).empty())
             {
                 continue;
             }
@@ -95,7 +101,7 @@ namespace nau::render
                 {
                     co_yield loaded.getError();
                 }
-                NAU_LOG_WARNING("HBAO unavailable: {}", loaded.getError()->getMessage());
+                NAU_LOG_WARNING("{} unavailable: {}", algorithm->label(), loaded.getError()->getMessage());
                 continue;
             }
             if (auto* material = algorithm->material())
@@ -200,7 +206,8 @@ namespace nau::render
         m_normals = normals;
         m_depth = depth;
         m_usingSecondary = false;
-        if (m_settings.mode == AmbientOcclusionMode::off || !m_result)
+        if (m_settings.mode == AmbientOcclusionMode::off || !m_result ||
+            (!algorithm().reconstructNormals() && !m_normals))
         {
             return;
         }
@@ -246,7 +253,8 @@ namespace nau::render
         d3d::set_depth(nullptr, DepthAccess::RW);
         clearAoTarget(output);
 
-        if (m_settings.mode == AmbientOcclusionMode::off || !m_result)
+        if (m_settings.mode == AmbientOcclusionMode::off || !m_result ||
+            (!algorithm().reconstructNormals() && !m_normals))
         {
             logSettings();
             return;
