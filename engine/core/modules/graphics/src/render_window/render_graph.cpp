@@ -1,7 +1,6 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
-
 #include <nau/assets/asset_manager.h>
 
 #include "graphics_impl.h"
@@ -9,7 +8,6 @@
 #include "nau/gui/imguiInput.h"
 #include "nau/ui.h"
 #include "render_window_impl.h"
-
 
 namespace nau::render
 {
@@ -35,6 +33,13 @@ namespace nau::render
         };
 
         async::TaskCollection loadTasks;
+        async::Task<> loadAmbientOcclusion;
+        if (m_swapchain == DEFAULT_SWAPID && AmbientOcclusion::isRequested())
+        {
+            m_ambientOcclusion = eastl::make_unique<AmbientOcclusion>();
+            setAmbientOcclusionMode(AmbientOcclusion::getInitialMode());
+            loadAmbientOcclusion = m_ambientOcclusion->loadAssets();
+        }
 
         MaterialAssetView::Ptr matPPTonemap;
         loadTasks.push(openMaterialAsset({"file:/res/materials/pp_tonemap.nmat_json"}, matPPTonemap));
@@ -63,6 +68,31 @@ namespace nau::render
 
         co_await loadTasks.awaitCompletion();
 
+        if (loadAmbientOcclusion)
+        {
+            Result<> result = co_await loadAmbientOcclusion.doTry();
+            if (!result)
+            {
+                NAU_LOG_ERROR("SSAO disabled: {}", result.getError()->getMessage());
+                m_ambientOcclusion.reset();
+                setAmbientOcclusionMode(AmbientOcclusionMode::off);
+            }
+        }
+
+        if (!shader_globals::containsName("ssaoControl"))
+        {
+            const math::Vector4 disabled(0.0f);
+            shader_globals::addVariable("ssaoControl", sizeof(disabled), &disabled);
+        }
+        if (!shader_globals::containsName("ssaoReconstruction"))
+        {
+            const math::Vector4 reconstruction(0.0f);
+            shader_globals::addVariable("ssaoReconstruction", sizeof(reconstruction), &reconstruction);
+        }
+        if (m_ambientOcclusion)
+        {
+            m_ambientOcclusion->configureResolveSampler(*matPPResolve);
+        }
         matPPResolve->enableAutoSetTextures(false);
         matPPTonemap->enableAutoSetTextures(false);
 
@@ -175,6 +205,11 @@ namespace nau::render
             {
                 setRenderTarget();
                 d3d::clearview(CLEAR_TARGET | CLEAR_ZBUFFER | CLEAR_STENCIL, nau::math::E3DCOLOR(0, 0, 0), 0, 0);
+                if (m_ambientOcclusion && m_ambientOcclusion->isDebugView())
+                {
+                    m_ambientOcclusion->drawDebug(*d3d::get_back_buffer_rt(m_swapchain));
+                    return;
+                }
                 d3d::set_srgb_backbuffer_write(true);
 
                 d3d::settex(0, const_cast<BaseTexture*>(resolveTexture.get()));
@@ -187,7 +222,6 @@ namespace nau::render
                 d3d::set_srgb_backbuffer_write(false);
             };
         }));
-
 
         m_uidNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "billboard_render", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
