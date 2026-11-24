@@ -7,7 +7,7 @@
 #include <cstring>
 #include <ctime>
 
-#include "gpu_profiler_build_info.h" // generated at build time (CMakeLists.txt)
+#include "gpu_profiler_build_info.h"  // generated at build time (CMakeLists.txt)
 #include "profiler_clock.h"
 
 #if defined(_WIN32)
@@ -95,7 +95,8 @@ namespace nau::gpu_profiler
             if (GetSystemPowerStatus(&status))
             {
                 char text[48];
-                const char* line = status.ACLineStatus == 1 ? "ac" : status.ACLineStatus == 0 ? "battery" : "unknown";
+                const char* line = status.ACLineStatus == 1 ? "ac" : status.ACLineStatus == 0 ? "battery"
+                                                                                              : "unknown";
                 if (status.BatteryLifePercent <= 100)
                 {
                     std::snprintf(text, sizeof(text), "%s, battery %u%%", line, status.BatteryLifePercent);

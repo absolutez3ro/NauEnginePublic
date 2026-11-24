@@ -263,7 +263,9 @@ namespace nau::PEPEngine::Graphics
     }
 
     GDevice::GDevice(const ComPtr<IDXGIAdapter3>& adapter, ID3D12Device* existingDevice) :
-        device(existingDevice), adapter(adapter), crossAdapterTextureSupport(false)
+        device(existingDevice),
+        adapter(adapter),
+        crossAdapterTextureSupport(false)
     {
     }
 
@@ -279,7 +281,10 @@ namespace nau::PEPEngine::Graphics
         TerminatedQueuesWorker();
         for (auto&& queue : queues)
         {
-            if (queue) queue->Flush();
+            if (queue)
+            {
+                queue->Flush();
+            }
         }
     }
 
@@ -320,18 +325,27 @@ namespace nau::PEPEngine::Graphics
     {
         for (auto&& queue : queues)
         {
-            if (!queue) continue;
+            if (!queue)
+            {
+                continue;
+            }
             queue->Signal();
             queue->Flush();
         }
-        if (isInitialized) ResetAllocators(0);
+        if (isInitialized)
+        {
+            ResetAllocators(0);
+        }
     }
 
     void GDevice::TerminatedQueuesWorker() const
     {
         for (auto&& queue : queues)
         {
-            if (queue) queue->HardStop();
+            if (queue)
+            {
+                queue->HardStop();
+            }
         }
     }
 }

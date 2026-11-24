@@ -14,6 +14,14 @@
 
 namespace nau::sample
 {
+    namespace
+    {
+        constexpr size_t SHADOW_CATEGORY = 3;
+        constexpr uint32_t SHADOW_MASK = 1u << SHADOW_CATEGORY;
+        constexpr uint32_t MAX_SHADOW_CASTERS = 2048;
+        constexpr std::array<uint32_t, 4> DEFAULT_LOAD_COUNTS{128, 1024, 48, 256};
+    }
+
     NAU_IMPLEMENT_DYNAMIC_OBJECT(JungleLoad)
 
     JungleLoad::~JungleLoad()
@@ -45,12 +53,12 @@ namespace nau::sample
         m_cpuMaximumThreads = eastl::min(logicalCpus > 2 ? logicalCpus - 2 : 1u, kMaxCpuThreads);
         m_cpuLoadThreads = eastl::clamp(properties.getValue<uint32_t>("sample/cpuLoad/threads").value_or(m_cpuContinuous ? m_cpuMaximumThreads : 1u), 1u, m_cpuThreadLimit);
         NAU_LOG_INFO("JungleRuins CPU load: enabled={}, targetMs={}, agentsPerThread={}, threads={}, agentBytes={}",
-            m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount, m_cpuLoadThreads, sizeof(CpuAgent));
+                     m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount, m_cpuLoadThreads, sizeof(CpuAgent));
         if (m_automated)
         {
-            // A shadow workload is opt-in for the whole capture. Do not resize the atlas during a capture.
-            m_automationShadowCasters = eastl::min(properties.getValue<uint32_t>("sample/automation/shadowCasters").value_or(0), 2048u);
-            m_automationMask = properties.getValue<uint32_t>("sample/automation/loadMask").value_or(0) & (m_automationShadowCasters ? 15u : 7u);
+            m_automationShadowCasters = eastl::min(properties.getValue<uint32_t>("sample/automation/shadowCasters").value_or(0), MAX_SHADOW_CASTERS);
+            const uint32_t allowedMask = m_automationShadowCasters ? (SHADOW_MASK << 1) - 1 : SHADOW_MASK - 1;
+            m_automationMask = properties.getValue<uint32_t>("sample/automation/loadMask").value_or(0) & allowedMask;
             m_warmupSeconds = eastl::clamp(properties.getValue<float>("sample/automation/warmupSeconds").value_or(5.f), 1.f, 120.f);
             m_measureSeconds = eastl::clamp(properties.getValue<float>("sample/automation/measureSeconds").value_or(15.f), 1.f, 300.f);
             m_settleSeconds = eastl::clamp(properties.getValue<float>("sample/automation/settleSeconds").value_or(0.f), 0.f, 30.f);
@@ -58,9 +66,12 @@ namespace nau::sample
             m_cameraMotion = properties.getValue<bool>("sample/automation/cameraMotion").value_or(true);
             m_pulseLoads = properties.getValue<bool>("sample/automation/pulseLoads").value_or(false);
             m_cameraStart = camera.getWorldTransform();
-            for (size_t i = 0; i < m_enabled.size(); ++i) m_enabled[i] = (m_automationMask & (1u << i)) != 0;
+            for (size_t i = 0; i < m_enabled.size(); ++i)
+            {
+                m_enabled[i] = (m_automationMask & (1u << i)) != 0;
+            }
             properties.setValue("sample/automation/activeLoadMask", m_automationMask).ignore();
-            NAU_LOG_INFO("AUTORUN: initialized, loadMask={}, extraShadows={}", m_automationMask, m_enabled[3]);
+            NAU_LOG_INFO("AUTORUN: initialized, loadMask={}, extraShadows={}", m_automationMask, m_enabled[SHADOW_CATEGORY]);
         }
     }
 
@@ -70,13 +81,21 @@ namespace nau::sample
         {
             // Assets can still be loading when the checkbox is cleared.
             // The scene manager only accepts destruction after activation completes.
-            if (group->getActivationState() != scene::ActivationState::Active) return;
+            if (group->getActivationState() != scene::ActivationState::Active)
+            {
+                return;
+            }
             group->destroy();
         }
         m_groups[category] = nullptr;
         m_items[category].clear();
         if (category == 3)
-            if (auto* sun = m_sun.get()) sun->setShadowMapSize(m_originalShadowSize);
+        {
+            if (auto* sun = m_sun.get())
+            {
+                sun->setShadowMapSize(m_originalShadowSize);
+            }
+        }
     }
 
     void JungleLoad::spawn(size_t category)
@@ -87,17 +106,17 @@ namespace nau::sample
         if (auto* camera = m_camera.get())
         {
             const auto& transform = camera->getWorldTransform();
-            const auto forward = rotate(transform.getRotation(), math::vec3(0,0,-1));
+            const auto forward = rotate(transform.getRotation(), math::vec3(0, 0, -1));
             group->setTranslation(transform.getTranslation() + forward * 10.f);
         }
-        const uint32_t count = category == 0 ? 128 : category == 1 ? 1024 : category == 2 ? 48 : m_automated ? m_automationShadowCasters : 256;
+        const uint32_t count = category == SHADOW_CATEGORY && m_automated ? m_automationShadowCasters : DEFAULT_LOAD_COUNTS[category];
         auto& items = m_items[category];
         items.reserve(count);
-        for (uint32_t i=0; i<count; ++i)
+        for (uint32_t i = 0; i < count; ++i)
         {
             const float phase = static_cast<float>(i) * 2.39996323f;
             const float radius = 2.f + static_cast<float>(i % 13) * 0.45f;
-            const math::vec3 offset(std::cos(phase)*radius, 1.f+static_cast<float>(i%7)*0.7f, std::sin(phase)*radius);
+            const math::vec3 offset(std::cos(phase) * radius, 1.f + static_cast<float>(i % 7) * 0.7f, std::sin(phase) * radius);
             scene::SceneObject::Ptr object;
             if (category == 2)
             {
@@ -105,34 +124,43 @@ namespace nau::sample
                 auto& light = object->getRootComponent<scene::OmnilightComponent>();
                 light.setRadius(8.f);
                 light.setIntensity(1.2f);
-                light.setColor({0.25f+0.75f*std::abs(std::sin(phase)),0.3f,0.25f+0.75f*std::abs(std::cos(phase))});
+                light.setColor({0.25f + 0.75f * std::abs(std::sin(phase)), 0.3f, 0.25f + 0.75f * std::abs(std::cos(phase))});
                 light.setDebugDraw(false);
             }
             else
             {
                 object = factory.createSceneObject<scene::StaticMeshComponent>();
                 auto& mesh = object->getRootComponent<scene::StaticMeshComponent>();
-                mesh.setMeshGeometry(StaticMeshAssetRef{category == 0 ? "file:/content/scenes/scene_demo.gltf+[mesh/2]" :
-                    category == 1 ? "file:/content/scenes/scene_demo.gltf+[mesh/0]" : "file:/content/scenes/scene_demo.gltf+[mesh/10]"});
+                mesh.setMeshGeometry(StaticMeshAssetRef{category == 0 ? "file:/content/scenes/scene_demo.gltf+[mesh/2]" : category == 1 ? "file:/content/scenes/scene_demo.gltf+[mesh/0]"
+                                                                                                                                        : "file:/content/scenes/scene_demo.gltf+[mesh/10]"});
                 mesh.setMaterial(MaterialAssetRef{"file:/res/materials/embedded/standard_opaque.nmat_json"});
                 mesh.setCastShadow(category == 3);
-                const float scale = category == 0 ? 0.3f : category == 1 ? 0.02f + static_cast<float>(i%4)*0.01f : 0.5f;
-                object->setScale(math::vec3(scale,scale,scale));
+                const float scale = category == 0 ? 0.3f : category == 1 ? 0.02f + static_cast<float>(i % 4) * 0.01f
+                                                                         : 0.5f;
+                object->setScale(math::vec3(scale, scale, scale));
             }
             object->setTranslation(offset);
             auto& attached = group->attachChild(std::move(object));
-            items.push_back({attached,offset,phase});
+            items.push_back({attached, offset, phase});
         }
         m_groups[category] = getParentObject().attachChild(std::move(group));
         if (category == 3)
-            if (auto* sun = m_sun.get()) sun->setShadowMapSize(4096);
+        {
+            if (auto* sun = m_sun.get())
+            {
+                sun->setShadowMapSize(4096);
+            }
+        }
         NAU_LOG_INFO("JungleRuins load: category={}, enabled=true, count={}", category, count);
     }
 
     void JungleLoad::toggle(size_t category)
     {
         m_enabled[category] = !m_enabled[category];
-        if (!m_enabled[category]) NAU_LOG_INFO("JungleRuins load: category={}, enabled=false",category);
+        if (!m_enabled[category])
+        {
+            NAU_LOG_INFO("JungleRuins load: category={}, enabled=false", category);
+        }
     }
 
     void JungleLoad::updateComponent(float dt)
@@ -141,22 +169,34 @@ namespace nau::sample
         if (m_automated)
         {
             updateAutomation();
-            if (m_automationPhase == 3) return;
+            if (m_automationPhase == 3)
+            {
+                return;
+            }
         }
-        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x > 1000.f ? 780.f : 260.f,40.f),ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(440.f,410.f),ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x > 1000.f ? 780.f : 260.f, 40.f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(440.f, 410.f), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("JungleRuins load"))
         {
-            const char* names[] = {"Moving objects (128)","Particles (1024)","Extra lights (48)","Extra shadows (256 casters, 4096)"};
-            for (size_t category=0; category<4; ++category)
+            const char* names[] = {"Moving objects (128)", "Particles (1024)", "Extra lights (48)", "Extra shadows (256 casters, 4096)"};
+            for (size_t category = 0; category < 4; ++category)
             {
                 ImGui::PushID(static_cast<int>(category));
                 bool active = m_enabled[category];
-                if (m_automated) ImGui::Text("%s: %s", names[category], active ? "ON" : "OFF");
-                else if (ImGui::Checkbox(names[category], &active)) toggle(category);
+                if (m_automated && category == SHADOW_CATEGORY)
+                {
+                    ImGui::Text("Extra shadows: %u casters", active ? m_automationShadowCasters : 0u);
+                }
+                else if (m_automated)
+                {
+                    ImGui::Text("%s: %s", names[category], active ? "ON" : "OFF");
+                }
+                else if (ImGui::Checkbox(names[category], &active))
+                {
+                    toggle(category);
+                }
                 ImGui::PopID();
             }
-            if (m_automated) ImGui::Text("Automated extra shadows: %s", m_enabled[3] ? "ON (4096)" : "OFF");
             ImGui::TextWrapped("Independent loads spawn in front of the camera. Disable removes the added objects; shadows restore the original map size.");
             ImGui::Separator();
             if (m_automated)
@@ -177,12 +217,21 @@ namespace nau::sample
                     {
                         m_cpuLevel = static_cast<uint32_t>(level);
                         m_cpuLoadEnabled = level != 0;
-                        if (level == 1) threads = static_cast<int>((m_cpuMaximumThreads + 1u) / 2u);
-                        if (level == 2) threads = static_cast<int>(m_cpuMaximumThreads);
+                        if (level == 1)
+                        {
+                            threads = static_cast<int>((m_cpuMaximumThreads + 1u) / 2u);
+                        }
+                        if (level == 2)
+                        {
+                            threads = static_cast<int>(m_cpuMaximumThreads);
+                        }
                         changed = true;
                     }
                 }
-                else changed |= ImGui::SliderFloat("CPU target ms", &m_cpuLoadTargetMs, 0.f, 32.f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+                else
+                {
+                    changed |= ImGui::SliderFloat("CPU target ms", &m_cpuLoadTargetMs, 0.f, 32.f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+                }
                 if (ImGui::SliderInt(m_cpuContinuous ? "CPU background threads" : "CPU threads (incl. scene)", &threads, 1, static_cast<int>(m_cpuThreadLimit), "%d", ImGuiSliderFlags_AlwaysClamp))
                 {
                     m_cpuLevel = 3;
@@ -192,40 +241,63 @@ namespace nau::sample
                 m_cpuAgentCount = static_cast<uint32_t>(agents);
                 m_cpuLoadThreads = static_cast<uint32_t>(threads);
                 if (changed)
+                {
                     NAU_LOG_INFO("JungleRuins CPU load: enabled={}, targetMs={}, agentsPerThread={}, threads={}",
-                        m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount, m_cpuLoadThreads);
+                                 m_cpuLoadEnabled, m_cpuLoadTargetMs, m_cpuAgentCount, m_cpuLoadThreads);
+                }
             }
             ImGui::Text(m_cpuContinuous ? "CPU cumulative: %.0f ms, %u passes" : "CPU actual: %.2f ms, %u passes", m_cpuLoadActualMs, m_cpuLoadPasses);
             ImGui::Text("Simulation checksum: %.3f", m_cpuLoadChecksum);
             ImGui::Text("Configured agent data: %.2f MiB", sizeof(CpuAgent) * double(m_cpuAgentCount) * m_cpuLoadThreads / (1024.0 * 1024.0));
             if (ImGui::CollapsingHeader("CPU worker details"))
+            {
                 for (uint32_t i = 0; i < m_cpuLoadThreads; ++i)
+                {
                     ImGui::Text("Thread %u: %.2f ms, %u passes", i, m_cpuSnapshots[i].wallMs, m_cpuSnapshots[i].passes);
+                }
+            }
             ImGui::TextWrapped(m_cpuContinuous ? "All workload threads run continuously in the background with private agents. The scene does not join them each frame. Actual system/process CPU use is recorded by the benchmark telemetry collector." : "Thread 0 is the scene update. Extra workers run in parallel with private agents. Target is wall time per thread; target 0 runs one pass.");
         }
         ImGui::End();
         updateCpuLoad();
-        for (size_t category=0; category<4; ++category)
+        for (size_t category = 0; category < 4; ++category)
         {
-            if (m_enabled[category] && !m_groups[category]) spawn(category);
-            else if (!m_enabled[category] && m_groups[category]) clear(category);
-            if (m_automated && category == 3) continue;
+            if (m_enabled[category] && !m_groups[category])
+            {
+                spawn(category);
+            }
+            else if (!m_enabled[category] && m_groups[category])
+            {
+                clear(category);
+            }
+            if (m_automated && category == SHADOW_CATEGORY)
+            {
+                continue;
+            }
             for (auto& item : m_items[category])
+            {
                 if (auto* object = item.object.get())
                 {
                     auto position = item.offset;
                     if (category == 1)
-                        position.setY(std::fmod(m_elapsed*2.f+item.phase,8.f));
+                    {
+                        position.setY(std::fmod(m_elapsed * 2.f + item.phase, 8.f));
+                    }
                     else
-                        position += math::vec3(std::sin(m_elapsed+item.phase)*0.8f,std::sin(m_elapsed*0.7f+item.phase)*0.4f,0.f);
+                    {
+                        position += math::vec3(std::sin(m_elapsed + item.phase) * 0.8f, std::sin(m_elapsed * 0.7f + item.phase) * 0.4f, 0.f);
+                    }
                     object->setTranslation(position);
                     if (category == 0 || category == 3)
-                        object->setRotation(math::quat::rotationY(m_elapsed+item.phase));
+                    {
+                        object->setRotation(math::quat::rotationY(m_elapsed + item.phase));
+                    }
                 }
+            }
         }
     }
 
-    JungleLoad::CpuResult JungleLoad::runCpuJob(std::vector<CpuAgent>& agents, const CpuJob& job, uint32_t worker)
+    JungleLoad::CpuResult JungleLoad::runCpuJob(eastl::vector<CpuAgent>& agents, const CpuJob& job, uint32_t worker)
     {
         if (agents.size() != job.agents)
         {
@@ -259,12 +331,15 @@ namespace nau::sample
                     }
                 }
                 agent.angle += 0.01f;
-                if (agent.angle >= 6.2831853f) agent.angle -= 6.2831853f;
+                if (agent.angle >= 6.2831853f)
+                {
+                    agent.angle -= 6.2831853f;
+                }
                 const float sine = std::sin(agent.angle), cosine = std::cos(agent.angle);
                 agent.world = {cosine, 0.f, -sine, 0.f, 0.f, 1.f, 0.f, 0.f,
                                sine, 0.f, cosine, 0.f, agent.position[0], agent.position[1], agent.position[2], 1.f};
                 checksum += agent.world[0] + agent.world[2] * 0.5f +
-                    agent.world[12] * 0.03125f + agent.world[13] * 0.0625f + agent.world[14] * 0.125f;
+                            agent.world[12] * 0.03125f + agent.world[13] * 0.0625f + agent.world[14] * 0.125f;
             }
             result.checksum = checksum;
             ++result.passes;
@@ -301,21 +376,33 @@ namespace nau::sample
         std::unique_lock lock(m_cpuMutex);
         for (;;)
         {
-            m_cpuStart.wait(lock, [&] { return m_cpuStopping.load() || generation != m_cpuGeneration; });
-            if (m_cpuStopping) return;
+            m_cpuStart.wait(lock, [&]
+            {
+                return m_cpuStopping.load() || generation != m_cpuGeneration;
+            });
+            if (m_cpuStopping)
+            {
+                return;
+            }
             generation = m_cpuGeneration;
             const CpuJob job = m_cpuJob;
             lock.unlock();
             const CpuResult result = runCpuJob(m_cpuWorkers[index].agents, job, index);
             lock.lock();
             m_cpuWorkers[index].result = result;
-            if (--m_cpuPending == 0) m_cpuDone.notify_one();
+            if (--m_cpuPending == 0)
+            {
+                m_cpuDone.notify_one();
+            }
         }
     }
 
     void JungleLoad::stopCpuWorkers()
     {
-        if (!m_cpuWorkerCount) return;
+        if (!m_cpuWorkerCount)
+        {
+            return;
+        }
         {
             std::lock_guard lock(m_cpuMutex);
             m_cpuStopping = true;
@@ -323,9 +410,12 @@ namespace nau::sample
         m_cpuStart.notify_all();
         for (auto& worker : m_cpuWorkers)
         {
-            if (worker.thread.joinable()) worker.thread.join();
+            if (worker.thread.joinable())
+            {
+                worker.thread.join();
+            }
             worker.result = {};
-            std::vector<CpuAgent>().swap(worker.agents);
+            eastl::vector<CpuAgent>().swap(worker.agents);
         }
         m_cpuWorkerCount = 0;
         m_cpuPending = 0;
@@ -335,7 +425,10 @@ namespace nau::sample
     void JungleLoad::ensureCpuWorkers(uint32_t threads)
     {
         if (m_cpuWorkerCount == threads && m_cpuWorkersContinuous == m_cpuContinuous &&
-            (!m_cpuContinuous || m_cpuJob.agents == m_cpuAgentCount)) return;
+            (!m_cpuContinuous || m_cpuJob.agents == m_cpuAgentCount))
+        {
+            return;
+        }
         stopCpuWorkers();
         m_cpuStopping = false;
         m_cpuGeneration = 0;
@@ -346,7 +439,12 @@ namespace nau::sample
         try
         {
             for (uint32_t i = m_cpuContinuous ? 0u : 1u; i < threads; ++i)
-                m_cpuWorkers[i].thread = std::thread([this, i] { cpuWorkerLoop(i); });
+            {
+                m_cpuWorkers[i].thread = std::thread([this, i]
+                {
+                    cpuWorkerLoop(i);
+                });
+            }
         }
         catch (const std::system_error& error)
         {
@@ -390,7 +488,10 @@ namespace nau::sample
                 m_cpuWorkers[0].result = runCpuJob(m_cpuWorkers[0].agents, job, 0);
                 {
                     std::unique_lock lock(m_cpuMutex);
-                    m_cpuDone.wait(lock, [&] { return m_cpuPending == 0; });
+                    m_cpuDone.wait(lock, [&]
+                    {
+                        return m_cpuPending == 0;
+                    });
                     for (uint32_t i = 0; i < m_cpuWorkerCount; ++i)
                     {
                         m_cpuLoadPasses += m_cpuWorkers[i].result.passes;
@@ -401,7 +502,10 @@ namespace nau::sample
                 m_cpuLoadActualMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - started).count();
             }
         }
-        else stopCpuWorkers();
+        else
+        {
+            stopCpuWorkers();
+        }
         if (m_recordCpuLoad)
         {
             auto& properties = getServiceProvider().get<GlobalProperties>();
@@ -439,7 +543,12 @@ namespace nau::sample
         if (!m_automationReady)
         {
             for (size_t i = 0; i < m_enabled.size(); ++i)
-                if (m_enabled[i] && (!m_groups[i] || m_groups[i]->getActivationState() != scene::ActivationState::Active)) return;
+            {
+                if (m_enabled[i] && (!m_groups[i] || m_groups[i]->getActivationState() != scene::ActivationState::Active))
+                {
+                    return;
+                }
+            }
             m_automationReady = true;
             m_automationStart = now;
         }
@@ -448,12 +557,13 @@ namespace nau::sample
         // finish warm-up jobs before phase 2. This never waits on the render thread.
         properties.setValue("sample/automation/freezeInputsReady", elapsed >= m_warmupSeconds).ignore();
         const float measurementStart = m_warmupSeconds + m_settleSeconds;
-        const uint32_t phase = elapsed < measurementStart ? 1u : elapsed < measurementStart + m_measureSeconds ? 2u : 3u;
+        const uint32_t phase = elapsed < measurementStart ? 1u : elapsed < measurementStart + m_measureSeconds ? 2u
+                                                                                                               : 3u;
         if (phase != m_automationPhase)
         {
             m_automationPhase = phase;
             properties.setValue("sample/automation/phase", phase).ignore();
-            NAU_LOG_INFO("AUTORUN: phase={}, extraShadows={}", phase, m_enabled[3]);
+            NAU_LOG_INFO("AUTORUN: phase={}, extraShadows={}", phase, m_enabled[SHADOW_CATEGORY]);
         }
         if (phase == 3)
         {
@@ -463,14 +573,20 @@ namespace nau::sample
         }
         const float t = phase == 2 ? elapsed - measurementStart : elapsed;
         m_elapsed = t;
-        const uint32_t mask = m_pulseLoads && phase == 2 && (static_cast<uint32_t>(t / 3.f) & 1u) ? (m_automationMask & 8u) : m_automationMask;
-        for (size_t i=0; i<3; ++i)
-            if (m_enabled[i] != ((mask & (1u << i)) != 0)) toggle(i);
+        // Keep the shadow atlas size fixed while pulsing the other loads.
+        const uint32_t mask = m_pulseLoads && phase == 2 && (static_cast<uint32_t>(t / 3.f) & 1u) ? (m_automationMask & SHADOW_MASK) : m_automationMask;
+        for (size_t i = 0; i < SHADOW_CATEGORY; ++i)
+        {
+            if (m_enabled[i] != ((mask & (1u << i)) != 0))
+            {
+                toggle(i);
+            }
+        }
         properties.setValue("sample/automation/activeLoadMask", mask).ignore();
         if (auto* camera = m_camera.get())
         {
-            camera->setTranslation(m_cameraStart.getTranslation() + (m_cameraMotion ? math::vec3(0.8f*std::sin(t*0.6f),0.15f*std::sin(t*0.4f),0.3f*std::sin(t*0.3f)) : math::vec3(0,0,0)));
-            camera->setRotation(m_cameraStart.getRotation() * math::quat::rotationY(m_cameraMotion ? 0.12f*std::sin(t*0.6f) : 0.f));
+            camera->setTranslation(m_cameraStart.getTranslation() + (m_cameraMotion ? math::vec3(0.8f * std::sin(t * 0.6f), 0.15f * std::sin(t * 0.4f), 0.3f * std::sin(t * 0.3f)) : math::vec3(0, 0, 0)));
+            camera->setRotation(m_cameraStart.getRotation() * math::quat::rotationY(m_cameraMotion ? 0.12f * std::sin(t * 0.6f) : 0.f));
         }
     }
 }

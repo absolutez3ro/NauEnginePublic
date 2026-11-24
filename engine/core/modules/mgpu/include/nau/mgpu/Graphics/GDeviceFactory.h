@@ -60,8 +60,7 @@ namespace nau::PEPEngine::Graphics
 
         static std::vector<std::shared_ptr<GDevice>>& GetAllDevices(bool useWrap = false);
 
-        // Wrap the exact hardware device already selected by Nau.
-        static std::shared_ptr<GDevice> GetNauDevice(ID3D12Device* device);
+        static std::shared_ptr<GDevice> getNauDevice(ID3D12Device* device);
 
         static bool IsTearingSupport();
     };

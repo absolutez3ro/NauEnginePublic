@@ -1,3 +1,5 @@
+// jungle_load.h
+//
 // Copyright 2026 N-GINN LLC. All rights reserved.
 #pragma once
 
@@ -7,7 +9,6 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
-#include <vector>
 #include <EASTL/vector.h>
 #include "nau/scene/components/component.h"
 #include "nau/scene/components/component_life_cycle.h"
@@ -16,7 +17,9 @@
 
 namespace nau::sample
 {
-    class JungleLoad final : public scene::Component, public scene::IComponentUpdate, public scene::IComponentEvents
+    class JungleLoad final : public scene::Component,
+                             public scene::IComponentUpdate,
+                             public scene::IComponentEvents
     {
         NAU_OBJECT(JungleLoad, scene::Component, scene::IComponentUpdate, scene::IComponentEvents)
         NAU_DECLARE_DYNAMIC_OBJECT
@@ -45,15 +48,23 @@ namespace nau::sample
             std::array<float, 16> world{};
             float angle = 0.f;
         };
-        struct CpuJob { uint32_t agents = 0; float targetMs = 0.f; };
-        struct CpuResult { uint32_t passes = 0; float wallMs = 0.f, checksum = 0.f; };
+        struct CpuJob
+        {
+            uint32_t agents = 0;
+            float targetMs = 0.f;
+        };
+        struct CpuResult
+        {
+            uint32_t passes = 0;
+            float wallMs = 0.f, checksum = 0.f;
+        };
         struct CpuWorker
         {
             std::thread thread;
-            std::vector<CpuAgent> agents;
+            eastl::vector<CpuAgent> agents;
             CpuResult result;
         };
-        static CpuResult runCpuJob(std::vector<CpuAgent>& agents, const CpuJob& job, uint32_t worker);
+        static CpuResult runCpuJob(eastl::vector<CpuAgent>& agents, const CpuJob& job, uint32_t worker);
         struct Item
         {
             scene::ObjectWeakRef<scene::SceneObject> object;
@@ -62,9 +73,9 @@ namespace nau::sample
         };
         scene::ObjectWeakRef<scene::SceneObject> m_camera;
         scene::ObjectWeakRef<scene::DirectionalLightComponent> m_sun;
-        std::array<scene::ObjectWeakRef<scene::SceneObject>,4> m_groups;
-        std::array<bool,4> m_enabled{};
-        std::array<eastl::vector<Item>,4> m_items;
+        std::array<scene::ObjectWeakRef<scene::SceneObject>, 4> m_groups;
+        std::array<bool, 4> m_enabled{};
+        std::array<eastl::vector<Item>, 4> m_items;
         float m_elapsed = 0.f;
         uint32_t m_originalShadowSize = 2048;
         uint32_t m_automationShadowCasters = 0;

@@ -1,3 +1,5 @@
+// record_writer.h
+//
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
@@ -26,9 +28,9 @@ namespace nau::gpu_profiler
 {
     enum class RecordKind : uint8_t
     {
-        Pass, // GPU time of a scope
-        Cpu, // CPU time of a scope on the render thread
-        CpuFrame, // CPU time between the ends of two frames
+        Pass,      // GPU time of a scope
+        Cpu,       // CPU time of a scope on the render thread
+        CpuFrame,  // CPU time between the ends of two frames
         TransferSrc,
         TransferDst,
         TransferSum,
@@ -43,14 +45,14 @@ namespace nau::gpu_profiler
     struct Record
     {
         uint32_t frame = 0;
-        uint16_t name = 0; // string table id
-        uint8_t gpu = 0; // GPU index; transfers: (src << 4) | dst; CpuGpu
-        uint8_t queue = 0; // queue table id
+        uint16_t name = 0;  // string table id
+        uint8_t gpu = 0;    // GPU index; transfers: (src << 4) | dst; CpuGpu
+        uint8_t queue = 0;  // queue table id
         RecordKind kind = RecordKind::Pass;
-        uint8_t mode = 0; // bit 7: two GPUs used; bits 0..6: features table id
-        uint16_t age = NoAge; // frames between the start of a transfer and the use of its result
+        uint8_t mode = 0;      // bit 7: two GPUs used; bits 0..6: features table id
+        uint16_t age = NoAge;  // frames between the start of a transfer and the use of its result
         float ms = 0;
-        uint32_t bytes = 0; // transfers: payload size, 0 = unknown or not a transfer
+        uint32_t bytes = 0;  // transfers: payload size, 0 = unknown or not a transfer
     };
     static_assert(sizeof(Record) == 20);
 
@@ -130,10 +132,10 @@ namespace nau::gpu_profiler
         alignas(64) std::atomic<uint32_t> m_tail = 0;
         std::atomic<uint64_t> m_dropped = 0;
 
-        Names m_producerNames; // render thread
-        Names m_consumerNames; // writer thread
+        Names m_producerNames;  // render thread
+        Names m_consumerNames;  // writer thread
         std::mutex m_newNamesMutex;
-        eastl::vector<NewName> m_newNames; // guarded by m_newNamesMutex
+        eastl::vector<NewName> m_newNames;  // guarded by m_newNamesMutex
 
         std::thread m_thread;
         std::mutex m_wakeMutex;

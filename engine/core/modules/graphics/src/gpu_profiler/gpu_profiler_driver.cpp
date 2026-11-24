@@ -61,7 +61,7 @@ namespace nau::render
                 {
                     return false;
                 }
-                cpuFrequency = 0; // the profiler's own QPC frequency
+                cpuFrequency = 0;  // the profiler's own QPC frequency
                 return true;
             }
         };
@@ -175,14 +175,17 @@ namespace nau::render
         const bool vsync = d3d::get_vsync_enabled();
         if (vsync)
         {
-            NAU_LOG_WARNING("gpu_profiler: vsync is on, frame times are bound to the display refresh rate and the 1 GPU / "
-                            "2 GPU comparison is distorted; disable video/vsync in the settings");
+            NAU_LOG_WARNING(
+                "gpu_profiler: vsync is on, frame times are bound to the display refresh rate and the 1 GPU / "
+                "2 GPU comparison is distorted; disable video/vsync in the settings");
         }
 
         // Run metadata (<csv name>.json).
         instance.setGpuName(profiler::PrimaryGpu, d3d::get_device_name());
         if (std::strcmp(d3d::get_driver_name(), "DirectX 12") == 0)
+        {
             profiler::D3D12TimestampSource::setDeviceInfo(static_cast<ID3D12Device*>(d3d::get_device(d3d::PRIMARY_GPU)), profiler::PrimaryGpu);
+        }
         instance.setRunInfo("driver", d3d::get_driver_name());
         instance.setRunInfo("vsync", vsync ? "on" : "off");
         instance.setRunInfo("mgpu_available", d3d::is_multi_gpu_available() ? "yes" : "no");

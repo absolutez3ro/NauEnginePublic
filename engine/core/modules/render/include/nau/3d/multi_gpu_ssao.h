@@ -16,8 +16,8 @@ namespace d3d::mgpu
     {
         uint32_t width = 0;
         uint32_t height = 0;
-        uint32_t inputWidth = 0;  // Zero uses the AO output width.
-        uint32_t inputHeight = 0; // Zero uses the AO output height.
+        uint32_t inputWidth = 0;   // Zero uses the AO output width.
+        uint32_t inputHeight = 0;  // Zero uses the AO output height.
         const void* vertexBytecode = nullptr;
         size_t vertexBytecodeSize = 0;
         const void* rawBytecode = nullptr;

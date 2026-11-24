@@ -114,10 +114,12 @@ namespace drv3d_dx12
         DXGI_ADAPTER_DESC1 adapterDesc = {};
         D3D12_FEATURE_DATA_ARCHITECTURE architecture = {};
         m_state->m_cpuCachedSoftware = SUCCEEDED(adapter->GetDesc1(&adapterDesc)) && is_software_device(adapterDesc) &&
-            SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture))) &&
-            architecture.UMA && architecture.CacheCoherentUMA;
+                                       SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture))) &&
+                                       architecture.UMA && architecture.CacheCoherentUMA;
         if (m_state->m_cpuCachedSoftware)
+        {
             NAU_LOG_INFO("SSAO: software adapter uses CPU WRITE_BACK for its local Nau pool");
+        }
         SecondaryHeapPool::SetupInfo setup = {};
         setup.device = device;
         setup.adapter = adapter.Get();
@@ -165,7 +167,9 @@ namespace drv3d_dx12
         // WARP executes shader reads on the CPU; write-combined local textures make those reads very expensive.
         // This changes only the explicit secondary allocator, never shared heaps or physical GPU policies.
         if (m_state->m_cpuCachedSoftware && request.heapType != D3D12_HEAP_TYPE_READBACK)
+        {
             properties.setBufferWriteBackCPUMemory();
+        }
         HRESULT allocationError = E_OUTOFMEMORY;
         const ResourceMemory memory = m_state->m_pool.allocate(m_state->m_adapter.Get(), m_state->m_device.Get(), properties, info, {}, &allocationError);
         if (!memory)

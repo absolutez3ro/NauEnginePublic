@@ -1,3 +1,5 @@
+// d3d12_timestamp_source.h
+//
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
@@ -53,8 +55,7 @@ namespace nau::gpu_profiler
 
         // Creates the D3D12 objects and registers the source with the profiler. Does nothing (returns false) when the
         // profiler is disabled or the queue cannot provide timestamps.
-        NAU_GPU_PROFILER_API bool init(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Fence* completionFence,
-                                      GpuIndex gpu, const char* queueName, uint32_t capacity = DefaultCapacity);
+        NAU_GPU_PROFILER_API bool init(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Fence* completionFence, GpuIndex gpu, const char* queueName, uint32_t capacity = DefaultCapacity);
         // Unregisters the source. Must be called before the device or the queue is destroyed.
         void shutdown();
 
@@ -86,11 +87,11 @@ namespace nau::gpu_profiler
         enum class SlotState : uint8_t
         {
             Free,
-            Issued, // EndQuery recorded, not resolved yet
-            Resolved, // ResolveQueryData recorded, the list is not submitted yet
-            Submitted, // waits for fenceValue
-            Cancelled, // the profiler still holds a query from a list that was abandoned
-            Released // given back while the GPU may still write it: free once fenceValue has passed
+            Issued,     // EndQuery recorded, not resolved yet
+            Resolved,   // ResolveQueryData recorded, the list is not submitted yet
+            Submitted,  // waits for fenceValue
+            Cancelled,  // the profiler still holds a query from a list that was abandoned
+            Released    // given back while the GPU may still write it: free once fenceValue has passed
         };
 
         struct Slot

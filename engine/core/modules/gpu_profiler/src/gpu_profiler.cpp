@@ -81,7 +81,7 @@ namespace nau::gpu_profiler
             uint8_t queueId = 0;
             uint64_t frequency = 0;
             eastl::vector<void*> freeQueries;
-            eastl::vector<uint32_t> openScopes; // indices into the current frame of its GPU; ~0u: not measured
+            eastl::vector<uint32_t> openScopes;  // indices into the current frame of its GPU; ~0u: not measured
             // Refreshed when a transfer half is recorded and the last one is older than CalibrationPeriod: the drift
             // between the GPU and the CPU clock over that time is far below the precision needed.
             Calibration calibration;
@@ -91,10 +91,10 @@ namespace nau::gpu_profiler
         struct Scope
         {
             SourceId source = InvalidSource;
-            uint16_t name = 0; // pass name, or transfer name
+            uint16_t name = 0;  // pass name, or transfer name
             void* begin = nullptr;
             void* end = nullptr;
-            RecordKind kind = RecordKind::Pass; // Pass, TransferSrc or TransferDst
+            RecordKind kind = RecordKind::Pass;  // Pass, TransferSrc or TransferDst
             uint8_t srcGpu = 0;
             uint8_t dstGpu = 0;
             uint64_t token = 0;
@@ -124,11 +124,11 @@ namespace nau::gpu_profiler
             uint8_t srcGpu = 0;
             uint8_t dstGpu = 0;
             uint8_t mode = 0;
-            uint64_t created = 0; // frame of the first thing known about the transfer
+            uint64_t created = 0;  // frame of the first thing known about the transfer
             bool consumed = false;
             uint64_t consumedFrame = 0;
-            bool discarded = false; // the bridge dropped the result: it will never be used
-            eastl::array<TransferHalfResult, 2> halves; // by TransferHalf
+            bool discarded = false;                      // the bridge dropped the result: it will never be used
+            eastl::array<TransferHalfResult, 2> halves;  // by TransferHalf
         };
 
         // The work of one frame on one GPU.
@@ -146,7 +146,7 @@ namespace nau::gpu_profiler
         {
             FrameRecord current;
             bool frameActive = false;
-            eastl::vector<FrameRecord> pending; // fixed size (Config::maxPendingFrames), FrameRecord::used marks a frame
+            eastl::vector<FrameRecord> pending;  // fixed size (Config::maxPendingFrames), FrameRecord::used marks a frame
         };
 
         struct Accum
@@ -182,22 +182,22 @@ namespace nau::gpu_profiler
 
         uint64_t frame = 0;
         bool frameOpen = false;
-        bool measuring = false; // the current frame is measured (not warmup, not skipped)
+        bool measuring = false;  // the current frame is measured (not warmup, not skipped)
         uint64_t lastFrameEnd = 0;
         uint8_t cpuQueue = 0;
         eastl::vector<CpuScope> cpuScopes;
         eastl::vector<CpuTime> frameCpuTimes;
 
-        eastl::vector<eastl::string> featureNames; // index: feature slot
-        eastl::array<uint8_t, MaxFeatures> placements = {}; // 0: not set this frame, else Placement + 1
-        eastl::unordered_map<uint64_t, uint8_t> modeByPlacements; // packed placements -> Record::mode
-        eastl::vector<eastl::string> featureTexts; // by features id, for the run metadata
+        eastl::vector<eastl::string> featureNames;                 // index: feature slot
+        eastl::array<uint8_t, MaxFeatures> placements = {};        // 0: not set this frame, else Placement + 1
+        eastl::unordered_map<uint64_t, uint8_t> modeByPlacements;  // packed placements -> Record::mode
+        eastl::vector<eastl::string> featureTexts;                 // by features id, for the run metadata
         RunInfo run;
 
         eastl::vector<TransferRecord> transfers;
 
         eastl::unordered_map<eastl::string, uint16_t> namesByText;
-        eastl::unordered_map<uint64_t, Accum> accum; // key: kind, gpu, queue, name
+        eastl::unordered_map<uint64_t, Accum> accum;  // key: kind, gpu, queue, name
         eastl::vector<uint64_t> accumOrder;
         uint32_t framesSinceLog = 0;
 
@@ -237,7 +237,7 @@ namespace nau::gpu_profiler
                 source.freeQueries.pop_back();
                 return query;
             }
-            return nullptr; // the source creates it in issue()
+            return nullptr;  // the source creates it in issue()
         }
 
         void recycleQuery(const SourceId id, void* query)
@@ -257,8 +257,7 @@ namespace nau::gpu_profiler
             }
         }
 
-        void emit(const RecordKind kind, const uint64_t frameIndex, const uint16_t name, const uint8_t gpu, const uint8_t queue,
-                  const uint8_t mode, const double ms, const uint16_t age = NoAge, const uint64_t bytes = 0)
+        void emit(const RecordKind kind, const uint64_t frameIndex, const uint16_t name, const uint8_t gpu, const uint8_t queue, const uint8_t mode, const double ms, const uint16_t age = NoAge, const uint64_t bytes = 0)
         {
             Record record;
             record.frame = static_cast<uint32_t>(frameIndex);
@@ -393,8 +392,10 @@ namespace nau::gpu_profiler
                     {
                         if (counters.framesTimedOut++ % 100 == 0)
                         {
-                            log(LogLevel::Warning, "frame %llu on GPU %u: results did not arrive (%llu frames, %lld ms), dropped "
-                                "(%llu dropped so far)", static_cast<unsigned long long>(record.frame), gpu,
+                            log(LogLevel::Warning,
+                                "frame %llu on GPU %u: results did not arrive (%llu frames, %lld ms), dropped "
+                                "(%llu dropped so far)",
+                                static_cast<unsigned long long>(record.frame), gpu,
                                 static_cast<unsigned long long>(ageFrames), static_cast<long long>(ageMs),
                                 static_cast<unsigned long long>(counters.framesTimedOut));
                         }
@@ -540,8 +541,7 @@ namespace nau::gpu_profiler
             return transfer;
         }
 
-        void addTransferHalf(const FrameRecord& record, const Scope& scope, const Source& source, const uint64_t begin,
-                             const uint64_t end)
+        void addTransferHalf(const FrameRecord& record, const Scope& scope, const Source& source, const uint64_t begin, const uint64_t end)
         {
             TransferRecord& transfer = getTransfer(scope.name, scope.token);
             transfer.srcGpu = scope.srcGpu;
@@ -644,11 +644,11 @@ namespace nau::gpu_profiler
                     }
                     else if (both)
                     {
-                        ++counters.transfersUnused; // measured, never used
+                        ++counters.transfersUnused;  // measured, never used
                     }
                     else if (transfer.discarded)
                     {
-                        ++counters.transfersUnused; // dropped by the bridge before its second half
+                        ++counters.transfersUnused;  // dropped by the bridge before its second half
                     }
                     else if (counters.transfersIncomplete++ % 100 == 0)
                     {
@@ -807,14 +807,18 @@ namespace nau::gpu_profiler
         }
 
         const Counters& c = impl.counters;
-        impl.log(LogLevel::Info, "summary: %llu GPU frames measured, %llu skipped (pending queue full), %llu timed out, %llu still "
-                 "in flight at shutdown, %llu scopes not measured", static_cast<unsigned long long>(c.framesMeasured),
+        impl.log(LogLevel::Info,
+                 "summary: %llu GPU frames measured, %llu skipped (pending queue full), %llu timed out, %llu still "
+                 "in flight at shutdown, %llu scopes not measured",
+                 static_cast<unsigned long long>(c.framesMeasured),
                  static_cast<unsigned long long>(c.framesSkipped), static_cast<unsigned long long>(c.framesTimedOut),
                  static_cast<unsigned long long>(c.framesInFlightAtShutdown), static_cast<unsigned long long>(c.scopesUnmeasured));
         if (c.transfersComplete + c.transfersUnused + c.transfersIncomplete + c.transfersInFlightAtShutdown != 0)
         {
-            impl.log(LogLevel::Info, "transfers: %llu complete, %llu unused (discarded or never used), %llu incomplete, %llu in flight "
-                     "at shutdown", static_cast<unsigned long long>(c.transfersComplete), static_cast<unsigned long long>(c.transfersUnused),
+            impl.log(LogLevel::Info,
+                     "transfers: %llu complete, %llu unused (discarded or never used), %llu incomplete, %llu in flight "
+                     "at shutdown",
+                     static_cast<unsigned long long>(c.transfersComplete), static_cast<unsigned long long>(c.transfersUnused),
                      static_cast<unsigned long long>(c.transfersIncomplete),
                      static_cast<unsigned long long>(c.transfersInFlightAtShutdown));
         }
@@ -996,8 +1000,10 @@ namespace nau::gpu_profiler
                 state.frameActive = false;
                 if (impl.counters.framesSkipped++ % 100 == 0)
                 {
-                    impl.log(LogLevel::Warning, "frame %llu not measured on GPU %u: %u frames are still waiting for its "
-                             "results (%llu skipped so far)", static_cast<unsigned long long>(impl.frame), gpu,
+                    impl.log(LogLevel::Warning,
+                             "frame %llu not measured on GPU %u: %u frames are still waiting for its "
+                             "results (%llu skipped so far)",
+                             static_cast<unsigned long long>(impl.frame), gpu,
                              impl.config.maxPendingFrames, static_cast<unsigned long long>(impl.counters.framesSkipped));
                 }
             }
@@ -1099,8 +1105,7 @@ namespace nau::gpu_profiler
         m_impl->openScope(name, id);
     }
 
-    void GpuProfiler::beginTransfer(const char* name, const GpuIndex srcGpu, const GpuIndex dstGpu, const TransferHalf half,
-                                    const uint64_t token, const SourceId id, const uint64_t bytes)
+    void GpuProfiler::beginTransfer(const char* name, const GpuIndex srcGpu, const GpuIndex dstGpu, const TransferHalf half, const uint64_t token, const SourceId id, const uint64_t bytes)
     {
         if (m_impl == nullptr || id >= MaxSources || !m_impl->sourceUsed[id])
         {

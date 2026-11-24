@@ -1,3 +1,5 @@
+// gpu_profiler.h
+//
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
@@ -150,15 +152,15 @@ namespace nau::gpu_profiler
 
     struct Counters
     {
-        uint64_t framesMeasured = 0; // frames of one GPU whose results were written
-        uint64_t framesSkipped = 0; // the pending queue of a GPU was full
-        uint64_t framesTimedOut = 0; // results did not arrive in time
-        uint64_t framesInFlightAtShutdown = 0; // dropped at shutdown, not an error
-        uint64_t scopesUnmeasured = 0; // the source could not record, or the scope was not closed
-        uint64_t recordsDropped = 0; // CSV records lost
-        uint64_t transfersComplete = 0; // both halves measured
-        uint64_t transfersIncomplete = 0; // a half did not arrive in time and the bridge did not discard the transfer
-        uint64_t transfersUnused = 0; // the result was never used (discarded by the bridge or never consumed)
+        uint64_t framesMeasured = 0;            // frames of one GPU whose results were written
+        uint64_t framesSkipped = 0;             // the pending queue of a GPU was full
+        uint64_t framesTimedOut = 0;            // results did not arrive in time
+        uint64_t framesInFlightAtShutdown = 0;  // dropped at shutdown, not an error
+        uint64_t scopesUnmeasured = 0;          // the source could not record, or the scope was not closed
+        uint64_t recordsDropped = 0;            // CSV records lost
+        uint64_t transfersComplete = 0;         // both halves measured
+        uint64_t transfersIncomplete = 0;       // a half did not arrive in time and the bridge did not discard the transfer
+        uint64_t transfersUnused = 0;           // the result was never used (discarded by the bridge or never consumed)
         uint64_t transfersInFlightAtShutdown = 0;
     };
 
@@ -201,8 +203,7 @@ namespace nau::gpu_profiler
         // One half of a transfer from srcGpu to dstGpu, timed on `source` (the queue doing that half); closed with
         // endScope(source). token matches the halves; FrameToken: the current frame. bytes: payload size (0: unknown),
         // written to the "bytes" column so the bandwidth of each half can be computed.
-        void beginTransfer(const char* name, GpuIndex srcGpu, GpuIndex dstGpu, TransferHalf half, uint64_t token, SourceId source,
-                           uint64_t bytes = 0);
+        void beginTransfer(const char* name, GpuIndex srcGpu, GpuIndex dstGpu, TransferHalf half, uint64_t token, SourceId source, uint64_t bytes = 0);
         // The current frame uses the result of the transfer (name, token): gives its age. FrameToken: the current frame.
         void markTransferConsumed(const char* name, uint64_t token = FrameToken);
         // The bridge dropped the result (a newer one superseded it): written without waiting for a missing half and
@@ -280,7 +281,7 @@ namespace nau::gpu_profiler
         GpuIndex dstGpu = SecondaryGpu;
         uint64_t token = FrameToken;
         SourceId source = AutoSource;
-        uint64_t bytes = 0; // payload size, 0: unknown
+        uint64_t bytes = 0;  // payload size, 0: unknown
     };
 
     class ScopedGpuTransfer
@@ -357,11 +358,11 @@ namespace nau::gpu_profiler
     ::nau::gpu_profiler::ScopedGpuTimer NAU_GPU_PROFILER_CONCAT(nauGpuTimer_, __LINE__)(name, source)
 // Halves of a transfer from srcGpu to dstGpu, each timed by the GPU and queue doing it. Optional arguments: token
 // (default: the current frame), source (default: the source of that GPU that records right now), bytes (payload).
-#define NAU_GPU_TRANSFER_SRC(name, srcGpu, dstGpu, ...)                                                  \
-    ::nau::gpu_profiler::ScopedGpuTransfer NAU_GPU_PROFILER_CONCAT(nauGpuTransfer_, __LINE__)(           \
+#define NAU_GPU_TRANSFER_SRC(name, srcGpu, dstGpu, ...)                                        \
+    ::nau::gpu_profiler::ScopedGpuTransfer NAU_GPU_PROFILER_CONCAT(nauGpuTransfer_, __LINE__)( \
         ::nau::gpu_profiler::TransferHalf::Source, ::nau::gpu_profiler::TransferArgs{name, srcGpu, dstGpu, __VA_ARGS__})
-#define NAU_GPU_TRANSFER_DST(name, srcGpu, dstGpu, ...)                                                  \
-    ::nau::gpu_profiler::ScopedGpuTransfer NAU_GPU_PROFILER_CONCAT(nauGpuTransfer_, __LINE__)(           \
+#define NAU_GPU_TRANSFER_DST(name, srcGpu, dstGpu, ...)                                        \
+    ::nau::gpu_profiler::ScopedGpuTransfer NAU_GPU_PROFILER_CONCAT(nauGpuTransfer_, __LINE__)( \
         ::nau::gpu_profiler::TransferHalf::Destination, ::nau::gpu_profiler::TransferArgs{name, srcGpu, dstGpu, __VA_ARGS__})
 // CPU time of the enclosing scope on the render thread.
 #define NAU_CPU_TIMER(name) ::nau::gpu_profiler::ScopedCpuTimer NAU_GPU_PROFILER_CONCAT(nauCpuTimer_, __LINE__)(name)

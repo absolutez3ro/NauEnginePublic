@@ -81,19 +81,18 @@ namespace
         }
     }
 
-    // Only the benchmark requests the old dynamic vertex/index allocation path.
     int benchmarkGeometryFlags()
     {
-        static const int flags = [] {
+        static const int s_flags = []
+        {
             const char* mode = std::getenv("NAU_BENCHMARK_GEOMETRY_UPLOAD");
             const bool upload = mode && std::strcmp(mode, "1") == 0;
             NAU_LOG_INFO("Benchmark static geometry: {}", upload ? "dynamic-upload" : "device-local");
             return upload ? SBCF_DYNAMIC : 0;
         }();
-        return flags;
+        return s_flags;
     }
 
-    // The default path uploads once into a static vertex/index buffer.
     template <typename T>
     Sbuffer* createGeometryBuffer(const T* data, size_t count, Sbuffer* (*create)(int, int, const char8_t*), int flags, const char8_t* name)
     {

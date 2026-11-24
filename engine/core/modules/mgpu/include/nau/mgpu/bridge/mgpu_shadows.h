@@ -187,7 +187,10 @@ namespace nau::mgpu::shadows
     class CascadeRenderer
     {
     public:
-        bool initialize(void*, void*) { return false; }
+        bool initialize(void*, void*)
+        {
+            return false;
+        }
         bool isReady() const { return false; }
         void shutdown() {}
         bool hasMesh(uint64_t) const { return false; }

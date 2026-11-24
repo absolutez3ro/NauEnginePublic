@@ -222,13 +222,19 @@ bool d3d::mgpu::is_transfer_ready(TransferChannelHandle channel, TransferTicket 
 
 d3d::mgpu::PrimarySyncPoint d3d::mgpu::release_primary_resources(TransferChannelHandle fence_owner, BaseTexture* const* textures, uint32_t count)
 {
-    if (!fence_owner || !textures || !count) return {};
+    if (!fence_owner || !textures || !count)
+    {
+        return {};
+    }
     eastl::vector<Image*> images;
     images.reserve(count);
     for (uint32_t index = 0; index < count; ++index)
     {
         Image* image = engine_image(textures[index]);
-        if (!image) return {};
+        if (!image)
+        {
+            return {};
+        }
         images.push_back(image);
     }
     const uint64_t value = ++fence_owner->engineFenceValue;

@@ -304,7 +304,6 @@ namespace nau::sample
         if (sceneName == "jungleRuins" &&
             getServiceProvider().get<io::IFileSystem>().exists("/content/scenes/jungle_ruins/manifest.json"))
         {
-            // The AO test asset has its own material manifest and camera, used by the automated captures.
             co_await startupJungleRuins();
             co_return;
         }

@@ -44,7 +44,10 @@ namespace nau::render
         BaseTexture* getResolveTexture(BaseTexture* fullSize) const;
         void configureResolveSampler(MaterialAssetView& material) const;
         void bindResolveInputs();
-        float getWaitMilliseconds() const { return m_usingSecondary && !m_frameworkTransport && !m_mailboxMode && m_settings.pipeline.waitForSecondary && m_settings.mode != AmbientOcclusionMode::off ? m_waitMilliseconds : -1.f; }
+        float getWaitMilliseconds() const
+        {
+            return m_usingSecondary && !m_frameworkTransport && !m_mailboxMode && m_settings.pipeline.waitForSecondary && m_settings.mode != AmbientOcclusionMode::off ? m_waitMilliseconds : -1.f;
+        }
         const char* getWaitLabel() const;
         struct Measurements
         {
@@ -53,7 +56,7 @@ namespace nau::render
             bool gpu1 = false, aoValid = false;
             bool frameworkTransport = false;
             bool mailboxTransport = false;
-            uint32_t transportMode = 1; // Protected, framework, CPU mailbox (2a), GPU mailbox (2b).
+            uint32_t transportMode = 1;  // Protected, framework, CPU mailbox (2a), GPU mailbox (2b).
             d3d::mgpu::MailboxDiagnostic mailboxDiagnostic = d3d::mgpu::MailboxDiagnostic::disabled;
             int readyAtConsumer = -1;
             float overlapMs = -1.f, waitMs = -1.f, chainObservedMs = -1.f;
@@ -62,7 +65,10 @@ namespace nau::render
             uint32_t aoWidth = 0, aoHeight = 0, inputWidth = 0, inputHeight = 0;
             float primaryFilterMs = -1.f;
         };
-        const Measurements& getMeasurements() const { return m_measurements; }
+        const Measurements& getMeasurements() const
+        {
+            return m_measurements;
+        }
 
     private:
         void draw(BaseTexture* target, MaterialAssetView& material, const char* pipeline, BaseTexture* source = nullptr);
@@ -73,7 +79,13 @@ namespace nau::render
         void downsampleInputs(BaseTexture* normals, BaseTexture* depth);
         struct AoJob
         {
-            enum class State { Free, InFlight, Ready, Shown };
+            enum class State
+            {
+                Free,
+                InFlight,
+                Ready,
+                Shown
+            };
             State state = State::Free;
             BaseTexture* normals = nullptr;
             BaseTexture* depth = nullptr;
@@ -156,7 +168,7 @@ namespace nau::render
         WaitTiming* m_currentTiming = nullptr;
         bool m_measureTimings = false;
         bool m_frameworkTransport = true;
-        uint32_t m_mailboxMode = 0; // 0 disabled, 1 CPU selection, 2 GPU selection.
+        uint32_t m_mailboxMode = 0;  // 0 disabled, 1 CPU selection, 2 GPU selection.
         d3d::mgpu::MailboxDiagnostic m_mailboxDiagnostic = d3d::mgpu::MailboxDiagnostic::disabled;
         bool m_frameworkOutputInitialized = false;
         uint64_t m_frameIndex = 0;

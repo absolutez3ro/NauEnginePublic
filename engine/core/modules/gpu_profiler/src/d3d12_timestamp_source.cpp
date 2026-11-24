@@ -25,8 +25,7 @@ namespace nau::gpu_profiler
         shutdown();
     }
 
-    bool D3D12TimestampSource::init(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Fence* completionFence,
-                                    const GpuIndex gpu, const char* queueName, const uint32_t capacity)
+    bool D3D12TimestampSource::init(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Fence* completionFence, const GpuIndex gpu, const char* queueName, const uint32_t capacity)
     {
         GpuProfiler& profiler = GpuProfiler::instance();
         if (!profiler.isEnabled() || isValid() || device == nullptr || queue == nullptr || completionFence == nullptr || capacity == 0)
@@ -42,8 +41,10 @@ namespace nau::gpu_profiler
             if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &options3, sizeof(options3))) ||
                 !options3.CopyQueueTimestampQueriesSupported)
             {
-                logMessage(LogLevel::Warning, "copy queue '%s' on GPU %u: the adapter has no copy queue timestamps "
-                           "(D3D12_OPTIONS3::CopyQueueTimestampQueriesSupported), it is not measured", queueName, gpu);
+                logMessage(LogLevel::Warning,
+                           "copy queue '%s' on GPU %u: the adapter has no copy queue timestamps "
+                           "(D3D12_OPTIONS3::CopyQueueTimestampQueriesSupported), it is not measured",
+                           queueName, gpu);
                 return false;
             }
             heapType = D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP;
@@ -116,7 +117,10 @@ namespace nau::gpu_profiler
     void D3D12TimestampSource::setDeviceInfo(ID3D12Device* device, const GpuIndex gpu)
     {
         auto& profiler = GpuProfiler::instance();
-        if (!device || !profiler.isEnabled()) return;
+        if (!device || !profiler.isEnabled())
+        {
+            return;
+        }
         Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
         Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
         DXGI_ADAPTER_DESC1 desc = {};
@@ -252,7 +256,7 @@ namespace nau::gpu_profiler
             reclaimReleased();
             if (m_freeSlots.empty())
             {
-                query = nullptr; // never resolved: the scope times out in the profiler
+                query = nullptr;  // never resolved: the scope times out in the profiler
                 return;
             }
             slot = m_freeSlots.back();
@@ -321,7 +325,7 @@ namespace nau::gpu_profiler
         }
         gpuTicks = gpu;
         cpuTicks = cpu;
-        cpuFrequency = 0; // QueryPerformanceCounter
+        cpuFrequency = 0;  // QueryPerformanceCounter
         return true;
     }
 

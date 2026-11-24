@@ -10,18 +10,27 @@ namespace d3d::mgpu
     // Benchmark controls; disabled preserves the normal Mailbox 2b pipeline.
     enum class MailboxDiagnostic : uint32_t
     {
-        disabled, idle, splitOnly, copyOnly, frozenInputs
+        disabled,
+        idle,
+        splitOnly,
+        copyOnly,
+        frozenInputs
     };
 
     constexpr const char* mailboxDiagnosticName(MailboxDiagnostic mode)
     {
         switch (mode)
         {
-            case MailboxDiagnostic::idle: return "idle";
-            case MailboxDiagnostic::splitOnly: return "split-only";
-            case MailboxDiagnostic::copyOnly: return "copy-only";
-            case MailboxDiagnostic::frozenInputs: return "frozen-inputs";
-            default: return "off";
+            case MailboxDiagnostic::idle:
+                return "idle";
+            case MailboxDiagnostic::splitOnly:
+                return "split-only";
+            case MailboxDiagnostic::copyOnly:
+                return "copy-only";
+            case MailboxDiagnostic::frozenInputs:
+                return "frozen-inputs";
+            default:
+                return "off";
         }
     }
 
@@ -53,7 +62,7 @@ namespace d3d::mgpu
         bool mailbox = false;
         bool gpuMailbox = false;
         uint64_t displayedFrame = 0, displayedAoFrame = 0, ageSamples = 0;
-        uint64_t ageHistogram[8] = {}; // 0..6 frames, then 7 or more; based on the paired GPU-copied ID.
+        uint64_t ageHistogram[8] = {};  // 0..6 frames, then 7 or more; based on the paired GPU-copied ID.
         uint64_t skippedInput = 0, skippedOutput = 0, skippedBacklog = 0;
         uint64_t submitOnlySignals = 0, badFrameIds = 0, unavailableAoFrames = 0, droppedAgeSamples = 0;
         uint64_t primaryInputCopyFrames = 0, frozenInputFrame = 0;

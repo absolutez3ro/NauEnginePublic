@@ -119,7 +119,6 @@ BaseTexture* nau::RenderEntity::getDepthMask(MaterialAssetView* zPrepassMat) con
 eastl::string_view nau::RenderEntity::prepareStaticZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals) const
 {
     eastl::string_view pipeline = writeNormals ? "normals" : "default";
-    // The scene and shadow depth passes share the foliage alpha threshold.
     BaseTexture* const mask = getDepthMask(zPrepassMat);
     if (mask)
     {

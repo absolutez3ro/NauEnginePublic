@@ -1,10 +1,14 @@
+// mailbox_ssao_resources.h
+//
 // Copyright 2026 N-GINN LLC. All rights reserved.
 #pragma once
 
 #include <cstring>
 #include <cwchar>
 #include <initializer_list>
-#include <memory>
+#include <new>
+
+#include <EASTL/unique_ptr.h>
 #include <new>
 
 #include "device_ssao_pass.h"
@@ -31,7 +35,13 @@ namespace drv3d_dx12
             bool signaled = false;
             RetiredSetup* next = nullptr;
 
-            ~RetiredSetup() { if (event) CloseHandle(event); }
+            ~RetiredSetup()
+            {
+                if (event)
+                {
+                    CloseHandle(event);
+                }
+            }
         };
 
         static RetiredSetup*& retiredSetups()
@@ -53,7 +63,9 @@ namespace drv3d_dx12
                 const auto a = primary->GetResourceAllocationInfo(0, 1, &desc);
                 const auto b = secondary->GetResourceAllocationInfo(0, 1, &desc);
                 if (!a.SizeInBytes || !b.SizeInBytes || a.SizeInBytes == UINT64_MAX || b.SizeInBytes == UINT64_MAX)
+                {
                     return DXGI_ERROR_UNSUPPORTED;
+                }
                 D3D12_HEAP_DESC heap = {};
                 heap.SizeInBytes = a.SizeInBytes > b.SizeInBytes ? a.SizeInBytes : b.SizeInBytes;
                 heap.Alignment = a.Alignment > b.Alignment ? a.Alignment : b.Alignment;
@@ -61,16 +73,30 @@ namespace drv3d_dx12
                 heap.Flags = D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER;
                 HRESULT result = primary->CreateHeap(&heap, IID_PPV_ARGS(&heaps[0]));
                 HANDLE handle = nullptr;
-                if (SUCCEEDED(result)) result = primary->CreateSharedHandle(heaps[0].Get(), nullptr, GENERIC_ALL, nullptr, &handle);
+                if (SUCCEEDED(result))
+                {
+                    result = primary->CreateSharedHandle(heaps[0].Get(), nullptr, GENERIC_ALL, nullptr, &handle);
+                }
                 if (SUCCEEDED(result))
                 {
                     result = secondary->OpenSharedHandle(handle, IID_PPV_ARGS(&heaps[1]));
                     CloseHandle(handle);
                 }
-                if (SUCCEEDED(result)) result = primary->CreatePlacedResource(heaps[0].Get(), 0, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&buffers[0]));
-                if (SUCCEEDED(result)) result = secondary->CreatePlacedResource(heaps[1].Get(), 0, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&buffers[1]));
                 if (SUCCEEDED(result))
-                    for (const auto& buffer : buffers) buffer->SetName(L"SSAO shared mailbox");
+                {
+                    result = primary->CreatePlacedResource(heaps[0].Get(), 0, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&buffers[0]));
+                }
+                if (SUCCEEDED(result))
+                {
+                    result = secondary->CreatePlacedResource(heaps[1].Get(), 0, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&buffers[1]));
+                }
+                if (SUCCEEDED(result))
+                {
+                    for (const auto& buffer : buffers)
+                    {
+                        buffer->SetName(L"SSAO shared mailbox");
+                    }
+                }
                 return result;
             }
         };
@@ -96,16 +122,17 @@ namespace drv3d_dx12
             return desc;
         }
 
-        static HRESULT createBuffer(ID3D12Device* device, UINT64 bytes, D3D12_HEAP_TYPE heapType,
-                                    D3D12_RESOURCE_STATES state, const wchar_t* name,
-                                    Microsoft::WRL::ComPtr<ID3D12Resource>& resource)
+        static HRESULT createBuffer(ID3D12Device* device, UINT64 bytes, D3D12_HEAP_TYPE heapType, D3D12_RESOURCE_STATES state, const wchar_t* name, Microsoft::WRL::ComPtr<ID3D12Resource>& resource)
         {
             D3D12_HEAP_PROPERTIES heap = {};
             heap.Type = heapType;
             const auto desc = bufferDescription(bytes);
             const HRESULT result = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                state, nullptr, IID_PPV_ARGS(&resource));
-            if (SUCCEEDED(result)) resource->SetName(name);
+                                                                   state, nullptr, IID_PPV_ARGS(&resource));
+            if (SUCCEEDED(result))
+            {
+                resource->SetName(name);
+            }
             return result;
         }
 
@@ -120,7 +147,7 @@ namespace drv3d_dx12
             Microsoft::WRL::ComPtr<ID3D12Fence> done;
             constexpr UINT64 uploadBytes = 2 * D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
             HRESULT result = createBuffer(primary, uploadBytes, D3D12_HEAP_TYPE_UPLOAD,
-                D3D12_RESOURCE_STATE_GENERIC_READ, L"SSAO mailbox initialization", upload);
+                                          D3D12_RESOURCE_STATE_GENERIC_READ, L"SSAO mailbox initialization", upload);
             if (SUCCEEDED(result))
             {
                 const D3D12_RANGE noRead = {0, 0};
@@ -135,19 +162,35 @@ namespace drv3d_dx12
             }
             D3D12_COMMAND_QUEUE_DESC queueDesc = {};
             queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-            if (SUCCEEDED(result)) result = primary->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue));
-            if (SUCCEEDED(result)) result = primary->CreateCommandAllocator(queueDesc.Type, IID_PPV_ARGS(&allocator));
-            if (SUCCEEDED(result)) result = primary->CreateCommandList(0, queueDesc.Type, allocator.Get(), nullptr, IID_PPV_ARGS(&list));
-            if (SUCCEEDED(result)) result = primary->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&done));
+            if (SUCCEEDED(result))
+            {
+                result = primary->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue));
+            }
+            if (SUCCEEDED(result))
+            {
+                result = primary->CreateCommandAllocator(queueDesc.Type, IID_PPV_ARGS(&allocator));
+            }
+            if (SUCCEEDED(result))
+            {
+                result = primary->CreateCommandList(0, queueDesc.Type, allocator.Get(), nullptr, IID_PPV_ARGS(&list));
+            }
+            if (SUCCEEDED(result))
+            {
+                result = primary->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&done));
+            }
             HANDLE event = nullptr;
             if (SUCCEEDED(result))
             {
                 event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-                if (!event) result = HRESULT_FROM_WIN32(GetLastError());
+                if (!event)
+                {
+                    result = HRESULT_FROM_WIN32(GetLastError());
+                }
             }
             if (SUCCEEDED(result))
             {
-                const auto transition = [&](ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+                const auto transition = [&](ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+                {
                     D3D12_RESOURCE_BARRIER barrier = {};
                     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
                     barrier.Transition = {resource, 0, before, after};
@@ -171,13 +214,19 @@ namespace drv3d_dx12
                 transition(m_frameId.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
                 result = list->Close();
             }
-            if (SUCCEEDED(result)) result = done->SetEventOnCompletion(1, event);
-            std::unique_ptr<RetiredSetup> retained;
+            if (SUCCEEDED(result))
+            {
+                result = done->SetEventOnCompletion(1, event);
+            }
+            eastl::unique_ptr<RetiredSetup> retained;
             if (SUCCEEDED(result))
             {
                 // Reserve failure-path storage before submitting; retaining work must not allocate after Signal fails.
-                retained.reset(new (std::nothrow) RetiredSetup());
-                if (!retained) result = E_OUTOFMEMORY;
+                retained.reset(new(std::nothrow) RetiredSetup());
+                if (!retained)
+                {
+                    result = E_OUTOFMEMORY;
+                }
                 else
                 {
                     retained->device = primary;
@@ -189,7 +238,10 @@ namespace drv3d_dx12
                     retained->targets[0] = m_mailbox.buffers[0];
                     retained->targets[1] = m_predicate;
                     retained->targets[2] = m_frameId;
-                    for (UINT side = 0; side < 2; ++side) retained->sharedHeaps[side] = m_mailbox.heaps[side];
+                    for (UINT side = 0; side < 2; ++side)
+                    {
+                        retained->sharedHeaps[side] = m_mailbox.heaps[side];
+                    }
                 }
             }
             if (SUCCEEDED(result))
@@ -198,7 +250,9 @@ namespace drv3d_dx12
                 queue->ExecuteCommandLists(1, lists);
                 result = queue->Signal(done.Get(), 1);
                 if (FAILED(result) && SUCCEEDED(primary->GetDeviceRemovedReason()))
-                    result = queue->Signal(done.Get(), 1); // A second signal can still establish a retirement point.
+                {
+                    result = queue->Signal(done.Get(), 1);  // A second signal can still establish a retirement point.
+                }
                 retained->signaled = SUCCEEDED(result);
                 if (SUCCEEDED(result) && WaitForSingleObject(event, INFINITE) != WAIT_OBJECT_0)
                 {
@@ -214,7 +268,10 @@ namespace drv3d_dx12
                     retiredSetups() = retained.release();
                 }
             }
-            if (event) CloseHandle(event);
+            if (event)
+            {
+                CloseHandle(event);
+            }
             return result;
         }
 
@@ -233,13 +290,18 @@ namespace drv3d_dx12
                 auto* setup = *link;
                 const bool removed = FAILED(setup->device->GetDeviceRemovedReason());
                 if (!removed && !setup->signaled)
+                {
                     setup->signaled = SUCCEEDED(setup->queue->Signal(setup->done.Get(), 1));
+                }
                 if (removed || (setup->signaled && setup->done->GetCompletedValue() >= 1))
                 {
                     *link = setup->next;
                     delete setup;
                 }
-                else link = &setup->next;
+                else
+                {
+                    link = &setup->next;
+                }
             }
         }
 
@@ -258,7 +320,10 @@ namespace drv3d_dx12
         HRESULT init(ID3D12Device* primary, ID3D12Device* secondary, const DeviceSsaoPassDesc& desc)
         {
             collectRetiredSetups();
-            if (!primary || !secondary || !desc.width || !desc.height || m_frameId) return E_INVALIDARG;
+            if (!primary || !secondary || !desc.width || !desc.height || m_frameId)
+            {
+                return E_INVALIDARG;
+            }
             const UINT width = desc.inputWidth ? desc.inputWidth : desc.width;
             const UINT height = desc.inputHeight ? desc.inputHeight : desc.height;
             const UINT depthGroup = desc.linearDepth16 ? 8u : 4u;
@@ -269,10 +334,12 @@ namespace drv3d_dx12
             for (UINT i = 0; i < IN_SLOTS && SUCCEEDED(result); ++i)
             {
                 result = m_depth[i].init(primary, secondary, width, height,
-                    desc.linearDepth16 ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_R32_FLOAT, depthWidth, DXGI_FORMAT_R32G32B32A32_UINT);
+                                         desc.linearDepth16 ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_R32_FLOAT, depthWidth, DXGI_FORMAT_R32G32B32A32_UINT);
                 if (SUCCEEDED(result) && !desc.reconstructNormals)
+                {
                     result = m_normals[i].init(primary, secondary, width, height,
-                        desc.packedNormals ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_FLOAT, normalWidth, DXGI_FORMAT_R32G32B32A32_UINT);
+                                               desc.packedNormals ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_FLOAT, normalWidth, DXGI_FORMAT_R32G32B32A32_UINT);
+                }
                 wchar_t name[64] = {};
                 std::swprintf(name, 64, L"SSAO mailbox depth input %u", i);
                 m_depth[i].setName(name);
@@ -282,16 +349,25 @@ namespace drv3d_dx12
             for (UINT j = 0; j < OUT_SLOTS && SUCCEEDED(result); ++j)
             {
                 result = m_ao[j].init(primary, secondary, desc.width, desc.height, DXGI_FORMAT_R8_UNORM);
-                if (SUCCEEDED(result)) result = m_id[j].init(primary, secondary, 1, 1, DXGI_FORMAT_R32_UINT);
+                if (SUCCEEDED(result))
+                {
+                    result = m_id[j].init(primary, secondary, 1, 1, DXGI_FORMAT_R32_UINT);
+                }
                 wchar_t name[64] = {};
                 std::swprintf(name, 64, L"SSAO mailbox AO output %u", j);
                 m_ao[j].setName(name);
                 std::swprintf(name, 64, L"SSAO mailbox frame ID output %u", j);
                 m_id[j].setName(name);
             }
-            if (SUCCEEDED(result)) result = m_mailbox.init(primary, secondary, MAILBOX_BYTES);
-            if (SUCCEEDED(result)) result = createBuffer(primary, MAILBOX_BYTES, D3D12_HEAP_TYPE_DEFAULT,
-                D3D12_RESOURCE_STATE_COMMON, L"SSAO local mailbox predicate", m_predicate);
+            if (SUCCEEDED(result))
+            {
+                result = m_mailbox.init(primary, secondary, MAILBOX_BYTES);
+            }
+            if (SUCCEEDED(result))
+            {
+                result = createBuffer(primary, MAILBOX_BYTES, D3D12_HEAP_TYPE_DEFAULT,
+                                      D3D12_RESOURCE_STATE_COMMON, L"SSAO local mailbox predicate", m_predicate);
+            }
             if (SUCCEEDED(result))
             {
                 D3D12_RESOURCE_DESC id = {};
@@ -301,26 +377,42 @@ namespace drv3d_dx12
                 D3D12_HEAP_PROPERTIES heap = {};
                 heap.Type = D3D12_HEAP_TYPE_DEFAULT;
                 result = primary->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &id,
-                    D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_frameId));
-                if (SUCCEEDED(result)) m_frameId->SetName(L"SSAO received frame ID");
+                                                          D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_frameId));
+                if (SUCCEEDED(result))
+                {
+                    m_frameId->SetName(L"SSAO received frame ID");
+                }
             }
-            if (SUCCEEDED(result)) result = createBuffer(primary, READBACK_SLOTS * READBACK_STRIDE, D3D12_HEAP_TYPE_READBACK,
-                D3D12_RESOURCE_STATE_COPY_DEST, L"SSAO received frame ID readback ring", m_readback);
-            if (SUCCEEDED(result)) result = initializeEmptyMailbox(primary);
+            if (SUCCEEDED(result))
+            {
+                result = createBuffer(primary, READBACK_SLOTS * READBACK_STRIDE, D3D12_HEAP_TYPE_READBACK,
+                                      D3D12_RESOURCE_STATE_COPY_DEST, L"SSAO received frame ID readback ring", m_readback);
+            }
+            if (SUCCEEDED(result))
+            {
+                result = initializeEmptyMailbox(primary);
+            }
             if (SUCCEEDED(result))
             {
                 const D3D12_RANGE read = {0, static_cast<SIZE_T>(READBACK_SLOTS * READBACK_STRIDE)};
                 void* mapped = nullptr;
                 result = m_readback->Map(0, &read, &mapped);
-                if (SUCCEEDED(result)) m_readbackMapped = static_cast<const uint8_t*>(mapped);
+                if (SUCCEEDED(result))
+                {
+                    m_readbackMapped = static_cast<const uint8_t*>(mapped);
+                }
             }
             return result;
         }
 
         FrameworkSsaoTextures input(UINT i) const
         {
-            return {m_normals[i].textures[1].Get(), m_depth[i].textures[1].Get(), nullptr,
-                {m_normals[i].heaps[1].Get(), m_depth[i].heaps[1].Get(), nullptr}};
+            return {
+                m_normals[i].textures[1].Get(),
+                m_depth[i].textures[1].Get(),
+                nullptr,
+                {m_normals[i].heaps[1].Get(), m_depth[i].heaps[1].Get(), nullptr}
+            };
         }
         FrameworkSsaoTextures shared(UINT i, UINT j) const
         {
@@ -329,17 +421,53 @@ namespace drv3d_dx12
             textures.heaps[2] = m_ao[j].heaps[1].Get();
             return textures;
         }
-        ID3D12Resource* inputDepthPrimary(UINT i) const { return m_depth[i].textures[0].Get(); }
-        ID3D12Resource* inputNormalsPrimary(UINT i) const { return m_normals[i].textures[0].Get(); }
-        ID3D12Resource* outputAoPrimary(UINT j) const { return m_ao[j].textures[0].Get(); }
-        ID3D12Resource* outputIdPrimary(UINT j) const { return m_id[j].textures[0].Get(); }
-        ID3D12Resource* outputAoSecondary(UINT j) const { return m_ao[j].textures[1].Get(); }
-        ID3D12Resource* outputIdSecondary(UINT j) const { return m_id[j].textures[1].Get(); }
-        ID3D12Resource* mailboxPrimary() const { return m_mailbox.buffers[0].Get(); }
-        ID3D12Resource* mailboxSecondary() const { return m_mailbox.buffers[1].Get(); }
-        ID3D12Resource* predicate() const { return m_predicate.Get(); }
-        ID3D12Resource* frameId() const { return m_frameId.Get(); }
-        ID3D12Resource* readback() const { return m_readback.Get(); }
-        const uint8_t* mappedReadback() const { return m_readbackMapped; }
+        ID3D12Resource* inputDepthPrimary(UINT i) const
+        {
+            return m_depth[i].textures[0].Get();
+        }
+        ID3D12Resource* inputNormalsPrimary(UINT i) const
+        {
+            return m_normals[i].textures[0].Get();
+        }
+        ID3D12Resource* outputAoPrimary(UINT j) const
+        {
+            return m_ao[j].textures[0].Get();
+        }
+        ID3D12Resource* outputIdPrimary(UINT j) const
+        {
+            return m_id[j].textures[0].Get();
+        }
+        ID3D12Resource* outputAoSecondary(UINT j) const
+        {
+            return m_ao[j].textures[1].Get();
+        }
+        ID3D12Resource* outputIdSecondary(UINT j) const
+        {
+            return m_id[j].textures[1].Get();
+        }
+        ID3D12Resource* mailboxPrimary() const
+        {
+            return m_mailbox.buffers[0].Get();
+        }
+        ID3D12Resource* mailboxSecondary() const
+        {
+            return m_mailbox.buffers[1].Get();
+        }
+        ID3D12Resource* predicate() const
+        {
+            return m_predicate.Get();
+        }
+        ID3D12Resource* frameId() const
+        {
+            return m_frameId.Get();
+        }
+        ID3D12Resource* readback() const
+        {
+            return m_readback.Get();
+        }
+        const uint8_t* mappedReadback() const
+        {
+            return m_readbackMapped;
+        }
     };
 }

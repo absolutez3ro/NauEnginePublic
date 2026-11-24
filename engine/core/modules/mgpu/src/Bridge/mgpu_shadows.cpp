@@ -277,8 +277,8 @@ void ShadowMaskedPS(MaskedVertex input)
                     error = "Nau did not initialize a second DX12 device";
                     return false;
                 }
-                primaryDevice = gfx::GDeviceFactory::GetNauDevice(primary);
-                secondaryDevice = gfx::GDeviceFactory::GetNauDevice(secondary);
+                primaryDevice = gfx::GDeviceFactory::getNauDevice(primary);
+                secondaryDevice = gfx::GDeviceFactory::getNauDevice(secondary);
                 if (!primaryDevice || !secondaryDevice)
                 {
                     error = "Nau's DX12 pair is not available as two hardware devices";

@@ -89,8 +89,7 @@ namespace drv3d_dx12
         // Copies shared inputs, computes AO, and publishes shared output in one direct list.
         // S_FALSE means all three command/constant recordings are busy; never waits or grows the budget.
         HRESULT executeFramework(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared, uint64_t frame = 0);
-        HRESULT executeMailbox(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared,
-            const MailboxSsaoJob& job, uint64_t frame, MailboxSsaoCompletion& completion);
+        HRESULT executeMailbox(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared, const MailboxSsaoJob& job, uint64_t frame, MailboxSsaoCompletion& completion);
         void retainMailboxResources(const eastl::shared_ptr<void>& resources);
         d3d::mgpu::SsaoGpuTiming pollTiming();
         // The output-copy dependency is applied only when this set is rendered again or reset.

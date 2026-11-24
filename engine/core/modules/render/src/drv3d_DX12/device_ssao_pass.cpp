@@ -21,10 +21,26 @@ namespace drv3d_dx12
 
         constexpr UINT CONSTANT_BYTES = (sizeof(d3d::mgpu::SsaoConstants) + 255u) & ~255u;
         constexpr UINT MAILBOX_CONTROL_OFFSET = CONSTANT_BYTES * 3;
-        enum Timestamp : UINT { INPUT_BEGIN, RAW_BEGIN, RAW_END, FILTER_END, OUTPUT_END, TIMESTAMP_COUNT };
+        enum Timestamp : UINT
+        {
+            INPUT_BEGIN,
+            RAW_BEGIN,
+            RAW_END,
+            FILTER_END,
+            OUTPUT_END,
+            TIMESTAMP_COUNT
+        };
         constexpr UINT SRV_TABLES = 4, SRVS_PER_TABLE = 5, SRVS_PER_SET = SRV_TABLES * SRVS_PER_TABLE;
-        constexpr UINT UAVS_PER_SET = 2; // Output and unfiltered AO; share the shader-visible SRV heap.
-        enum XePass : UINT { XE_PREFILTER, XE_MAIN, XE_DENOISE, XE_DENOISE_LAST, XE_COMPOSITE, XE_PASS_COUNT };
+        constexpr UINT UAVS_PER_SET = 2;  // Output and unfiltered AO; share the shader-visible SRV heap.
+        enum XePass : UINT
+        {
+            XE_PREFILTER,
+            XE_MAIN,
+            XE_DENOISE,
+            XE_DENOISE_LAST,
+            XE_COMPOSITE,
+            XE_PASS_COUNT
+        };
         constexpr UINT XE_COMPOSITE_RAW = XE_PASS_COUNT;
         constexpr UINT XE_TABLES = XE_PASS_COUNT + 1, XE_SRVS = 5, XE_UAVS = 5, XE_DESCRIPTORS = XE_SRVS + XE_UAVS;
 
@@ -53,8 +69,7 @@ namespace drv3d_dx12
         }
 
         HRESULT init(const DeviceSsaoPassDesc& desc);
-        HRESULT execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex, const FrameworkSsaoTextures* shared = nullptr,
-            const MailboxSsaoJob* mailbox = nullptr, MailboxSsaoCompletion* completion = nullptr);
+        HRESULT execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex, const FrameworkSsaoTextures* shared = nullptr, const MailboxSsaoJob* mailbox = nullptr, MailboxSsaoCompletion* completion = nullptr);
         HRESULT releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex);
         void pollTiming();
         HRESULT wait(DWORD timeoutMs);
@@ -86,7 +101,10 @@ namespace drv3d_dx12
 
             ~Recording()
             {
-                if (timestamps) timestampReadback.getResource()->Unmap(0, nullptr);
+                if (timestamps)
+                {
+                    timestampReadback.getResource()->Unmap(0, nullptr);
+                }
                 if (mapped)
                 {
                     constants.getResource()->Unmap(0, nullptr);
@@ -252,22 +270,37 @@ namespace drv3d_dx12
     {
         collectRetiredResources();
         if (!m_state || !m_state->m_frameworkStyle || !shared.depth || !shared.result ||
-            (!m_state->m_reconstructNormals && !shared.normals)) return E_INVALIDARG;
+            (!m_state->m_reconstructNormals && !shared.normals))
+        {
+            return E_INVALIDARG;
+        }
         ID3D12Resource* textures[] = {shared.normals, shared.depth, shared.result};
         ID3D12Resource* locals[] = {m_state->m_packedFrameworkNormals ? m_state->m_packedNormals.getResource() : getNormals(),
-            m_state->m_packedFrameworkDepth ? m_state->m_packedDepth.getResource() : getDepth(), getResult()};
+                                    m_state->m_packedFrameworkDepth ? m_state->m_packedDepth.getResource() : getDepth(), getResult()};
         for (UINT index = 0; index < 3; ++index)
         {
-            if (index == 0 && m_state->m_reconstructNormals) continue;
+            if (index == 0 && m_state->m_reconstructNormals)
+            {
+                continue;
+            }
             // Resource descriptions are immutable. Validate and retain each borrowed texture only once.
-            if (m_state->m_sharedTextures[index].Get() == textures[index]) continue;
-            if (m_state->m_sharedTextures[index]) return E_INVALIDARG;
+            if (m_state->m_sharedTextures[index].Get() == textures[index])
+            {
+                continue;
+            }
+            if (m_state->m_sharedTextures[index])
+            {
+                return E_INVALIDARG;
+            }
             const auto a = textures[index]->GetDesc();
             const auto b = locals[index]->GetDesc();
             Microsoft::WRL::ComPtr<ID3D12Device> owner;
             if (FAILED(textures[index]->GetDevice(IID_PPV_ARGS(&owner))) || owner.Get() != m_state->m_device.Get() ||
                 a.Width != b.Width || a.Height != b.Height || a.Format != b.Format ||
-                (m_state->m_sharedTextures[index] && m_state->m_sharedTextures[index].Get() != textures[index])) return E_INVALIDARG;
+                (m_state->m_sharedTextures[index] && m_state->m_sharedTextures[index].Get() != textures[index]))
+            {
+                return E_INVALIDARG;
+            }
             m_state->m_sharedTextures[index] = textures[index];
             m_state->m_sharedHeaps[index] = shared.heaps[index];
         }
@@ -276,26 +309,33 @@ namespace drv3d_dx12
 
     d3d::mgpu::SsaoGpuTiming DeviceSsaoPass::pollTiming()
     {
-        if (!m_state) return {};
+        if (!m_state)
+        {
+            return {};
+        }
         m_state->pollTiming();
         return m_state->m_timing;
     }
 
-    HRESULT DeviceSsaoPass::executeMailbox(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared,
-        const MailboxSsaoJob& job, uint64_t frame, MailboxSsaoCompletion& completion)
+    HRESULT DeviceSsaoPass::executeMailbox(const d3d::mgpu::SsaoConstants& constants, const FrameworkSsaoTextures& shared, const MailboxSsaoJob& job, uint64_t frame, MailboxSsaoCompletion& completion)
     {
         completion = {};
         if (!m_state || !m_state->m_mailboxStyle || !shared.depth || !shared.result ||
             (!m_state->m_reconstructNormals && !shared.normals) || !job.completion || !job.frameId ||
             !job.inputsReady.fence || !job.inputsReady.value || job.outputSlot >= MAILBOX_OUT_SLOTS ||
-            (job.publishMailbox && !job.mailbox) || !frame || frame > UINT32_MAX) return E_INVALIDARG;
-        // Slot descriptions match the resources allocated with this pass. Slots are owned and retained by the producer.
+            (job.publishMailbox && !job.mailbox) || !frame || frame > UINT32_MAX)
+        {
+            return E_INVALIDARG;
+        }
         return m_state->execute(constants, {}, {}, frame, 0, &shared, &job, &completion);
     }
 
     void DeviceSsaoPass::retainMailboxResources(const eastl::shared_ptr<void>& resources)
     {
-        if (m_state && m_state->m_mailboxStyle) m_state->m_mailboxOwner = resources;
+        if (m_state && m_state->m_mailboxStyle)
+        {
+            m_state->m_mailboxOwner = resources;
+        }
     }
 
     HRESULT DeviceSsaoPass::releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex)
@@ -344,27 +384,32 @@ namespace drv3d_dx12
         m_normalFormat = desc.packedNormals ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_FLOAT;
         m_depthFormat = desc.linearDepth16 ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_R32_FLOAT;
         m_xegtao = validShader(desc.xePrefilterShader) || validShader(desc.xeMainShader) ||
-            validShader(desc.xeDenoiseShader) || validShader(desc.xeDenoiseLastShader) || validShader(desc.xeCompositeShader);
+                   validShader(desc.xeDenoiseShader) || validShader(desc.xeDenoiseLastShader) || validShader(desc.xeCompositeShader);
         if (m_xegtao)
         {
-            // Five depth mips use normalized coordinates from the logical AO viewport.
-            if (m_width < 16 || m_height < 16) return E_INVALIDARG;
+            if (m_width < 16 || m_height < 16)
+            {
+                return E_INVALIDARG;
+            }
             if (!validShader(desc.xePrefilterShader) || !validShader(desc.xeMainShader) || !validShader(desc.xeDenoiseShader) ||
-                !validShader(desc.xeDenoiseLastShader) || !validShader(desc.xeCompositeShader)) return E_INVALIDARG;
+                !validShader(desc.xeDenoiseLastShader) || !validShader(desc.xeCompositeShader))
+            {
+                return E_INVALIDARG;
+            }
             for (DXGI_FORMAT format : {DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R8_UNORM})
             {
                 D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {format};
                 const auto required = D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_SHADER_LOAD |
-                    D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW |
-                    (format != DXGI_FORMAT_R32_UINT ? D3D12_FORMAT_SUPPORT1_SHADER_GATHER : D3D12_FORMAT_SUPPORT1_NONE) |
-                    (format == DXGI_FORMAT_R16_FLOAT ? D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE : D3D12_FORMAT_SUPPORT1_NONE);
+                                      D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW |
+                                      (format != DXGI_FORMAT_R32_UINT ? D3D12_FORMAT_SUPPORT1_SHADER_GATHER : D3D12_FORMAT_SUPPORT1_NONE) |
+                                      (format == DXGI_FORMAT_R16_FLOAT ? D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE : D3D12_FORMAT_SUPPORT1_NONE);
                 const HRESULT formatResult = m_device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support));
                 if (FAILED(formatResult) ||
                     (support.Support1 & required) != required || (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) == 0)
                 {
                     NAU_LOG_ERROR("XeGTAO: secondary format {} unsupported, HRESULT={:#x}, Support1={:#x}, required1={:#x}, Support2={:#x}, required2={:#x}",
-                        static_cast<uint32_t>(format), static_cast<uint32_t>(formatResult), static_cast<uint32_t>(support.Support1),
-                        static_cast<uint32_t>(required), static_cast<uint32_t>(support.Support2), static_cast<uint32_t>(D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE));
+                                  static_cast<uint32_t>(format), static_cast<uint32_t>(formatResult), static_cast<uint32_t>(support.Support1),
+                                  static_cast<uint32_t>(required), static_cast<uint32_t>(support.Support2), static_cast<uint32_t>(D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE));
                     return DXGI_ERROR_UNSUPPORTED;
                 }
             }
@@ -375,18 +420,22 @@ namespace drv3d_dx12
             D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {DXGI_FORMAT_R8_UNORM};
             const auto required = D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW;
             m_computeRaw = SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) &&
-                (support.Support1 & required) == required && (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) != 0;
+                           (support.Support1 & required) == required && (support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) != 0;
             // The same algorithm is present in rawShader. Unsupported adapters keep the pixel path.
             if (!m_computeRaw)
+            {
                 NAU_LOG_WARNING("AO: secondary R8 typed UAV stores unavailable; using the same algorithm's pixel path");
+            }
         }
         const auto aoFlags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
-            (m_computeRaw ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE);
+                             (m_computeRaw ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE);
         D3D12_COMMAND_QUEUE_DESC queueDesc = {};
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         HRESULT result = m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_queue));
         if (SUCCEEDED(result) && desc.measureTimings)
+        {
             result = m_queue->GetTimestampFrequency(&m_timestampFrequency);
+        }
         if (SUCCEEDED(result))
         {
             result = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence));
@@ -403,29 +452,48 @@ namespace drv3d_dx12
         {
             auto& resources = m_resources[index];
             if (SUCCEEDED(result))
+            {
                 result = resources.normals.createTexture(m_allocator.get(), m_frameworkStyle && m_reconstructNormals ? 1u : (desc.inputWidth ? desc.inputWidth : m_width),
-                                              m_frameworkStyle && m_reconstructNormals ? 1u : (desc.inputHeight ? desc.inputHeight : m_height), m_normalFormat,
-                                              m_packedFrameworkNormals ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE);
+                                                         m_frameworkStyle && m_reconstructNormals ? 1u : (desc.inputHeight ? desc.inputHeight : m_height), m_normalFormat,
+                                                         m_packedFrameworkNormals ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE);
+            }
             if (SUCCEEDED(result))
+            {
                 result = resources.depth.createTexture(m_allocator.get(), desc.inputWidth ? desc.inputWidth : m_width,
-                                            desc.inputHeight ? desc.inputHeight : m_height, m_depthFormat,
-                                            m_packedFrameworkDepth ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE);
+                                                       desc.inputHeight ? desc.inputHeight : m_height, m_depthFormat,
+                                                       m_packedFrameworkDepth ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE);
+            }
             if (SUCCEEDED(result))
+            {
                 result = resources.output.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, aoFlags);
+            }
             if (SUCCEEDED(result))
+            {
                 result = resources.raw.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R8_UNORM, aoFlags);
+            }
             if (SUCCEEDED(result))
+            {
                 result = resources.horizontal.createTexture(m_allocator.get(), m_width, m_height, DXGI_FORMAT_R16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+            }
             if (SUCCEEDED(result) && m_xegtao)
             {
                 result = resources.xeDepth.createTexture(m_allocator.get(), m_width,
-                    m_height, DXGI_FORMAT_R16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, 5);
-                if (SUCCEEDED(result)) result = resources.xePing.createTexture(m_allocator.get(), m_width, m_height,
-                    DXGI_FORMAT_R32_UINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-                if (SUCCEEDED(result)) result = resources.xePong.createTexture(m_allocator.get(), m_width, m_height,
-                    DXGI_FORMAT_R32_UINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-                if (SUCCEEDED(result)) result = resources.xeEdges.createTexture(m_allocator.get(), m_width, m_height,
-                    DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                                                         m_height, DXGI_FORMAT_R16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, 5);
+                if (SUCCEEDED(result))
+                {
+                    result = resources.xePing.createTexture(m_allocator.get(), m_width, m_height,
+                                                            DXGI_FORMAT_R32_UINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                }
+                if (SUCCEEDED(result))
+                {
+                    result = resources.xePong.createTexture(m_allocator.get(), m_width, m_height,
+                                                            DXGI_FORMAT_R32_UINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                }
+                if (SUCCEEDED(result))
+                {
+                    result = resources.xeEdges.createTexture(m_allocator.get(), m_width, m_height,
+                                                             DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                }
             }
         }
         if (SUCCEEDED(result) && m_packedFrameworkDepth)
@@ -433,15 +501,18 @@ namespace drv3d_dx12
             const UINT inputWidth = desc.inputWidth ? desc.inputWidth : m_width;
             const UINT pixelsPerWord = desc.linearDepth16 ? 8u : 4u;
             result = m_packedDepth.createTexture(m_allocator.get(), (inputWidth + pixelsPerWord - 1) / pixelsPerWord,
-                desc.inputHeight ? desc.inputHeight : m_height, DXGI_FORMAT_R32G32B32A32_UINT);
+                                                 desc.inputHeight ? desc.inputHeight : m_height, DXGI_FORMAT_R32G32B32A32_UINT);
             if (SUCCEEDED(result) && m_packedFrameworkNormals)
             {
                 const UINT normalGroup = desc.packedNormals ? 8u : 4u;
                 result = m_packedNormals.createTexture(m_allocator.get(), (inputWidth + normalGroup - 1) / normalGroup,
-                    desc.inputHeight ? desc.inputHeight : m_height, DXGI_FORMAT_R32G32B32A32_UINT);
+                                                       desc.inputHeight ? desc.inputHeight : m_height, DXGI_FORMAT_R32G32B32A32_UINT);
             }
         }
-        if (SUCCEEDED(result)) result = createRandomTexture();
+        if (SUCCEEDED(result))
+        {
+            result = createRandomTexture();
+        }
         if (SUCCEEDED(result))
         {
             result = createDescriptors();
@@ -450,14 +521,26 @@ namespace drv3d_dx12
         {
             result = createPipelines(desc);
         }
-        if (SUCCEEDED(result) && m_xegtao) result = createXeDescriptors();
-        if (SUCCEEDED(result) && m_xegtao) result = createXePipelines(desc);
-        if (SUCCEEDED(result))
-            m_profileSource.init(m_device.Get(), m_queue.Get(), m_fence.Get(), profiler::SecondaryGpu, "gfx1.ao");
         if (SUCCEEDED(result) && m_xegtao)
+        {
+            result = createXeDescriptors();
+        }
+        if (SUCCEEDED(result) && m_xegtao)
+        {
+            result = createXePipelines(desc);
+        }
+        if (SUCCEEDED(result))
+        {
+            m_profileSource.init(m_device.Get(), m_queue.Get(), m_fence.Get(), profiler::SecondaryGpu, "gfx1.ao");
+        }
+        if (SUCCEEDED(result) && m_xegtao)
+        {
             NAU_LOG_INFO("XeGTAO: GPU 1 raw AO path=compute, quality=high, denoise=2");
+        }
         if (SUCCEEDED(result) && !m_xegtao && validShader(desc.rawComputeShader))
+        {
             NAU_LOG_INFO("HBAO: GPU 1 raw AO path={}", m_computeRaw ? "compute" : "pixel");
+        }
 
         return result;
     }
@@ -522,7 +605,10 @@ namespace drv3d_dx12
             unpack.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
             unpack.NumDescriptors = m_packedFrameworkNormals ? 2u : 1u;
             result = m_device->CreateDescriptorHeap(&unpack, IID_PPV_ARGS(&m_unpackRtvHeap));
-            if (FAILED(result)) return result;
+            if (FAILED(result))
+            {
+                return result;
+            }
             m_device->CreateRenderTargetView(m_resources[0].depth.getResource(), nullptr, m_unpackRtvHeap->GetCPUDescriptorHandleForHeapStart());
             if (m_packedFrameworkNormals)
             {
@@ -544,8 +630,8 @@ namespace drv3d_dx12
             for (UINT table = 0; table < SRV_TABLES; ++table)
             {
                 ID3D12Resource* inputs[] = {table == 3 && m_packedFrameworkNormals ? m_packedNormals.getResource() : resources.normals.getResource(), resources.depth.getResource(),
-                    table == 2 ? resources.horizontal.getResource() : resources.raw.getResource(),
-                    table == 3 && m_packedFrameworkDepth ? m_packedDepth.getResource() : resources.depth.getResource(), m_random.getResource()};
+                                            table == 2 ? resources.horizontal.getResource() : resources.raw.getResource(),
+                                            table == 3 && m_packedFrameworkDepth ? m_packedDepth.getResource() : resources.depth.getResource(), m_random.getResource()};
                 for (UINT input = 0; input < 5; ++input)
                 {
                     D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
@@ -582,16 +668,19 @@ namespace drv3d_dx12
         heap.NumDescriptors = resourceCount * XE_TABLES * XE_DESCRIPTORS;
         heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         const HRESULT result = m_device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&m_xeHeap));
-        if (FAILED(result)) return result;
+        if (FAILED(result))
+        {
+            return result;
+        }
         for (UINT resourceIndex = 0; resourceIndex < resourceCount; ++resourceIndex)
         {
             auto& resources = m_resources[resourceIndex];
             for (UINT pass = 0; pass < XE_TABLES; ++pass)
             {
                 ID3D12Resource* sources[] = {resources.xeDepth.getResource(), resources.xeDepth.getResource(),
-                    resources.xePing.getResource(), resources.xePong.getResource(), resources.xePing.getResource(), resources.xePing.getResource()};
+                                             resources.xePing.getResource(), resources.xePong.getResource(), resources.xePing.getResource(), resources.xePing.getResource()};
                 ID3D12Resource* inputs[] = {resources.normals.getResource(), resources.depth.getResource(),
-                    sources[pass], resources.xeEdges.getResource(), m_random.getResource()};
+                                            sources[pass], resources.xeEdges.getResource(), m_random.getResource()};
                 const UINT base = (resourceIndex * XE_TABLES + pass) * XE_DESCRIPTORS;
                 for (UINT input = 0; input < XE_SRVS; ++input)
                 {
@@ -605,7 +694,7 @@ namespace drv3d_dx12
                     m_device->CreateShaderResourceView(inputs[input], &srv, handle);
                 }
                 ID3D12Resource* targets[] = {resources.xeDepth.getResource(), resources.xePing.getResource(),
-                    resources.xePong.getResource(), resources.xePing.getResource(), resources.output.getResource(), resources.raw.getResource()};
+                                             resources.xePong.getResource(), resources.xePing.getResource(), resources.output.getResource(), resources.raw.getResource()};
                 for (UINT output = 0; output < XE_UAVS; ++output)
                 {
                     ID3D12Resource* destination = pass == XE_MAIN && output == 1 ? resources.xeEdges.getResource() : targets[pass];
@@ -655,9 +744,11 @@ namespace drv3d_dx12
         Microsoft::WRL::ComPtr<ID3DBlob> serialized, errors;
         HRESULT result = D3D12SerializeRootSignature(&root, D3D_ROOT_SIGNATURE_VERSION_1_0, &serialized, &errors);
         if (SUCCEEDED(result))
+        {
             result = m_device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(&m_xeRoot));
+        }
         const D3D12_SHADER_BYTECODE shaders[] = {desc.xePrefilterShader, desc.xeMainShader,
-            desc.xeDenoiseShader, desc.xeDenoiseLastShader, desc.xeCompositeShader};
+                                                 desc.xeDenoiseShader, desc.xeDenoiseLastShader, desc.xeCompositeShader};
         for (UINT pass = 0; pass < XE_PASS_COUNT && SUCCEEDED(result); ++pass)
         {
             D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline = {};
@@ -739,7 +830,10 @@ namespace drv3d_dx12
             pso.PS = desc.filterShader;
             result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_filterPso));
             pso.RTVFormats[0] = DXGI_FORMAT_R16_FLOAT;
-            if (SUCCEEDED(result)) result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_horizontalPso));
+            if (SUCCEEDED(result))
+            {
+                result = m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_horizontalPso));
+            }
         }
         if (SUCCEEDED(result) && m_packedFrameworkDepth)
         {
@@ -769,8 +863,14 @@ namespace drv3d_dx12
             computeParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
             computeParameters[2].DescriptorTable.NumDescriptorRanges = 1;
             computeParameters[2].DescriptorTable.pDescriptorRanges = &ranges[1];
-            for (auto& parameter : computeParameters) parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-            for (auto& sampler : samplers) sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            for (auto& parameter : computeParameters)
+            {
+                parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            }
+            for (auto& sampler : samplers)
+            {
+                sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            }
             D3D12_ROOT_SIGNATURE_DESC computeRoot = {};
             computeRoot.NumParameters = 3;
             computeRoot.pParameters = computeParameters;
@@ -780,7 +880,9 @@ namespace drv3d_dx12
             errors.Reset();
             result = D3D12SerializeRootSignature(&computeRoot, D3D_ROOT_SIGNATURE_VERSION_1_0, &serialized, &errors);
             if (SUCCEEDED(result))
+            {
                 result = m_device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(&m_computeRoot));
+            }
             if (SUCCEEDED(result))
             {
                 D3D12_COMPUTE_PIPELINE_STATE_DESC computePso = {};
@@ -801,16 +903,29 @@ namespace drv3d_dx12
 
     HRESULT DeviceSsaoPass::State::releaseOutput(CrossAdapterSyncPoint released, uint32_t resourceIndex)
     {
-        if (!released.fence) return released.value == 0 ? S_OK : E_INVALIDARG;
-        if (released.value == UINT64_MAX || m_signalPending) return E_INVALIDARG;
+        if (!released.fence)
+        {
+            return released.value == 0 ? S_OK : E_INVALIDARG;
+        }
+        if (released.value == UINT64_MAX || m_signalPending)
+        {
+            return E_INVALIDARG;
+        }
         Microsoft::WRL::ComPtr<ID3D12Device> owner;
-        if (FAILED(released.fence->GetDevice(IID_PPV_ARGS(&owner))) || owner.Get() != m_device.Get()) return E_INVALIDARG;
+        if (FAILED(released.fence->GetDevice(IID_PPV_ARGS(&owner))) || owner.Get() != m_device.Get())
+        {
+            return E_INVALIDARG;
+        }
         auto& resources = m_resources[resourceIndex];
         if (m_dependencies[2 + resourceIndex] && m_dependencies[2 + resourceIndex].Get() != released.fence)
+        {
             return E_INVALIDARG;
+        }
         // Replacing an unconsumed release would lose the dependency on an earlier output reader.
         if (resources.outputReleased && (resources.outputReleased.Get() != released.fence || released.value < resources.outputReleasedValue))
+        {
             return E_INVALIDARG;
+        }
         resources.outputReleased = released.fence;
         resources.outputReleasedValue = released.value;
         return S_OK;
@@ -881,9 +996,18 @@ namespace drv3d_dx12
             if (m_mailboxStyle)
             {
                 result = next->list->Close();
-                if (SUCCEEDED(result)) result = m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, next->allocator.Get(), nullptr, IID_PPV_ARGS(&next->publication));
-                if (SUCCEEDED(result)) result = next->publication->Close();
-                if (SUCCEEDED(result)) result = next->list->Reset(next->allocator.Get(), m_rawPso.Get());
+                if (SUCCEEDED(result))
+                {
+                    result = m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, next->allocator.Get(), nullptr, IID_PPV_ARGS(&next->publication));
+                }
+                if (SUCCEEDED(result))
+                {
+                    result = next->publication->Close();
+                }
+                if (SUCCEEDED(result))
+                {
+                    result = next->list->Reset(next->allocator.Get(), m_rawPso.Get());
+                }
             }
         }
         if (SUCCEEDED(result))
@@ -903,7 +1027,10 @@ namespace drv3d_dx12
             {
                 const D3D12_QUERY_HEAP_DESC desc = {D3D12_QUERY_HEAP_TYPE_TIMESTAMP, TIMESTAMP_COUNT, 0};
                 result = m_device->CreateQueryHeap(&desc, IID_PPV_ARGS(&next->timestampHeap));
-                if (SUCCEEDED(result)) result = next->timestampReadback.createBuffer(m_allocator.get(), TIMESTAMP_COUNT * sizeof(uint64_t), D3D12_HEAP_TYPE_READBACK);
+                if (SUCCEEDED(result))
+                {
+                    result = next->timestampReadback.createBuffer(m_allocator.get(), TIMESTAMP_COUNT * sizeof(uint64_t), D3D12_HEAP_TYPE_READBACK);
+                }
                 if (SUCCEEDED(result))
                 {
                     const D3D12_RANGE read = {0, TIMESTAMP_COUNT * sizeof(uint64_t)};
@@ -923,19 +1050,29 @@ namespace drv3d_dx12
 
     void DeviceSsaoPass::State::pollTiming()
     {
-        if (!m_fence) return;
+        if (!m_fence)
+        {
+            return;
+        }
         const uint64_t completed = m_fence->GetCompletedValue();
-        if (completed == UINT64_MAX) return;
+        if (completed == UINT64_MAX)
+        {
+            return;
+        }
         for (auto& recording : m_recordings)
         {
-            if (!recording->timingPending || recording->fenceValue > completed) continue;
+            if (!recording->timingPending || recording->fenceValue > completed)
+            {
+                continue;
+            }
             ++m_timing.completedJobs;
             const auto* t = recording->timestamps;
             if (m_timestampFrequency && t && recording->timingFrame > m_timing.frame &&
                 t[RAW_BEGIN] >= t[INPUT_BEGIN] && t[RAW_END] >= t[RAW_BEGIN] &&
                 t[FILTER_END] >= t[RAW_END] && t[OUTPUT_END] >= t[FILTER_END])
             {
-                const auto ms = [&](Timestamp first, Timestamp last) {
+                const auto ms = [&](Timestamp first, Timestamp last)
+                {
                     return static_cast<float>(1000.0 * static_cast<double>(t[last] - t[first]) / m_timestampFrequency);
                 };
                 m_timing.frame = recording->timingFrame;
@@ -963,9 +1100,15 @@ namespace drv3d_dx12
         for (uint32_t index = 0; index < RESOURCE_COUNT; ++index)
         {
             auto& resources = m_resources[index];
-            if (!resources.outputReleased) continue;
+            if (!resources.outputReleased)
+            {
+                continue;
+            }
             const HRESULT result = waitOn({resources.outputReleased.Get(), resources.outputReleasedValue}, 2 + index);
-            if (FAILED(result)) return result;
+            if (FAILED(result))
+            {
+                return result;
+            }
             resources.outputReleased.Reset();
             resources.outputReleasedValue = 0;
         }
@@ -1067,8 +1210,7 @@ namespace drv3d_dx12
         m_list->SetGraphicsRootSignature(m_root.Get());
     }
 
-    HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex, const FrameworkSsaoTextures* shared,
-        const MailboxSsaoJob* mailbox, MailboxSsaoCompletion* completion)
+    HRESULT DeviceSsaoPass::State::execute(const d3d::mgpu::SsaoConstants& data, CrossAdapterSyncPoint normalsReady, CrossAdapterSyncPoint depthReady, uint64_t frame, uint32_t resourceIndex, const FrameworkSsaoTextures* shared, const MailboxSsaoJob* mailbox, MailboxSsaoCompletion* completion)
     {
         auto& resources = m_resources[resourceIndex];
         Recording* recording = nullptr;
@@ -1096,13 +1238,18 @@ namespace drv3d_dx12
             barrier(common, sharedState, D3D12_RESOURCE_STATE_COMMON);
             barrier(local, localState, D3D12_RESOURCE_STATE_COMMON);
         };
-        if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, INPUT_BEGIN);
+        if (recording->timestampHeap)
+        {
+            m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, INPUT_BEGIN);
+        }
         if (shared)
         {
             const auto copyInputs = [&]
             {
-                // Reconstructed normals only sample depth; no normal pixels need transferring.
-                if (!m_reconstructNormals) copyShared(m_packedFrameworkNormals ? m_packedNormals.getResource() : resources.normals.getResource(), shared->normals, false);
+                if (!m_reconstructNormals)
+                {
+                    copyShared(m_packedFrameworkNormals ? m_packedNormals.getResource() : resources.normals.getResource(), shared->normals, false);
+                }
                 copyShared(m_packedFrameworkDepth ? m_packedDepth.getResource() : resources.depth.getResource(), shared->depth, false);
             };
             if (mailbox && !mailbox->profileInputTransfer)
@@ -1114,7 +1261,7 @@ namespace drv3d_dx12
             else
             {
                 NAU_GPU_TRANSFER_DST("ao_inputs", profiler::PrimaryGpu, profiler::SecondaryGpu,
-                    profiler::FrameToken, mailbox ? source : profiler::InvalidSource, mailbox ? mailbox->profiledInputBytes : 0);
+                                     profiler::FrameToken, mailbox ? source : profiler::InvalidSource, mailbox ? mailbox->profiledInputBytes : 0);
                 NAU_GPU_TIMER_SRC(mailbox ? profiler::InvalidSource : source, "ao_input_copy");
                 copyInputs();
             }
@@ -1131,7 +1278,7 @@ namespace drv3d_dx12
             destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
             m_list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
             barrier(m_random.getResource(), D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
         ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Get()};
         m_list->SetDescriptorHeaps(1, heaps);
@@ -1213,10 +1360,15 @@ namespace drv3d_dx12
             }
             resources.targetsInitialized = true;
         }
-        if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, RAW_BEGIN);
+        if (recording->timestampHeap)
+        {
+            m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, RAW_BEGIN);
+        }
         trace.beginScope("ao_raw", source);
         if (m_xegtao)
+        {
             executeXe(data, *recording, resourceIndex, filtered);
+        }
         else if (m_computeRaw)
         {
             auto* target = filtered ? resources.raw.getResource() : resources.output.getResource();
@@ -1236,9 +1388,14 @@ namespace drv3d_dx12
             barrier(target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
         }
         else
+        {
             draw(filtered ? resources.raw.getResource() : resources.output.getResource(), filtered ? 1 : 0, 0, 0, m_rawPso.Get(), data);
+        }
         trace.endScope(source);
-        if (recording->timestampHeap) m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, RAW_END);
+        if (recording->timestampHeap)
+        {
+            m_list->EndQuery(recording->timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, RAW_END);
+        }
         if (filtered)
         {
             NAU_GPU_TIMER_SRC(source, "ao_blur");
@@ -1324,7 +1481,10 @@ namespace drv3d_dx12
         {
             // Pre-record B before submitting A; no fallible command recording remains between data and publication.
             result = recording->publication->Reset(recording->allocator.Get(), nullptr);
-            if (FAILED(result)) return result;
+            if (FAILED(result))
+            {
+                return result;
+            }
             uint64_t entries[MAILBOX_OUT_SLOTS] = {};
             entries[mailbox->outputSlot] = frame;
             std::memcpy(recording->mapped + MAILBOX_CONTROL_OFFSET + 256, entries, sizeof(entries));
@@ -1337,14 +1497,20 @@ namespace drv3d_dx12
             transition.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
             recording->publication->ResourceBarrier(1, &transition);
             result = recording->publication->Close();
-            if (FAILED(result)) return result;
+            if (FAILED(result))
+            {
+                return result;
+            }
         }
         if (mailbox)
         {
             // Only GPU1 waits. F0 covers this frame's inputs and old GPU0 readers of a reused
             // output slot. Do not route this through waitOn(), which adds a local signal.
             result = m_queue->Wait(mailbox->inputsReady.fence, mailbox->inputsReady.value);
-            if (FAILED(result)) return result;
+            if (FAILED(result))
+            {
+                return result;
+            }
         }
         ID3D12CommandList* lists[] = {m_list};
         m_queue->ExecuteCommandLists(1, lists);
@@ -1359,15 +1525,26 @@ namespace drv3d_dx12
         if (mailbox)
         {
             completion->dataReady = mailbox->completion->enqueueSignal(m_queue.Get());
-            if (!completion->dataReady) { signal(); return E_FAIL; }
+            if (!completion->dataReady)
+            {
+                signal();
+                return E_FAIL;
+            }
             if (mailbox->publishMailbox)
             {
                 ID3D12CommandList* publish[] = {recording->publication.Get()};
                 m_queue->ExecuteCommandLists(1, publish);
                 completion->published = mailbox->completion->enqueueSignal(m_queue.Get());
-                if (!completion->published) { signal(); return E_FAIL; }
+                if (!completion->published)
+                {
+                    signal();
+                    return E_FAIL;
+                }
             }
-            else completion->published = completion->dataReady;
+            else
+            {
+                completion->published = completion->dataReady;
+            }
         }
 
         return signal();

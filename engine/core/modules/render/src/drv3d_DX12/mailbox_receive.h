@@ -1,3 +1,5 @@
+// mailbox_receive.h
+//
 // Copyright 2026 N-GINN LLC. All rights reserved.
 #pragma once
 
@@ -28,7 +30,10 @@ namespace drv3d_dx12
         int32_t cpuSlot = -1;
         MailboxReceiveDesc()
         {
-            for (uint32_t i = 0; i < MAILBOX_OUT_SLOTS; ++i) copyOrder[i] = i;
+            for (uint32_t i = 0; i < MAILBOX_OUT_SLOTS; ++i)
+            {
+                copyOrder[i] = i;
+            }
         }
     };
 }

@@ -35,10 +35,22 @@ namespace nau::render
         uint32_t readTransportMode()
         {
             const auto transport = readSetting<eastl::string>("render/ssao/transport", "");
-            if (transport == "mailbox") return 3;
-            if (transport == "mailbox-cpu") return 2;
-            if (transport == "framework") return 1;
-            if (transport == "protected") return 0;
+            if (transport == "mailbox")
+            {
+                return 3;
+            }
+            if (transport == "mailbox-cpu")
+            {
+                return 2;
+            }
+            if (transport == "framework")
+            {
+                return 1;
+            }
+            if (transport == "protected")
+            {
+                return 0;
+            }
             return readSetting<bool>("render/ssao/frameworkTransport", true) ? 1u : 0u;
         }
 
@@ -46,10 +58,22 @@ namespace nau::render
         {
             using Mode = d3d::mgpu::MailboxDiagnostic;
             const auto name = readSetting<eastl::string>("render/ssao/mailboxDiagnostic", "off");
-            if (name == "idle") return Mode::idle;
-            if (name == "split-only") return Mode::splitOnly;
-            if (name == "copy-only") return Mode::copyOnly;
-            if (name == "frozen-inputs") return Mode::frozenInputs;
+            if (name == "idle")
+            {
+                return Mode::idle;
+            }
+            if (name == "split-only")
+            {
+                return Mode::splitOnly;
+            }
+            if (name == "copy-only")
+            {
+                return Mode::copyOnly;
+            }
+            if (name == "frozen-inputs")
+            {
+                return Mode::frozenInputs;
+            }
             return Mode::disabled;
         }
     }  // namespace
@@ -150,8 +174,7 @@ namespace nau::render
             "file:/res/shaders/cache/shader_cache.nsbc+[xegtao_main.cs.csmain]",
             "file:/res/shaders/cache/shader_cache.nsbc+[xegtao_denoise.cs.csmain]",
             "file:/res/shaders/cache/shader_cache.nsbc+[xegtao_denoise.cs.cslast]",
-            "file:/res/shaders/cache/shader_cache.nsbc+[xegtao_composite.cs.csmain]"
-        };
+            "file:/res/shaders/cache/shader_cache.nsbc+[xegtao_composite.cs.csmain]"};
         for (size_t index = 0; index < m_xeShaders.size(); ++index)
         {
             ShaderAssetRef shader{xeShaderPaths[index]};
@@ -162,7 +185,9 @@ namespace nau::render
                 m_xePrograms[index] = ShaderAssetView::makeShaderProgram(eastl::span<ShaderAssetView::Ptr>(&m_xeShaders[index], 1));
             }
             else
+            {
                 NAU_LOG_ERROR("XeGTAO: compute shader unavailable, {}", xeShaderPaths[index]);
+            }
         }
         // Load secondary shaders even when starting on GPU 0, so F8 can enable MGPU later.
         if (d3d::is_multi_gpu_available())
@@ -176,7 +201,10 @@ namespace nau::render
             // HBAO's compute path is optional; the raw pixel shader remains a fallback on either GPU.
             ShaderAssetRef hbaoShader{"file:/res/shaders/cache/shader_cache.nsbc+[hbao.cs.csmain]"};
             auto hbao = co_await hbaoShader.getAssetViewTyped<ShaderAssetView>().doTry();
-            if (hbao) m_hbaoShader = *hbao;
+            if (hbao)
+            {
+                m_hbaoShader = *hbao;
+            }
             if (!m_vertexShader || !m_rawShader || !m_filterShader)
             {
                 NAU_LOG_ERROR("SSAO: secondary shaders unavailable, using GPU 0");
@@ -188,7 +216,12 @@ namespace nau::render
     {
         resetSecondary();
         for (PROGRAM program : m_xePrograms)
-            if (program != BAD_PROGRAM) d3d::delete_program(program);
+        {
+            if (program != BAD_PROGRAM)
+            {
+                d3d::delete_program(program);
+            }
+        }
         for (auto& timing : m_waitTimings)
         {
             d3d::driver_command(DRV3D_COMMAND_RELEASE_QUERY, &timing.begin, nullptr, nullptr);
@@ -223,7 +256,12 @@ namespace nau::render
         for (auto& job : m_jobs)
         {
             for (BaseTexture* texture : {job.normals, job.depth, job.result})
-                if (texture) texture->destroy();
+            {
+                if (texture)
+                {
+                    texture->destroy();
+                }
+            }
             job = {};
         }
         for (BaseTexture** texture : {&m_filtered, &m_horizontal, &m_fullOutput, &m_xeDepth, &m_xePing, &m_xePong, &m_xeEdges})
@@ -263,7 +301,10 @@ namespace nau::render
             m_logSettings = true;
         }
         Settings effectiveSettings = settings;
-        if (framework || mailbox) effectiveSettings.pipeline.waitForSecondary = false;
+        if (framework || mailbox)
+        {
+            effectiveSettings.pipeline.waitForSecondary = false;
+        }
         const auto& old = m_settings.pipeline;
         const auto& next = effectiveSettings.pipeline;
         m_measureTimings = readSetting<bool>("render/measurements/enabled", false);
@@ -283,9 +324,9 @@ namespace nau::render
             }
         }
         const bool asyncChanged = old.waitForSecondary != next.waitForSecondary ||
-            ((!old.waitForSecondary || !next.waitForSecondary) &&
-             (old != next || m_settings.execution != settings.execution ||
-              (m_settings.mode == AmbientOcclusionMode::off) != (settings.mode == AmbientOcclusionMode::off)));
+                                  ((!old.waitForSecondary || !next.waitForSecondary) &&
+                                   (old != next || m_settings.execution != settings.execution ||
+                                    (m_settings.mode == AmbientOcclusionMode::off) != (settings.mode == AmbientOcclusionMode::off)));
         if (old.waitForSecondary != next.waitForSecondary || m_settings.mode != settings.mode || m_settings.execution != settings.execution)
         {
             ++m_timingGeneration;
@@ -293,20 +334,24 @@ namespace nau::render
         }
         const bool rawPipelineChanged = old.algorithm != next.algorithm;
         const bool layoutChanged = rawPipelineChanged || old.inputs != next.inputs || old.normals != next.normals ||
-            old.packedNormals != next.packedNormals || old.linearDepth16 != next.linearDepth16 ||
-            old.resolutionDivisor() != next.resolutionDivisor();
+                                   old.packedNormals != next.packedNormals || old.linearDepth16 != next.linearDepth16 ||
+                                   old.resolutionDivisor() != next.resolutionDivisor();
         m_logSettings |= old != next || m_settings.execution != settings.execution || m_settings.mode != settings.mode;
-        if (layoutChanged || asyncChanged) resetSecondary();
+        if (layoutChanged || asyncChanged)
+        {
+            resetSecondary();
+        }
         m_settings = effectiveSettings;
         prepareTargets(width, height);
-        // A full-size AO allocation exists only for a separate reconstruction pass.
         if (next.upsample != AmbientOcclusionUpsample::separate && m_fullOutput)
         {
             m_fullOutput->destroy();
             m_fullOutput = nullptr;
         }
         if (next.upsample == AmbientOcclusionUpsample::separate && !m_fullOutput && m_jobs[0].result)
+        {
             m_fullOutput = d3d::create_tex(nullptr, width, height, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ssao_full_output");
+        }
     }
 
     void AmbientOcclusion::prepareFrame(const math::Matrix4& view, const math::Matrix4& projection, BaseTexture* normals, BaseTexture* depth)
@@ -331,7 +376,10 @@ namespace nau::render
         m_currentTiming = nullptr;
         m_normals = normals;
         m_depth = depth;
-        if (m_settings.pipeline.waitForSecondary) m_secondaryReady = {};
+        if (m_settings.pipeline.waitForSecondary)
+        {
+            m_secondaryReady = {};
+        }
         m_usingSecondary = false;
         m_resolveSource = nullptr;
         m_drawRaw = m_jobs[0].result;
@@ -345,8 +393,14 @@ namespace nau::render
         std::memcpy(m_constants.parameters, &m_parameters, sizeof(m_parameters));
         const auto& p = m_settings.pipeline;
         const bool hbao = p.algorithm == AmbientOcclusionVariant::hbao;
-        if (hbao) m_constants.parameters[0] = m_hbaoRadius;
-        else if (p.algorithm == AmbientOcclusionVariant::xegtao) m_constants.parameters[0] = m_xegtaoRadius;
+        if (hbao)
+        {
+            m_constants.parameters[0] = m_hbaoRadius;
+        }
+        else if (p.algorithm == AmbientOcclusionVariant::xegtao)
+        {
+            m_constants.parameters[0] = m_xegtaoRadius;
+        }
         m_constants.filter[2] = m_blurDepthThreshold;
         if (m_settings.mode == AmbientOcclusionMode::off || !m_jobs[0].result)
         {
@@ -367,8 +421,7 @@ namespace nau::render
         m_constants.sizes[1] = static_cast<float>(m_secondaryHeight);
         m_constants.sizes[2] = static_cast<float>(m_inputWidth);
         m_constants.sizes[3] = static_cast<float>(m_inputHeight);
-        m_constants.reconstruction[0] = p.blur == AmbientOcclusionBlur::bilateralUpsample ? 2.f :
-            (p.weightedUpsample ? 3.f : (p.upsample == AmbientOcclusionUpsample::bilinear ? 1.f : 0.f));
+        m_constants.reconstruction[0] = p.blur == AmbientOcclusionBlur::bilateralUpsample ? 2.f : (p.weightedUpsample ? 3.f : (p.upsample == AmbientOcclusionUpsample::bilinear ? 1.f : 0.f));
         m_constants.reconstruction[1] = p.gatherUpsample ? 1.f : 0.f;
         m_constants.reconstruction[2] = static_cast<float>(p.resolutionDivisor());
         m_constants.reconstruction[3] = m_blurDepthThreshold;
@@ -392,12 +445,16 @@ namespace nau::render
                 }
                 bool submitted = false;
                 if (m_mailboxMode)
+                {
                     m_usingSecondary = d3d::mgpu::submitMailboxSsao(m_secondary, m_constants,
-                        m_jobs[0].normals, m_jobs[0].depth, m_frameIndex, submitted,
-                        readSetting<bool>("sample/automation/freezeInputsReady", false));
+                                                                    m_jobs[0].normals, m_jobs[0].depth, m_frameIndex, submitted,
+                                                                    readSetting<bool>("sample/automation/freezeInputsReady", false));
+                }
                 else
+                {
                     m_usingSecondary = d3d::mgpu::exchangeFrameworkSsao(m_secondary, m_constants,
-                        m_jobs[0].normals, m_jobs[0].depth, m_jobs[0].result, m_frameIndex, submitted);
+                                                                        m_jobs[0].normals, m_jobs[0].depth, m_jobs[0].result, m_frameIndex, submitted);
+                }
                 if (m_usingSecondary)
                 {
                     // Mailbox receives later, in render, after the independent G-buffer/CSM work.
@@ -429,10 +486,15 @@ namespace nau::render
                     {
                         job->constants = m_constants;
                         job->frame = m_frameIndex;
-                        if (!p.waitForSecondary) job->state = AoJob::State::InFlight;
+                        if (!p.waitForSecondary)
+                        {
+                            job->state = AoJob::State::InFlight;
+                        }
                         m_secondaryReady = job->done;
                         if (m_measureTimings && m_pendingCompletions.size() < 128)
+                        {
                             m_pendingCompletions.push_back({job->done, m_frameIndex, std::chrono::steady_clock::now()});
+                        }
                     }
                     else
                     {
@@ -458,8 +520,14 @@ namespace nau::render
             logSettings();
             return;
         }
-        if (!m_usingSecondary) downsampleInputs(m_drawNormals, m_drawDepth);
-        if (m_usingSecondary) beginOverlapTiming();
+        if (!m_usingSecondary)
+        {
+            downsampleInputs(m_drawNormals, m_drawDepth);
+        }
+        if (m_usingSecondary)
+        {
+            beginOverlapTiming();
+        }
         logSettings();
     }
 
@@ -516,11 +584,12 @@ namespace nau::render
             }
             else if (m_frameworkTransport)
             {
-                // Shared AO was copied unconditionally in the primary graphics list.
                 m_drawConstants = m_constants;
             }
             else if (m_settings.pipeline.waitForSecondary)
+            {
                 waitForSecondary();
+            }
             else
             {
                 // Catch transfers completed during the independent G-buffer/CSM work too.
@@ -543,10 +612,12 @@ namespace nau::render
         }
         else
         {
-            // Match GPU 1's selected input size, shader and half-size R8 output.
             rawValid = drawRaw();
         }
-        if (!m_measurements.aoFrame && !(m_usingSecondary && (m_frameworkTransport || m_mailboxMode))) m_measurements.aoFrame = m_frameIndex;
+        if (!m_measurements.aoFrame && !(m_usingSecondary && (m_frameworkTransport || m_mailboxMode)))
+        {
+            m_measurements.aoFrame = m_frameIndex;
+        }
         m_measurements.aoValid = rawValid;
         filter(output);
 
@@ -556,20 +627,32 @@ namespace nau::render
             const char* algorithm = "ssao_nau";
             switch (pipeline.algorithm)
             {
-                case AmbientOcclusionVariant::bogdanov: algorithm = "ssao_bogdanov"; break;
-                case AmbientOcclusionVariant::hbao: algorithm = "hbao"; break;
-                case AmbientOcclusionVariant::xegtao: algorithm = "xegtao"; break;
-                case AmbientOcclusionVariant::current: break;
+                case AmbientOcclusionVariant::bogdanov:
+                    algorithm = "ssao_bogdanov";
+                    break;
+                case AmbientOcclusionVariant::hbao:
+                    algorithm = "hbao";
+                    break;
+                case AmbientOcclusionVariant::xegtao:
+                    algorithm = "xegtao";
+                    break;
+                case AmbientOcclusionVariant::current:
+                    break;
             }
             using profiler::Placement;
             trace.setPlacement(algorithm, rawValid ? (m_usingSecondary ? Placement::Gpu1 : Placement::Gpu0) : Placement::Off);
             if (m_usingSecondary)
             {
                 const char* transport = m_frameworkTransport ? "framework" : "protected";
-                if (m_mailboxMode) transport = m_mailboxMode == 2 ? "mailbox_2b" : "mailbox_2a";
+                if (m_mailboxMode)
+                {
+                    transport = m_mailboxMode == 2 ? "mailbox_2b" : "mailbox_2a";
+                }
                 trace.setPlacement(transport, Placement::Gpu1);
                 if (m_mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled)
+                {
                     trace.setPlacement(d3d::mgpu::mailboxDiagnosticName(m_mailboxDiagnostic), Placement::Gpu1);
+                }
             }
             if (pipeline.blur != AmbientOcclusionBlur::off && pipeline.blur != AmbientOcclusionBlur::bilateralUpsample)
             {
@@ -587,7 +670,10 @@ namespace nau::render
             draw(m_drawRaw, *m_rawMaterial, "default");
             return true;
         }
-        if (drawXeGtao()) return true;
+        if (drawXeGtao())
+        {
+            return true;
+        }
         d3d::set_render_target(m_drawRaw, 0);
         d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
         d3d::set_render_target();
@@ -597,10 +683,18 @@ namespace nau::render
     bool AmbientOcclusion::drawXeGtao()
     {
         for (PROGRAM program : m_xePrograms)
-            if (program == BAD_PROGRAM) return false;
+        {
+            if (program == BAD_PROGRAM)
+            {
+                return false;
+            }
+        }
         if (!m_xeDepth)
         {
-            if (m_xeAttempted) return false;
+            if (m_xeAttempted)
+            {
+                return false;
+            }
             m_xeAttempted = true;
             m_xeDepth = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R16F | TEXCF_UNORDERED, 5, u8"xegtao_depth_mips");
             m_xePing = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R32UI | TEXCF_UNORDERED, 1, u8"xegtao_ao_ping");
@@ -611,14 +705,20 @@ namespace nau::render
                 NAU_LOG_ERROR("XeGTAO: could not allocate GPU 0 working textures");
                 for (BaseTexture** texture : {&m_xeDepth, &m_xePing, &m_xePong, &m_xeEdges})
                 {
-                    if (*texture) (*texture)->destroy();
+                    if (*texture)
+                    {
+                        (*texture)->destroy();
+                    }
                     *texture = nullptr;
                 }
                 return false;
             }
             NAU_LOG_INFO("XeGTAO: GPU 0 AO path=compute, quality=high, denoise=2");
         }
-        if (!m_xePing || !m_xePong || !m_xeEdges) return false;
+        if (!m_xePing || !m_xePong || !m_xeEdges)
+        {
+            return false;
+        }
         if (!m_frameworkOutputInitialized)
         {
             // Initialize render-target metadata before the first UAV write.
@@ -639,13 +739,17 @@ namespace nau::render
         d3d::resource_barrier({m_xeDepth, RB_RW_UAV | RB_STAGE_COMPUTE, 0, 0});
         d3d::set_program(m_xePrograms[0]);
         for (uint32_t mip = 0; mip < 5; ++mip)
+        {
             d3d::set_rwtex(STAGE_CS, mip, m_xeDepth, 0, mip);
+        }
         {
             NAU_GPU_TIMER("xegtao_prefilter");
             d3d::dispatch((m_secondaryWidth + 15) / 16, (m_secondaryHeight + 15) / 16, 1);
         }
         for (uint32_t slot = 0; slot < 5; ++slot)
+        {
             d3d::set_rwtex(STAGE_CS, slot, nullptr, 0, 0);
+        }
         d3d::resource_barrier({m_xeDepth, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
 
         d3d::resource_barrier({m_xePing, RB_RW_UAV | RB_STAGE_COMPUTE, 0, 0});
@@ -691,7 +795,9 @@ namespace nau::render
         }
         d3d::set_rwtex(STAGE_CS, 0, nullptr, 0, 0);
         for (uint32_t slot = 0; slot < 4; ++slot)
+        {
             d3d::set_tex(STAGE_CS, slot, nullptr);
+        }
         d3d::resource_barrier({m_drawRaw, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         return true;
     }
@@ -699,8 +805,12 @@ namespace nau::render
     void AmbientOcclusion::pollJobs()
     {
         for (auto& job : m_jobs)
+        {
             if (job.state == AoJob::State::InFlight && d3d::mgpu::is_primary_transfer_complete(job.done))
+            {
                 job.state = AoJob::State::Ready;
+            }
+        }
     }
 
     AmbientOcclusion::AoJob* AmbientOcclusion::findFreeJob()
@@ -709,8 +819,14 @@ namespace nau::render
         AoJob* free = nullptr;
         for (auto& job : m_jobs)
         {
-            if (job.state == AoJob::State::InFlight) ++inFlight;
-            if (!free && job.state == AoJob::State::Free) free = &job;
+            if (job.state == AoJob::State::InFlight)
+            {
+                ++inFlight;
+            }
+            if (!free && job.state == AoJob::State::Free)
+            {
+                free = &job;
+            }
         }
         return inFlight < kMaxInFlight ? free : nullptr;
     }
@@ -719,21 +835,32 @@ namespace nau::render
     {
         AoJob* newest = nullptr;
         for (auto& job : m_jobs)
+        {
             if (job.state == AoJob::State::Ready && (!newest || job.frame > newest->frame))
+            {
                 newest = &job;
+            }
+        }
 
         if (newest && (!m_shown || newest->frame > m_shown->frame))
         {
             // Later downsampling is on the same graphics queue as previous snapshot readers.
             // The result's return copy is ordered after its previous readers by the transfer API.
-            if (m_shown) m_shown->state = AoJob::State::Free;
+            if (m_shown)
+            {
+                m_shown->state = AoJob::State::Free;
+            }
             m_shown = newest;
             m_shown->state = AoJob::State::Shown;
         }
         // Ready includes every input read and return copy. Older results can now be reused.
         for (auto& job : m_jobs)
+        {
             if (job.state == AoJob::State::Ready && m_shown && job.frame <= m_shown->frame)
+            {
                 job.state = AoJob::State::Free;
+            }
+        }
     }
 
     bool AmbientOcclusion::prepareTargets(uint32_t width, uint32_t height)
@@ -815,11 +942,13 @@ namespace nau::render
             if (xegtao)
             {
                 for (const auto& shader : m_xeShaders)
+                {
                     if (!shader || shader->getShader()->bytecode.empty())
                     {
                         NAU_LOG_ERROR("XeGTAO: compute shaders unavailable");
                         return false;
                     }
+                }
                 const auto& prefilter = m_xeShaders[0]->getShader()->bytecode;
                 desc.xePrefilterBytecode = prefilter.data();
                 desc.xePrefilterBytecodeSize = prefilter.size();
@@ -863,10 +992,12 @@ namespace nau::render
                 return false;
             }
             if (hbao && !desc.rawComputeBytecode)
+            {
                 NAU_LOG_INFO("HBAO: GPU 1 raw AO path=pixel");
+            }
             ++m_measurements.gpu1Generation;
             NAU_LOG_INFO("AO: GPU 1 producer, AO {}x{}, algorithm={}, framework unsynchronized={}, mailbox mode={}",
-                m_secondaryWidth, m_secondaryHeight, static_cast<uint32_t>(m_settings.pipeline.algorithm), m_frameworkTransport, m_mailboxMode);
+                         m_secondaryWidth, m_secondaryHeight, static_cast<uint32_t>(m_settings.pipeline.algorithm), m_frameworkTransport, m_mailboxMode);
         }
         if (!m_secondary)
         {
@@ -908,7 +1039,9 @@ namespace nau::render
             NAU_GPU_TIMER("ao_blur");
             FilterTiming* sample = nullptr;
             if (m_measureTimings)
+            {
                 for (auto& timing : m_filterTimings)
+                {
                     if (!timing.pending)
                     {
                         sample = &timing;
@@ -918,6 +1051,8 @@ namespace nau::render
                         d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing.begin, nullptr, nullptr);
                         break;
                     }
+                }
+            }
             m_drawConstants.pipeline[1] = 0.f;
             draw(p.blur == AmbientOcclusionBlur::gaussian ? m_horizontal : m_filtered, *m_blurMaterial, "halfBlur", m_drawRaw);
             if (p.blur == AmbientOcclusionBlur::gaussian)
@@ -926,7 +1061,10 @@ namespace nau::render
                 draw(m_filtered, *m_blurMaterial, "halfBlur", m_horizontal);
             }
             m_resolveSource = m_filtered;
-            if (sample) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &sample->end, nullptr, nullptr);
+            if (sample)
+            {
+                d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &sample->end, nullptr, nullptr);
+            }
         }
         if (m_fullOutput)
         {
@@ -942,8 +1080,16 @@ namespace nau::render
 
     void AmbientOcclusion::setConstants(MaterialAssetView& material, const char* pipeline, const d3d::mgpu::SsaoConstants& constants)
     {
-        const auto matrix = [](const float* values) { math::Matrix4 m; std::memcpy(&m, values, sizeof(m)); return m; };
-        const auto vector = [](const float* v) { return math::Vector4(v[0], v[1], v[2], v[3]); };
+        const auto matrix = [](const float* values)
+        {
+            math::Matrix4 m;
+            std::memcpy(&m, values, sizeof(m));
+            return m;
+        };
+        const auto vector = [](const float* v)
+        {
+            return math::Vector4(v[0], v[1], v[2], v[3]);
+        };
         material.setProperty(pipeline, "aoProjection", matrix(constants.projection));
         material.setProperty(pipeline, "aoInverseProjection", matrix(constants.inverseProjection));
         material.setProperty(pipeline, "aoView", matrix(constants.view));
@@ -994,7 +1140,6 @@ namespace nau::render
             d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
             return;
         }
-        // The same reconstruction is used in debug and lighting for every combination.
         draw(target, *m_blurMaterial, "debugBilinear", m_resolveSource);
     }
 
@@ -1017,7 +1162,10 @@ namespace nau::render
             uint64_t begin = 0, end = 0;
             if (!timing.pending ||
                 !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, timing.begin, &begin, nullptr) ||
-                !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, timing.end, &end, nullptr)) continue;
+                !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, timing.end, &end, nullptr))
+            {
+                continue;
+            }
             if (frequency && timing.generation == m_timingGeneration && timing.frame > m_measurements.primaryFilterFrame && end >= begin)
             {
                 m_measurements.primaryFilterFrame = timing.frame;
@@ -1040,7 +1188,10 @@ namespace nau::render
             {
                 if (timing.generation == m_timingGeneration && timing.sequence > m_lastWaitSequence && frequency && end >= begin)
                 {
-                    if (timing.waited) m_waitMilliseconds = static_cast<float>(1000.0 * static_cast<double>(end - begin) / frequency);
+                    if (timing.waited)
+                    {
+                        m_waitMilliseconds = static_cast<float>(1000.0 * static_cast<double>(end - begin) / frequency);
+                    }
                     m_lastWaitSequence = timing.sequence;
                     m_measurements.timingFrame = timing.frame;
                     m_measurements.waitMs = timing.waited ? static_cast<float>(1000.0 * static_cast<double>(end - begin) / frequency) : -1.f;
@@ -1054,10 +1205,16 @@ namespace nau::render
 
     void AmbientOcclusion::beginOverlapTiming()
     {
-        if (!m_measureTimings) return;
+        if (!m_measureTimings)
+        {
+            return;
+        }
         for (auto& timing : m_waitTimings)
         {
-            if (timing.pending) continue;
+            if (timing.pending)
+            {
+                continue;
+            }
             m_currentTiming = &timing;
             timing.pending = true;
             timing.frame = m_frameIndex;
@@ -1074,8 +1231,16 @@ namespace nau::render
     {
         WaitTiming* sample = m_currentTiming;
         if (!sample)
+        {
             for (auto& timing : m_waitTimings)
-                if (!timing.pending) { sample = &timing; break; }
+            {
+                if (!timing.pending)
+                {
+                    sample = &timing;
+                    break;
+                }
+            }
+        }
         // Timestamp queries run on GPU 0 on either side of the graphics-queue Wait.
         // CPU-side duration of queue submission would not measure GPU idle time.
         if (sample)
@@ -1100,11 +1265,26 @@ namespace nau::render
 
     const char* AmbientOcclusion::getWaitLabel() const
     {
-        if (m_settings.mode == AmbientOcclusionMode::off) return "n/a (AO off)";
-        if (!m_usingSecondary) return "n/a (no GPU1 AO)";
-        if (m_mailboxMode) return "OFF (mailbox)";
-        if (m_frameworkTransport) return "OFF (framework, unsynchronized)";
-        if (!m_settings.pipeline.waitForSecondary) return "OFF (async)";
+        if (m_settings.mode == AmbientOcclusionMode::off)
+        {
+            return "n/a (AO off)";
+        }
+        if (!m_usingSecondary)
+        {
+            return "n/a (no GPU1 AO)";
+        }
+        if (m_mailboxMode)
+        {
+            return "OFF (mailbox)";
+        }
+        if (m_frameworkTransport)
+        {
+            return "OFF (framework, unsynchronized)";
+        }
+        if (!m_settings.pipeline.waitForSecondary)
+        {
+            return "OFF (async)";
+        }
         return m_waitMilliseconds < 0.f ? "pending" : nullptr;
     }
 
@@ -1116,14 +1296,28 @@ namespace nau::render
         }
         if (m_usingSecondary)
         {
-            if (m_mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled) return "Mailbox diagnostic";
-            if (m_mailboxMode) return m_mailboxMode == 2 ? "MGPU mailbox GPU (2b)" : "MGPU mailbox CPU (2a)";
-            if (m_frameworkTransport) return "MGPU framework (unsynchronized)";
-            if (m_settings.pipeline.fullResolution) return "MGPU, full AO";
+            if (m_mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled)
+            {
+                return "Mailbox diagnostic";
+            }
+            if (m_mailboxMode)
+            {
+                return m_mailboxMode == 2 ? "MGPU mailbox GPU (2b)" : "MGPU mailbox CPU (2a)";
+            }
+            if (m_frameworkTransport)
+            {
+                return "MGPU framework (unsynchronized)";
+            }
+            if (m_settings.pipeline.fullResolution)
+            {
+                return "MGPU, full AO";
+            }
             return m_settings.pipeline.quarterResolution ? "MGPU, quarter AO" : "MGPU, half AO";
         }
         if (m_settings.pipeline.fullResolution)
+        {
             return m_settings.execution == AmbientOcclusionExecution::multiGpu ? "single GPU, full AO (MGPU unavailable)" : "single GPU, full AO";
+        }
         return m_settings.execution == AmbientOcclusionExecution::multiGpu
                    ? (m_settings.pipeline.quarterResolution ? "single GPU, quarter AO (MGPU unavailable)" : "single GPU, half AO (MGPU unavailable)")
                    : (m_settings.pipeline.quarterResolution ? "single GPU, quarter AO" : "single GPU, half AO");
@@ -1132,28 +1326,37 @@ namespace nau::render
     const char* AmbientOcclusion::getVariantLabel() const
     {
         if (m_settings.pipeline.algorithm == AmbientOcclusionVariant::xegtao)
+        {
             return "XeGTAO / high / two denoise passes";
+        }
         if (m_settings.pipeline.algorithm == AmbientOcclusionVariant::hbao)
+        {
             return "HBAO / depth normals / independent stages";
+        }
         return m_settings.pipeline.algorithm == AmbientOcclusionVariant::bogdanov ? "Bogdanov AO / independent stages" : "Nau AO / independent stages";
     }
 
     void AmbientOcclusion::logSettings()
     {
-        if (!m_logSettings) return;
+        if (!m_logSettings)
+        {
+            return;
+        }
         const auto& p = m_settings.pipeline;
         const bool hbao = p.algorithm == AmbientOcclusionVariant::hbao;
         const bool xegtao = p.algorithm == AmbientOcclusionVariant::xegtao;
         const auto normals = hbao ? AmbientOcclusionNormals::reconstructed : p.normals;
         NAU_LOG_INFO("AO pipeline: {}, AO={}x{}, inputs={}x{}, algorithm={}, radius={}, normals={}, requestedNormals={}, blur={}, blurGPU={}, upsample={}, RG8={}, R16F={}, {}={}, weighted={}, reject={}, gatherUp={}, wait={}, mode={}",
-            getExecutionLabel(), m_secondaryWidth, m_secondaryHeight, m_inputWidth, m_inputHeight,
-            static_cast<uint32_t>(p.algorithm), m_constants.parameters[0], static_cast<uint32_t>(normals), static_cast<uint32_t>(p.normals), static_cast<uint32_t>(p.blur),
-            static_cast<uint32_t>(p.blurExecution), static_cast<uint32_t>(p.upsample), p.packedNormals, p.linearDepth16,
-            xegtao ? "slices" : (hbao ? "directions" : "samples"), xegtao ? 3 : (hbao ? 16 : (p.eightSamples ? 8 : 14)), p.weightedUpsample, !hbao && !xegtao && p.rejectOutside, p.gatherUpsample, p.waitForSecondary, static_cast<uint32_t>(m_settings.mode));
+                     getExecutionLabel(), m_secondaryWidth, m_secondaryHeight, m_inputWidth, m_inputHeight,
+                     static_cast<uint32_t>(p.algorithm), m_constants.parameters[0], static_cast<uint32_t>(normals), static_cast<uint32_t>(p.normals), static_cast<uint32_t>(p.blur),
+                     static_cast<uint32_t>(p.blurExecution), static_cast<uint32_t>(p.upsample), p.packedNormals, p.linearDepth16,
+                     xegtao ? "slices" : (hbao ? "directions" : "samples"), xegtao ? 3 : (hbao ? 16 : (p.eightSamples ? 8 : 14)), p.weightedUpsample, !hbao && !xegtao && p.rejectOutside, p.gatherUpsample, p.waitForSecondary, static_cast<uint32_t>(m_settings.mode));
         if (m_mailboxDiagnostic != d3d::mgpu::MailboxDiagnostic::disabled)
+        {
             NAU_LOG_INFO("Mailbox diagnostic: mode={}, active={}, GPU1 work={}, frozen input data is not current-frame AO",
-                d3d::mgpu::mailboxDiagnosticName(m_mailboxDiagnostic), m_usingSecondary,
-                m_usingSecondary && !d3d::mgpu::mailboxDiagnosticSkipsGpu1(m_mailboxDiagnostic));
+                         d3d::mgpu::mailboxDiagnosticName(m_mailboxDiagnostic), m_usingSecondary,
+                         m_usingSecondary && !d3d::mgpu::mailboxDiagnosticSkipsGpu1(m_mailboxDiagnostic));
+        }
         m_logSettings = false;
     }
 
@@ -1165,11 +1368,13 @@ namespace nau::render
     void AmbientOcclusion::bindResolveInputs()
     {
         if (BaseTexture* source = getResolveTexture(nullptr))
+        {
             d3d::resource_barrier({source, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+        }
         d3d::resource_barrier({m_drawDepth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         d3d::settex(7, m_drawDepth);
         const math::Vector4 reconstruction(m_drawConstants.reconstruction[2], m_blurDepthThreshold,
-            m_drawConstants.projection[14], m_drawConstants.projection[10]);
+                                           m_drawConstants.projection[14], m_drawConstants.projection[10]);
         shader_globals::setVariable("ssaoReconstruction", &reconstruction);
     }
 

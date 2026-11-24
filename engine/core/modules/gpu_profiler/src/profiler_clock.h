@@ -1,3 +1,5 @@
+// profiler_clock.h
+//
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
@@ -43,7 +45,8 @@ namespace nau::gpu_profiler
         return static_cast<uint64_t>(value.QuadPart);
 #else
         return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                         std::chrono::steady_clock::now().time_since_epoch()).count());
+                                         std::chrono::steady_clock::now().time_since_epoch())
+                                         .count());
 #endif
     }
 

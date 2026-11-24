@@ -24,7 +24,10 @@ namespace d3d::mgpu
 
         uint64_t texturePayloadBytes(ID3D12Resource* resource)
         {
-            if (!resource) return 0;
+            if (!resource)
+            {
+                return 0;
+            }
             const auto desc = resource->GetDesc();
             const auto format = drv3d_dx12::FormatStore::fromDXGIFormat(desc.Format);
             return desc.Width * desc.Height * format.getBytesPerPixelBlock();
@@ -33,7 +36,10 @@ namespace d3d::mgpu
         bool usePackedSoftwareDepth(ID3D12Device* device)
         {
             // Group WARP's expensive per-texel shared-memory reads. Keep the hardware path until measured there.
-            if (const char* option = std::getenv("NAU_SSAO_PACK_DEPTH"); option && option[0] == '0') return false;
+            if (const char* option = std::getenv("NAU_SSAO_PACK_DEPTH"); option && option[0] == '0')
+            {
+                return false;
+            }
             Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
             Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
             DXGI_ADAPTER_DESC1 desc = {};
@@ -78,7 +84,10 @@ namespace d3d::mgpu
 
         void pollPrimaryTiming()
         {
-            if ((!framework && !mailbox) || !measureTimings) return;
+            if ((!framework && !mailbox) || !measureTimings)
+            {
+                return;
+            }
             uint64_t frequency = 0;
             d3d::driver_command(D3V3D_COMMAND_TIMESTAMPFREQ, &frequency, nullptr, nullptr);
             for (auto& query : primaryQueries)
@@ -88,7 +97,10 @@ namespace d3d::mgpu
                     !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, query.begin, &begin, nullptr) ||
                     !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, query.published, &published, nullptr) ||
                     !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, query.received, &received, nullptr) ||
-                    (mailbox && !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, query.receiveBegin, &receiveBegin, nullptr))) continue;
+                    (mailbox && !d3d::driver_command(D3V3D_COMMAND_TIMESTAMPGET, query.receiveBegin, &receiveBegin, nullptr)))
+                {
+                    continue;
+                }
                 if (frequency && query.frame > primaryFrame && published >= begin && received >= published)
                 {
                     primaryFrame = query.frame;
@@ -107,7 +119,10 @@ namespace d3d::mgpu
                 // Only teardown/resize drains the adapters. There is no per-frame handoff.
                 drv3d_dx12::get_device().getContext().wait();
                 const HRESULT result = pass.reset();
-                if (FAILED(result)) NAU_LOG_WARNING("Framework SSAO: GPU1 drain failed, HRESULT {:#x}", static_cast<uint32_t>(result));
+                if (FAILED(result))
+                {
+                    NAU_LOG_WARNING("Framework SSAO: GPU1 drain failed, HRESULT {:#x}", static_cast<uint32_t>(result));
+                }
                 if (mailbox)
                 {
                     mailbox->inputsReady.waitOnCpu(mailbox->inputsReady.issuedValue(), 10000);
@@ -177,7 +192,7 @@ namespace d3d::mgpu
                 {
                     producer->mailbox = eastl::make_shared<drv3d_dx12::MailboxSsaoState>();
                     result = producer->mailbox->init(static_cast<ID3D12Device*>(get_device(PRIMARY_GPU)),
-                        allocator->getDevice(), pass, desc.gpuMailbox);
+                                                     allocator->getDevice(), pass, desc.gpuMailbox);
                     producer->mailbox->diagnostic = desc.mailboxDiagnostic;
                     if (SUCCEEDED(result))
                     {
@@ -186,7 +201,7 @@ namespace d3d::mgpu
                         {
                             const auto& resources = producer->mailbox->resources;
                             producer->profiledInputBytes = texturePayloadBytes(resources.inputDepthPrimary(0)) +
-                                texturePayloadBytes(resources.inputNormalsPrimary(0));
+                                                           texturePayloadBytes(resources.inputNormalsPrimary(0));
                         }
                     }
                 }
@@ -194,9 +209,12 @@ namespace d3d::mgpu
                 {
                     producer->framework = eastl::make_unique<drv3d_dx12::FrameworkSsaoResources>();
                     result = producer->framework->init(static_cast<ID3D12Device*>(get_device(PRIMARY_GPU)),
-                        static_cast<ID3D12Device*>(get_device(SECONDARY_GPU)), pass);
+                                                       static_cast<ID3D12Device*>(get_device(SECONDARY_GPU)), pass);
                 }
-                if (SUCCEEDED(result) || !pass.packedFrameworkDepth) break;
+                if (SUCCEEDED(result) || !pass.packedFrameworkDepth)
+                {
+                    break;
+                }
                 producer->framework.reset();
                 producer->mailbox.reset();
                 producer->pass.reset();
@@ -205,7 +223,9 @@ namespace d3d::mgpu
                 NAU_LOG_WARNING("SSAO: packed software depth unavailable, HRESULT {:#x}; using ordinary shared depth", static_cast<uint32_t>(result));
             }
             if (SUCCEEDED(result) && desc.frameworkStyle)
+            {
                 NAU_LOG_INFO("SSAO: packed software depth transfer={}, normals={}", pass.packedFrameworkDepth, pass.packedFrameworkNormals);
+            }
         }
         if (SUCCEEDED(result) && !desc.frameworkStyle && !desc.mailboxStyle)
         {
@@ -216,7 +236,10 @@ namespace d3d::mgpu
             channel.direction = TransferDirection::primaryToSecondary;
             channel.format = desc.packedNormals ? TEXFMT_R8G8 : TEXFMT_G16R16F;
             channel.name = "SSAO prepass normals GPU 0 -> GPU 1";
-            if (!desc.reconstructNormals) producer->normals = create_transfer_channel(channel);
+            if (!desc.reconstructNormals)
+            {
+                producer->normals = create_transfer_channel(channel);
+            }
             channel.format = desc.linearDepth16 ? TEXFMT_R16F : TEXFMT_R32F;
             channel.name = "SSAO depth GPU 0 -> GPU 1";
             producer->depth = create_transfer_channel(channel);
@@ -238,14 +261,23 @@ namespace d3d::mgpu
 
     SsaoGpuTiming pollSsaoTiming(SsaoProducer* producer)
     {
-        if (!producer) return {};
+        if (!producer)
+        {
+            return {};
+        }
         producer->pollPrimaryTiming();
-        if (producer->mailbox) producer->mailbox->poll();
+        if (producer->mailbox)
+        {
+            producer->mailbox->poll();
+        }
         auto timing = producer->pass.pollTiming();
         timing.primaryFrame = producer->primaryFrame;
         timing.primaryPublishMilliseconds = producer->publishMilliseconds;
         timing.primaryReceiveMilliseconds = producer->receiveMilliseconds;
-        if (producer->mailbox) producer->mailbox->copyObservations(timing);
+        if (producer->mailbox)
+        {
+            producer->mailbox->copyObservations(timing);
+        }
         return timing;
     }
 
@@ -253,18 +285,29 @@ namespace d3d::mgpu
     {
         submitted = false;
         if (!producer || !producer->framework || (!producer->reconstructNormals && !normals) ||
-            !depth || !destination || !is_multi_gpu_available()) return false;
-        const auto image = [](BaseTexture* texture) { return drv3d_dx12::getbasetex(texture)->getDeviceImage(); };
+            !depth || !destination || !is_multi_gpu_available())
+        {
+            return false;
+        }
+        const auto image = [](BaseTexture* texture)
+        {
+            return drv3d_dx12::getbasetex(texture)->getDeviceImage();
+        };
         auto* normalImage = producer->reconstructNormals ? nullptr : image(normals);
         auto* depthImage = image(depth);
         auto* resultImage = image(destination);
-        if ((!producer->reconstructNormals && !normalImage) || !depthImage || !resultImage) return false;
+        if ((!producer->reconstructNormals && !normalImage) || !depthImage || !resultImage)
+        {
+            return false;
+        }
         const auto shared = producer->framework->primary();
         auto& context = drv3d_dx12::get_device().getContext();
         producer->pollPrimaryTiming();
         SsaoProducer::PrimaryTiming* timing = nullptr;
         if (producer->measureTimings)
+        {
             for (auto& query : producer->primaryQueries)
+            {
                 if (!query.pending)
                 {
                     timing = &query;
@@ -273,12 +316,20 @@ namespace d3d::mgpu
                     d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &query.begin, nullptr, nullptr);
                     break;
                 }
+            }
+        }
         {
             NAU_GPU_TIMER("ao_framework_inputs");
             context.copySharedTexture(depthImage, shared.depth, true);
-            if (!producer->reconstructNormals) context.copySharedTexture(normalImage, shared.normals, true);
+            if (!producer->reconstructNormals)
+            {
+                context.copySharedTexture(normalImage, shared.normals, true);
+            }
         }
-        if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->published, nullptr, nullptr);
+        if (timing)
+        {
+            d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->published, nullptr, nullptr);
+        }
         if (!producer->frameworkInitialized)
         {
             // The caller clears destination to white on first use. Seed shared AO in the same list.
@@ -289,10 +340,16 @@ namespace d3d::mgpu
             NAU_GPU_TIMER("ao_framework_receive");
             context.copySharedTexture(resultImage, shared.result, false);
         }
-        if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->received, nullptr, nullptr);
+        if (timing)
+        {
+            d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->received, nullptr, nullptr);
+        }
         const HRESULT result = producer->pass.executeFramework(constants, producer->framework->secondary(), frame);
         submitted = result == S_OK;
-        if (FAILED(result)) report_secondary_gpu_failure(static_cast<uint32_t>(result));
+        if (FAILED(result))
+        {
+            report_secondary_gpu_failure(static_cast<uint32_t>(result));
+        }
         return SUCCEEDED(result);
     }
 
@@ -300,20 +357,34 @@ namespace d3d::mgpu
     {
         submitted = false;
         if (!producer || !producer->mailbox || !depth || (!producer->reconstructNormals && !normals) ||
-            !frame || frame > UINT32_MAX || !is_multi_gpu_available()) return false;
+            !frame || frame > UINT32_MAX || !is_multi_gpu_available())
+        {
+            return false;
+        }
         auto& mailbox = *producer->mailbox;
-        if (!mailbox.poll()) return false;
+        if (!mailbox.poll())
+        {
+            return false;
+        }
         producer->pollPrimaryTiming();
-        const auto image = [](BaseTexture* texture) { return drv3d_dx12::getbasetex(texture)->getDeviceImage(); };
+        const auto image = [](BaseTexture* texture)
+        {
+            return drv3d_dx12::getbasetex(texture)->getDeviceImage();
+        };
         auto* depthImage = image(depth);
         auto* normalImage = producer->reconstructNormals ? nullptr : image(normals);
-        if (!depthImage || (!producer->reconstructNormals && !normalImage)) return false;
+        if (!depthImage || (!producer->reconstructNormals && !normalImage))
+        {
+            return false;
+        }
         auto& context = drv3d_dx12::get_device().getContext();
         const auto copyInputs = [&](UINT input)
         {
             context.copySharedTexture(depthImage, mailbox.resources.inputDepthPrimary(input), true);
             if (!producer->reconstructNormals)
+            {
                 context.copySharedTexture(normalImage, mailbox.resources.inputNormalsPrimary(input), true);
+            }
         };
         if (mailboxDiagnosticSkipsGpu1(mailbox.diagnostic))
         {
@@ -328,7 +399,10 @@ namespace d3d::mgpu
             if (mailbox.diagnostic != MailboxDiagnostic::idle)
             {
                 const uint64_t value = mailbox.inputsReady.reserveSignal();
-                if (!value) return false;
+                if (!value)
+                {
+                    return false;
+                }
                 NAU_GPU_TIMER("ao_diagnostic_split");
                 context.signalForeignFenceAfterSubmit(mailbox.inputsReady.getFence(drv3d_dx12::CrossAdapterFence::Side::SIGNALER), value);
                 ++mailbox.observations.submitOnlySignals;
@@ -338,21 +412,38 @@ namespace d3d::mgpu
         // Warm up the real pipeline on loaded inputs. Freeze only when the scene has
         // completed its warm-up; pin one free slot instead of overwriting readers.
         const bool frozen = mailbox.diagnostic == MailboxDiagnostic::frozenInputs &&
-            (freezeInputsReady || mailbox.frozenInputSlot >= 0);
+                            (freezeInputsReady || mailbox.frozenInputSlot >= 0);
         // Reserve the F0 value before choosing an output: GPU1's input wait also protects
         // reuse of retired output slots whose old GPU0 readers precede this signal.
         const uint64_t v0 = mailbox.inputsReady.reserveSignal();
-        if (!v0) return false;
+        if (!v0)
+        {
+            return false;
+        }
         const int input = mailbox.frozenInputSlot >= 0 ? mailbox.frozenInputSlot : mailbox.freeInput();
         const int output = mailbox.reusableOutput(v0);
         bool issue = true;
-        if (input < 0) { ++mailbox.observations.skippedInput; issue = false; }
-        else if (output < 0) { ++mailbox.observations.skippedOutput; issue = false; }
-        else if (mailbox.runnableJobs() > 1) { ++mailbox.observations.skippedBacklog; issue = false; }
+        if (input < 0)
+        {
+            ++mailbox.observations.skippedInput;
+            issue = false;
+        }
+        else if (output < 0)
+        {
+            ++mailbox.observations.skippedOutput;
+            issue = false;
+        }
+        else if (mailbox.runnableJobs() > 1)
+        {
+            ++mailbox.observations.skippedBacklog;
+            issue = false;
+        }
 
         SsaoProducer::PrimaryTiming* timing = nullptr;
         if (producer->measureTimings)
+        {
             for (auto& query : producer->primaryQueries)
+            {
                 if (!query.pending)
                 {
                     timing = &query;
@@ -361,6 +452,8 @@ namespace d3d::mgpu
                     d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &query.begin, nullptr, nullptr);
                     break;
                 }
+            }
+        }
         if (issue && frozen && !mailbox.observations.frozenInputFrame)
         {
             // freeInput confirmed completion of this slot's old GPU1 readers. Other
@@ -374,17 +467,22 @@ namespace d3d::mgpu
         }
         else if (issue && !frozen)
         {
-            // Both halves of the default window's AO input transfer are recorded in this frame.
             NAU_GPU_TRANSFER_SRC("ao_inputs", profiler::PrimaryGpu, profiler::SecondaryGpu,
-                profiler::FrameToken, profiler::PrimarySource, producer->profiledInputBytes);
+                                 profiler::FrameToken, profiler::PrimarySource, producer->profiledInputBytes);
             copyInputs(input);
             ++mailbox.observations.primaryInputCopyFrames;
         }
-        if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->published, nullptr, nullptr);
+        if (timing)
+        {
+            d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->published, nullptr, nullptr);
+        }
         // Even skipped frames submit one progress signal, allowing retired outputs/readbacks to become reusable.
         context.signalForeignFenceAfterSubmit(mailbox.inputsReady.getFence(drv3d_dx12::CrossAdapterFence::Side::SIGNALER), v0);
         ++mailbox.observations.submitOnlySignals;
-        if (!issue) return true;
+        if (!issue)
+        {
+            return true;
+        }
 
         drv3d_dx12::MailboxSsaoJob job;
         job.inputsReady = {mailbox.inputsReady.getFence(drv3d_dx12::CrossAdapterFence::Side::WAITER), v0};
@@ -397,14 +495,25 @@ namespace d3d::mgpu
         job.profileInputTransfer = !frozen;
         drv3d_dx12::MailboxSsaoCompletion done;
         const HRESULT result = producer->pass.executeMailbox(frozen ? mailbox.frozenConstants : constants,
-            mailbox.resources.shared(input, output), job, frame, done);
+                                                             mailbox.resources.shared(input, output), job, frame, done);
         auto& trace = profiler::GpuProfiler::instance();
         if (result == S_OK && !frozen)
+        {
             trace.markTransferConsumed("ao_inputs");
+        }
         else if (!frozen)
+        {
             trace.markTransferDiscarded("ao_inputs", trace.frameIndex());
-        if (FAILED(result)) { report_secondary_gpu_failure(static_cast<uint32_t>(result)); return false; }
-        if (result == S_FALSE) return true;
+        }
+        if (FAILED(result))
+        {
+            report_secondary_gpu_failure(static_cast<uint32_t>(result));
+            return false;
+        }
+        if (result == S_FALSE)
+        {
+            return true;
+        }
         mailbox.inputs[input].readDone = done.dataReady;
         mailbox.outputs[output] = {v0, done.dataReady, done.published, frame, 0};
         submitted = true;
@@ -413,12 +522,24 @@ namespace d3d::mgpu
 
     bool receiveMailboxSsao(SsaoProducer* producer, BaseTexture* destination, uint64_t frame)
     {
-        if (!producer || !producer->mailbox || !destination || !is_multi_gpu_available()) return false;
+        if (!producer || !producer->mailbox || !destination || !is_multi_gpu_available())
+        {
+            return false;
+        }
         auto& mailbox = *producer->mailbox;
-        if (!mailbox.poll()) return false;
-        if (mailboxDiagnosticSkipsGpu1(mailbox.diagnostic)) return true;
+        if (!mailbox.poll())
+        {
+            return false;
+        }
+        if (mailboxDiagnosticSkipsGpu1(mailbox.diagnostic))
+        {
+            return true;
+        }
         auto* target = drv3d_dx12::getbasetex(destination)->getDeviceImage();
-        if (!target) return false;
+        if (!target)
+        {
+            return false;
+        }
         drv3d_dx12::MailboxReceiveDesc desc;
         desc.gpuSelection = mailbox.gpuSelection;
         desc.cpuSlot = mailbox.newestSlot;
@@ -437,7 +558,9 @@ namespace d3d::mgpu
             UINT j = i;
             while (j && mailbox.outputs[desc.copyOrder[j]].frame < mailbox.outputs[desc.copyOrder[j - 1]].frame)
             {
-                const UINT swap = desc.copyOrder[j]; desc.copyOrder[j] = desc.copyOrder[j - 1]; desc.copyOrder[j - 1] = swap;
+                const UINT swap = desc.copyOrder[j];
+                desc.copyOrder[j] = desc.copyOrder[j - 1];
+                desc.copyOrder[j - 1] = swap;
                 --j;
             }
         }
@@ -445,6 +568,7 @@ namespace d3d::mgpu
         {
             bool sampleAllocated = false;
             for (UINT i = 0; i < drv3d_dx12::MailboxSsaoResources::READBACK_SLOTS; ++i)
+            {
                 if (!mailbox.samples[i].pending)
                 {
                     // Next frame's F0 signal is ordered after this receive and readback on GPU0.
@@ -454,18 +578,34 @@ namespace d3d::mgpu
                     sampleAllocated = true;
                     break;
                 }
-            if (!sampleAllocated) ++mailbox.observations.droppedAgeSamples;
+            }
+            if (!sampleAllocated)
+            {
+                ++mailbox.observations.droppedAgeSamples;
+            }
         }
         SsaoProducer::PrimaryTiming* timing = nullptr;
         for (auto& query : producer->primaryQueries)
-            if (query.pending && query.frame == frame) { timing = &query; break; }
-        if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->receiveBegin, nullptr, nullptr);
+        {
+            if (query.pending && query.frame == frame)
+            {
+                timing = &query;
+                break;
+            }
+        }
+        if (timing)
+        {
+            d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->receiveBegin, nullptr, nullptr);
+        }
         {
             // The selected result ID is only known on GPU0 in mode 2b.
             NAU_GPU_TIMER("ao_mailbox_receive");
             drv3d_dx12::get_device().getContext().mailboxReceive(target, desc);
         }
-        if (timing) d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->received, nullptr, nullptr);
+        if (timing)
+        {
+            d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->received, nullptr, nullptr);
+        }
         return true;
     }
 

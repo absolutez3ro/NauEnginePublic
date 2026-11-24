@@ -184,15 +184,20 @@ namespace nau::mgpu::bridge
             }
         }
 
-        void initialize(ID3D12Device* device, ID3D12Device* secondaryDevice, ID3D12CommandQueue* queue)
+        bool initialize(ID3D12Device* primaryDevice, ID3D12Device* secondaryDevice, ID3D12CommandQueue* queue)
         {
-            if (!secondaryDevice || device == secondaryDevice)
+            if (!secondaryDevice || primaryDevice == secondaryDevice)
             {
-                throw std::runtime_error("Nau did not initialize a second DX12 device");
+                error = "Nau did not initialize a second DX12 device";
+                return false;
             }
-            secondary = gfx::GDeviceFactory::GetNauDevice(secondaryDevice);
-            if (!secondary) throw std::runtime_error("Nau's second DX12 device is not a hardware device");
-            primary = device;
+            secondary = gfx::GDeviceFactory::getNauDevice(secondaryDevice);
+            if (!secondary)
+            {
+                error = "Nau's second DX12 device could not be wrapped as a hardware device";
+                return false;
+            }
+            primary = primaryDevice;
             primaryQueue = queue;
             const auto name = secondary->GetName();
             const int bytes = WideCharToMultiByte(CP_UTF8, 0, name.data(), static_cast<int>(name.size()), nullptr, 0, nullptr, nullptr);
@@ -208,6 +213,7 @@ namespace nau::mgpu::bridge
                 IID_PPV_ARGS(&primaryList)));
             check(primaryList->Close());
             createPipelines();
+            return true;
         }
 
         void resize(UINT w, UINT h)
@@ -407,17 +413,37 @@ namespace nau::mgpu::bridge
     DofBridge::DofBridge() : m_impl(std::make_unique<Impl>()) {}
     DofBridge::~DofBridge() = default;
 
-    bool DofBridge::prepare(void* device, void* secondary, void* queue, uint32_t width, uint32_t height)
+    bool DofBridge::prepare(void* primaryDevice, void* secondaryDevice, void* primaryQueue, uint32_t width, uint32_t height)
     {
-        if (m_impl->failed) return false;
+        if (m_impl->failed)
+        {
+            return false;
+        }
+        if (!primaryDevice || !primaryQueue || !width || !height || width > 16384 || height > 16384)
+        {
+            m_impl->failed = true;
+            m_impl->error = "invalid DOF device, queue or dimensions";
+            return false;
+        }
         try
         {
-            if (!device || !queue || !width || !height || width > 16384 || height > 16384)
-                throw std::runtime_error("invalid DOF device, queue or dimensions");
-            if (!m_impl->primary) m_impl->initialize(static_cast<ID3D12Device*>(device), static_cast<ID3D12Device*>(secondary),
-+                                                    static_cast<ID3D12CommandQueue*>(queue));
-            if (m_impl->primary.Get() != device) throw std::runtime_error("primary device changed; recreate DOF bridge");
-            if (width != m_impl->width || height != m_impl->height) m_impl->resize(width, height);
+            if (!m_impl->primary && !m_impl->initialize(static_cast<ID3D12Device*>(primaryDevice),
+                                                        static_cast<ID3D12Device*>(secondaryDevice),
+                                                        static_cast<ID3D12CommandQueue*>(primaryQueue)))
+            {
+                m_impl->failed = true;
+                return false;
+            }
+            if (m_impl->primary.Get() != primaryDevice)
+            {
+                m_impl->failed = true;
+                m_impl->error = "primary device changed; recreate DOF bridge";
+                return false;
+            }
+            if (width != m_impl->width || height != m_impl->height)
+            {
+                m_impl->resize(width, height);
+            }
             return true;
         }
         catch (const std::exception& error)
