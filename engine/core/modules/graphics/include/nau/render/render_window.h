@@ -44,6 +44,7 @@ namespace nau::render
     enum class AmbientOcclusionAlgorithm : uint32_t
     {
         ssao = 0,
+        hbao = 2,
     };
 
     struct NAU_ABSTRACT_TYPE IRenderWindow : public virtual IRefCounted

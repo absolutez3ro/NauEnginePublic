@@ -5,8 +5,8 @@
 
 namespace nau::render::ao
 {
-    eastl::unique_ptr<Algorithm> createAlgorithm(AmbientOcclusionAlgorithm)
+    eastl::unique_ptr<Algorithm> createAlgorithm(AmbientOcclusionAlgorithm algorithm)
     {
-        return createSsao();
+        return algorithm == AmbientOcclusionAlgorithm::hbao ? createHbao() : createSsao();
     }
 }  // namespace nau::render::ao

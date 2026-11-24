@@ -26,7 +26,10 @@
             "material": "file:/res/materials/ssao.nmat_json",
             "postMaterial": "file:/res/materials/ssao_blur.nmat_json",
             "vertexShader": "file:/res/shaders/cache/shader_cache.nsbc+[ssao.vs.vsmain]",
-            "pixelShader": "file:/res/shaders/cache/shader_cache.nsbc+[ssao.ps.psmain]"
+            "pixelShader": "file:/res/shaders/cache/shader_cache.nsbc+[ssao.ps.psmain]",
+            "hbaoMaterial": "file:/res/materials/hbao.nmat_json",
+            "hbaoPixelShader": "file:/res/shaders/cache/shader_cache.nsbc+[hbao.ps.psmain]",
+            "hbaoComputeShader": "file:/res/shaders/cache/shader_cache.nsbc+[hbao.cs.csmain]"
         }
     },
     "contentPath": "test",

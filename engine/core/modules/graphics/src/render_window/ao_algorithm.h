@@ -57,5 +57,6 @@ namespace nau::render::ao
         }
     };
     eastl::unique_ptr<Algorithm> createSsao();
+    eastl::unique_ptr<Algorithm> createHbao();
     eastl::unique_ptr<Algorithm> createAlgorithm(AmbientOcclusionAlgorithm algorithm);
 }  // namespace nau::render::ao
