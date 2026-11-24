@@ -93,6 +93,23 @@ namespace nau
         virtual PROGRAM getPipelineProgram(eastl::string_view pipelineName) const = 0;
 
         /**
+         * @brief Checks whether the material has the specified pipeline.
+         *
+         * @param [in] pipelineName The name of the pipeline.
+         * @return                  true if the pipeline exists.
+         */
+        bool hasPipeline(eastl::string_view pipelineName) const;
+
+        /**
+         * @brief Retrieves a texture property of a pipeline.
+         *
+         * @param [in] pipelineName The name of the pipeline.
+         * @param [in] propertyName The name of the texture property.
+         * @return                  The texture, nullptr if the pipeline does not have the property.
+         */
+        BaseTexture* findTexture(eastl::string_view pipelineName, eastl::string_view propertyName);
+
+        /**
          * @brief Retrieves a set of all pipeline names.
          * 
          * @return A set containing the names of all pipelines.
@@ -242,6 +259,9 @@ namespace nau
          */
         void setTexture(eastl::string_view pipelineName, eastl::string_view propertyName, BaseTexture* texture);
 
+        /// Returns the current texture, including inherited material instance values.
+        virtual BaseTexture* getTexture(eastl::string_view pipelineName, eastl::string_view propertyName);
+
         /**
          * @brief Sets a solid color texture for a pipeline property.
          *
@@ -331,7 +351,7 @@ namespace nau
          *
          * @param [in] pipelineName The name of the pipeline.
          * @param [in] bufferName   The name of the buffer to set.
-         * @param [in] rwBuffer     The buffer to assign to the pipeline.
+         * @param [in] roBuffer     The buffer to assign to the pipeline.
          */
         void setRoBuffer(eastl::string_view pipelineName, eastl::string_view bufferName, Sbuffer* roBuffer);
 
@@ -738,6 +758,8 @@ namespace nau
          * @param [in] pipelineName The name of the pipeline to bind.
          */
         void bindPipeline(eastl::string_view pipelineName) override;
+
+        BaseTexture* getTexture(eastl::string_view pipelineName, eastl::string_view propertyName) override;
 
         /**
          * @brief Retrieves the program associated with the specified pipeline from the master material.

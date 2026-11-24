@@ -9,6 +9,10 @@ compile_configs {
     }
     config {
         stage:t="ps"
+        entry:t="PSDownsampleNormals"
+    }
+    config {
+        stage:t="ps"
         entry:t="PSDebugBilinear"
     }
 }

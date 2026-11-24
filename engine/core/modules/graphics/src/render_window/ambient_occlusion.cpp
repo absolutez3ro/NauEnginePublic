@@ -42,6 +42,11 @@ namespace nau::render
         return readSetting<bool>("render/ssao/enabled", false);
     }
 
+    bool AmbientOcclusion::usesPrepassNormals() const
+    {
+        return readSetting<bool>("render/ssao/prepassNormals", false);
+    }
+
     AmbientOcclusion::Settings AmbientOcclusion::getInitialSettings()
     {
         Settings settings;
@@ -304,9 +309,13 @@ namespace nau::render
         {
             return false;
         }
+        if (usesPrepassNormals())
+        {
+            m_inputNormals = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_G16R16F | TEXCF_RTARGET, 1, u8"ao_input_normals");
+        }
         m_inputDepth = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ao_input_depth");
         m_result = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_RTARGET | (algorithm().unorderedOutput() ? TEXCF_UNORDERED : 0), 1, u8"ao_result");
-        if (!m_inputDepth || !m_result)
+        if (!m_inputDepth || !m_result || (usesPrepassNormals() && !m_inputNormals))
         {
             NAU_LOG_ERROR("AO: could not allocate half-resolution targets");
             resetSecondary();
@@ -354,12 +363,24 @@ namespace nau::render
         d3d::resource_barrier({m_depth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         d3d::set_render_target();
         d3d::set_depth(nullptr, DepthAccess::RW);
-        d3d::set_render_target(m_inputDepth, 0);
+        const char* pipeline = "downsample";
+        if (m_normals && m_inputNormals)
+        {
+            d3d::resource_barrier({m_normals, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+            d3d::set_render_target(m_inputNormals, 0);
+            d3d::set_render_target(1, m_inputDepth, 0);
+            d3d::settex(0, m_normals);
+            pipeline = "downsampleNormals";
+        }
+        else
+        {
+            d3d::set_render_target(m_inputDepth, 0);
+        }
         d3d::setview(0, 0, m_secondaryWidth, m_secondaryHeight, 0.0f, 1.0f);
         d3d::set_srgb_backbuffer_write(false);
         d3d::settex(1, m_depth);
-        setConstants(*m_postMaterial, "downsample", m_constants);
-        m_postMaterial->bindPipeline("downsample");
+        setConstants(*m_postMaterial, pipeline, m_constants);
+        m_postMaterial->bindPipeline(pipeline);
         d3d::setvsrc(0, nullptr, 0);
         d3d::setind(nullptr);
         d3d::draw(PRIM_TRILIST, 0, 1);
