@@ -54,6 +54,10 @@ target_link_libraries(${TargetName} PUBLIC
   xxHash
 )
 
+if(WIN32)
+  target_link_libraries(${TargetName} PRIVATE d3d12 dxgi)
+endif()
+
 nau_target_link_modules(${TargetName}
   NauKernel
   vectormath
@@ -90,5 +94,9 @@ install(DIRECTORY ${moduleRoot}/include
 
 nau_install(${TargetName} core)
 
-# DX12 records mailbox receives through the shared transport headers.
+# The native bridge exposes no implementation headers or global using-directives.
 target_include_directories(${TargetName} PRIVATE ${moduleRoot}/../mgpu/include)
+if(NAU_ENABLE_MGPU)
+  target_link_libraries(${TargetName} PRIVATE $<LINK_ONLY:Mgpu>)
+  target_compile_definitions(${TargetName} PRIVATE NAU_ENABLE_MGPU=1)
+endif()
