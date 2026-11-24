@@ -185,13 +185,13 @@ namespace nau::PEPEngine::Graphics
             assert("Cant create device. Null Adapter");
         }
 
-        DXGI_ADAPTER_DESC2 desc;
         ThrowIfFailed(adapter->GetDesc2(&desc));
 
-        ThrowIfFailed(D3D12CreateDevice(
-            adapter.Get(),
-            D3D_FEATURE_LEVEL_11_0,
-            IID_PPV_ARGS(&device)));
+        if (!device)
+        {
+            ThrowIfFailed(D3D12CreateDevice(
+                adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+        }
 
         ThrowIfFailed(device->SetName(desc.Description));
 
@@ -263,6 +263,11 @@ namespace nau::PEPEngine::Graphics
     {
     }
 
+    GDevice::GDevice(const ComPtr<IDXGIAdapter3>& adapter, ID3D12Device* existingDevice)
+        : device(existingDevice), adapter(adapter), crossAdapterTextureSupport(false)
+    {
+    }
+
     ComPtr<ID3D12Device> GDevice::GetDXDevice() const
     {
         return device;
@@ -270,13 +275,27 @@ namespace nau::PEPEngine::Graphics
 
     GDevice::~GDevice()
     {
-        Flush();
+        Shutdown();
+    }
 
-        TerminatedQueuesWorker();
-        for (auto&& queue : queues)
+    void GDevice::Shutdown()
+    {
+        for (auto& queue : queues)
         {
-            queue->Flush();
+            if (queue)
+            {
+                queue->Flush();
+                queue->HardStop();
+                queue.reset();
+            }
         }
+        for (auto& allocator : graphicAllocators)
+        {
+            allocator.reset();
+        }
+        timestampResultBuffer = Lazy<GResource>();
+        timestampQueryHeap = Lazy<ComPtr<ID3D12QueryHeap>>();
+        isInitialized = false;
     }
 
 

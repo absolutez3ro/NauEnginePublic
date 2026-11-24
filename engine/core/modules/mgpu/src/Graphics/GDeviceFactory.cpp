@@ -31,14 +31,8 @@ namespace nau::PEPEngine::Graphics
 
         bool IsSamePhysicalAdapter(const DXGI_ADAPTER_DESC2& first, const DXGI_ADAPTER_DESC2& second)
         {
-            return first.VendorId == second.VendorId &&
-                first.DeviceId == second.DeviceId &&
-                first.SubSysId == second.SubSysId &&
-                first.Revision == second.Revision &&
-                first.DedicatedVideoMemory == second.DedicatedVideoMemory &&
-                first.DedicatedSystemMemory == second.DedicatedSystemMemory &&
-                first.SharedSystemMemory == second.SharedSystemMemory &&
-                std::wcscmp(first.Description, second.Description) == 0;
+            return first.AdapterLuid.HighPart == second.AdapterLuid.HighPart &&
+                first.AdapterLuid.LowPart == second.AdapterLuid.LowPart;
         }
 
         void FillD3D12AdapterInfo(AdapterSelectionInfo& info)
@@ -212,7 +206,6 @@ namespace nau::PEPEngine::Graphics
         {
             dxgiFactory = CreateFactory();
             adapters = GetAdapters();
-            hardwareDevices = CreateDevices();
         });
     }
 
@@ -260,42 +253,6 @@ namespace nau::PEPEngine::Graphics
         }
 
         return existAdapters;
-    }
-
-    std::vector<std::shared_ptr<GDevice>> GDeviceFactory::CreateDevices()
-    {
-        std::vector<std::shared_ptr<GDevice>> devices;
-        std::vector<DXGI_ADAPTER_DESC2> uniqueAdapterDescriptions;
-
-        for (const auto& adapter : adapters)
-        {
-            DXGI_ADAPTER_DESC2 desc = {};
-            ThrowIfFailed(adapter->GetDesc2(&desc));
-
-            bool isDuplicate = false;
-            for (const auto& uniqueDesc : uniqueAdapterDescriptions)
-            {
-                if (IsSamePhysicalAdapter(desc, uniqueDesc))
-                {
-                    isDuplicate = true;
-                    break;
-                }
-            }
-
-            if (isDuplicate)
-            {
-                continue;
-            }
-
-            uniqueAdapterDescriptions.emplace_back(desc);
-
-            auto device = std::make_shared<GDevice>(adapter);
-            device->Initialize();
-            devices.emplace_back(device);
-            //break;
-        }
-
-        return devices;
     }
 
     bool GDeviceFactory::CheckTearingSupport()
@@ -348,14 +305,54 @@ namespace nau::PEPEngine::Graphics
 
     std::shared_ptr<GDevice>& GDeviceFactory::GetDevice(const UINT adapterIndex)
     {
-        EnsureInitialized();
+        GetAllDevices();
         return hardwareDevices[adapterIndex];
+    }
+
+    std::shared_ptr<GDevice> GDeviceFactory::AcquireDevice(LUID luid, ID3D12Device* existingDevice)
+    {
+        EnsureInitialized();
+        for (auto& device : hardwareDevices)
+        {
+            const auto id = device->GetDXDevice()->GetAdapterLuid();
+            if (id.HighPart == luid.HighPart && id.LowPart == luid.LowPart)
+            {
+                return device;
+            }
+        }
+        ComPtr<IDXGIAdapter3> adapter;
+        ThrowIfFailed(dxgiFactory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&adapter)));
+        auto device = std::make_shared<GDevice>(adapter, existingDevice);
+        device->Initialize();
+        hardwareDevices.push_back(device);
+        return device;
+    }
+
+    void GDeviceFactory::Shutdown()
+    {
+        for (auto& device : hardwareDevices)
+        {
+            device->Shutdown();
+        }
+        if (wrapDevice)
+        {
+            wrapDevice->Shutdown();
+        }
+        devicesWithWarp.clear();
+        wrapDevice.reset();
+        hardwareDevices.clear();
     }
 
 
     std::vector<std::shared_ptr<GDevice>>& GDeviceFactory::GetAllDevices(const bool useWrap)
     {
         EnsureInitialized();
+        for (const auto& adapter : adapters)
+        {
+            DXGI_ADAPTER_DESC2 desc = {};
+            ThrowIfFailed(adapter->GetDesc2(&desc));
+            AcquireDevice(desc.AdapterLuid);
+        }
 
         if (!useWrap)
         {

@@ -16,47 +16,41 @@ namespace nau::PEPEngine::Graphics
                                                  const std::shared_ptr<GDevice>& sharedDevice, const std::wstring& name,
                                                  const D3D12_RESOURCE_STATES initialState,
                                                  const D3D12_CLEAR_VALUE* clearValue)
+        : GCrossAdapterResource(desc, desc, primeDevice, sharedDevice, name, initialState, clearValue)
     {
         desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
         desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    }
 
-        D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout;
-        primeDevice->GetDXDevice()->GetCopyableFootprints(&desc, 0, 1, 0, &layout, nullptr, nullptr, nullptr);
-        auto textureSize = Align(layout.Footprint.RowPitch * layout.Footprint.Height);
-
-
-        // Create a heap that will be shared by both adapters.
-        CD3DX12_HEAP_DESC heapDesc(
-            textureSize,
-            D3D12_HEAP_TYPE_DEFAULT,
-            0,
-            D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER);
-
-        ThrowIfFailed(primeDevice->GetDXDevice()->CreateHeap(&heapDesc, IID_PPV_ARGS(&crossAdapterResourceHeap[0])));
-
-
-        HANDLE heapHandle = nullptr;
-        ThrowIfFailed(primeDevice->GetDXDevice()->CreateSharedHandle(
-            crossAdapterResourceHeap[0].Get(),
-            nullptr,
-            GENERIC_ALL,
-            nullptr,
-            &heapHandle));
-
-        HRESULT openSharedHandleResult = sharedDevice->GetDXDevice()->OpenSharedHandle(
-            heapHandle, IID_PPV_ARGS(&crossAdapterResourceHeap[1]));
-
-        // We can close the handle after opening the cross-adapter shared resource.
-        CloseHandle(heapHandle);
-
-        ThrowIfFailed(openSharedHandleResult);
-
-        primeResource = std::make_shared<GResource>(primeDevice, desc, crossAdapterResourceHeap[0], name, clearValue,
-                                                    initialState);
-
-        sharedResource = std::make_shared<GResource
-        >(sharedDevice, desc, crossAdapterResourceHeap[1], name + L" Shared");
-
+    GCrossAdapterResource::GCrossAdapterResource(const D3D12_RESOURCE_DESC& primaryDesc,
+        const D3D12_RESOURCE_DESC& secondaryDesc, const std::shared_ptr<GDevice>& primary,
+        const std::shared_ptr<GDevice>& secondary, const std::wstring& name,
+        D3D12_RESOURCE_STATES initialState, const D3D12_CLEAR_VALUE* clearValue)
+    {
+        auto first = primaryDesc;
+        auto second = secondaryDesc;
+        first.Flags = second.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+        first.Layout = second.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        const auto a = primary->GetDXDevice()->GetResourceAllocationInfo(0, 1, &first);
+        const auto b = secondary->GetDXDevice()->GetResourceAllocationInfo(0, 1, &second);
+        if (!a.SizeInBytes || !b.SizeInBytes || a.SizeInBytes == UINT64_MAX || b.SizeInBytes == UINT64_MAX)
+        {
+            ThrowIfFailed(DXGI_ERROR_UNSUPPORTED);
+        }
+        D3D12_HEAP_DESC heap = {};
+        heap.SizeInBytes = std::max(a.SizeInBytes, b.SizeInBytes);
+        heap.Alignment = std::max(a.Alignment, b.Alignment);
+        heap.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+        heap.Flags = D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER;
+        ThrowIfFailed(primary->GetDXDevice()->CreateHeap(&heap, IID_PPV_ARGS(&crossAdapterResourceHeap[0])));
+        HANDLE handle = nullptr;
+        ThrowIfFailed(primary->GetDXDevice()->CreateSharedHandle(crossAdapterResourceHeap[0].Get(), nullptr,
+            GENERIC_ALL, nullptr, &handle));
+        const HRESULT result = secondary->GetDXDevice()->OpenSharedHandle(handle, IID_PPV_ARGS(&crossAdapterResourceHeap[1]));
+        CloseHandle(handle);
+        ThrowIfFailed(result);
+        primeResource = std::make_shared<GResource>(primary, first, crossAdapterResourceHeap[0], name, clearValue, initialState);
+        sharedResource = std::make_shared<GResource>(secondary, second, crossAdapterResourceHeap[1], name + L" Shared");
         isInit = true;
     }
 
