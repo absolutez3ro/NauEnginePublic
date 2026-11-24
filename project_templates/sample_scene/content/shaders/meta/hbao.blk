@@ -1,5 +1,9 @@
 compile_configs {
     config {
+        stage:t="ps"
+        entry:t="PSMain"
+    }
+    config {
         stage:t="cs"
         entry:t="CSMain"
     }

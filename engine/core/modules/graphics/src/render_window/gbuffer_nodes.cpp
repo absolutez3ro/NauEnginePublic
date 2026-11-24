@@ -214,7 +214,14 @@ namespace nau::render
                     // Bind an existing G-buffer SRV when SSAO is absent; the shader bypasses it.
                     BaseTexture* aoTexture = ambientOcclusion ? const_cast<BaseTexture*>(ambientOcclusion->get()) : m_gBuffer->getRt(0);
                     d3d::settex(6, m_ambientOcclusion ? m_ambientOcclusion->getResolveTexture(aoTexture) : aoTexture);
-                    if (m_ambientOcclusion) m_ambientOcclusion->bindResolveInputs();
+                    if (m_ambientOcclusion)
+                    {
+                        m_ambientOcclusion->bindResolveInputs();
+                    }
+                    else
+                    {
+                        d3d::settex(7, m_gBuffer->getDepth());
+                    }
                     m_csm->setCascadesToShader(m_gBuffer->getResolveShading()->getMaterial());
                     m_gBuffer->resolve(resolveTarget.get(),
                                        m_environmentRenderer->getIrradianceMap(),

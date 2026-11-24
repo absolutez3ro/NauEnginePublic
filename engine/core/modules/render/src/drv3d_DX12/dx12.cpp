@@ -35,6 +35,7 @@
 #if _TARGET_PC_WIN
 #include <atomic>
 #include "multi_gpu_device.h"
+#include "mgpu_context.h"
 #include "adapter_identity.h"
 #include "nau/app/global_properties.h"
 #include "nau/service/service_provider.h"
@@ -435,7 +436,8 @@ struct ApiState
 #if _TARGET_PC_WIN
   Direct3D12Enviroment d3d12Env;
   ComPtr<DXGIFactory> dxgi14;
-  SecondaryGpuDevice secondaryDevice;
+  std::shared_ptr<nau::mgpu::DeviceContext> primaryContext;
+  std::shared_ptr<nau::mgpu::DeviceContext> secondaryDevice;
   bool multiGpuEnabled = false;
   std::atomic<MultiGpuFallbackReason> multiGpuFallbackReason{MultiGpuFallbackReason::driverNotInitialized};
 #endif
@@ -510,6 +512,10 @@ struct ApiState
     shaderProgramDatabase.shutdown(ctx);
     ctx.finish();
 
+#if defined(NAU_ENABLE_MGPU)
+    nau::mgpu::shutdownDevices();
+#endif
+
     device.shutdown(DeviceCapsAndShaderModel::fromDriverDesc(driverDesc));
 
     deviceName.clear();
@@ -517,6 +523,7 @@ struct ApiState
     windowState.closeWindow();
 #if _TARGET_PC_WIN
     secondaryDevice.reset();
+    primaryContext.reset();
     multiGpuEnabled = false;
     multiGpuFallbackReason = MultiGpuFallbackReason::driverNotInitialized;
     debugState.teardown();
@@ -997,7 +1004,7 @@ void check_secondary_gpu_health()
   auto &state = drv3d_dx12::api_state;
   if (state.multiGpuFallbackReason != MultiGpuFallbackReason::available)
     return;
-  auto *device = state.secondaryDevice.getDevice();
+  auto *device = state.secondaryDevice ? state.secondaryDevice->device() : nullptr;
   const HRESULT hr = device ? device->GetDeviceRemovedReason() : DXGI_ERROR_DEVICE_REMOVED;
   auto expected = MultiGpuFallbackReason::available;
   const auto reason = drv3d_dx12::check_secondary_gpu_health(expected, hr);
@@ -1031,80 +1038,31 @@ void init_secondary_gpu(D3D_FEATURE_LEVEL feature_level, const nau::DataBlock *g
     set_multi_gpu_fallback(MultiGpuFallbackReason::noSecondaryAdapter);
     return;
   }
-  const auto primaryIdentity = query_physical_adapter_identity(primaryInfo.AdapterLuid);
-  if (requested)
-    NAU_LOG_INFO("DX12: Benchmark GPU1 LUID {:#010x}:{:#010x}; automatic fallback is disabled",
-      static_cast<uint32_t>(requestedLuid.HighPart), requestedLuid.LowPart);
-
-
-  // A requested alias must not disappear when the ordinary candidate list is deduplicated.
-  if (requested)
+#if defined(NAU_ENABLE_MGPU)
+  state.primaryContext = std::make_shared<nau::mgpu::DeviceContext>();
+  HRESULT result = state.primaryContext->attach(state.device.getDevice());
+  if (FAILED(result))
   {
-    candidates.clear();
-    ComPtr<IDXGIAdapter1> adapter;
-    const HRESULT hr = state.dxgi14->EnumAdapterByLuid(requestedLuid, COM_ARGS(&adapter));
-    if (FAILED(hr) || !adapter)
-    {
-      NAU_LOG_ERROR("DX12: Requested benchmark GPU1 is unavailable");
-      set_multi_gpu_fallback(MultiGpuFallbackReason::noSecondaryAdapter);
-      return;
-    }
-    check_and_add_adapter(state.d3d12Env, feature_level, gpu_cfg, adapter, candidates);
-    if (candidates.empty())
-    {
-      set_multi_gpu_fallback(MultiGpuFallbackReason::noSecondaryAdapter);
-      return;
-    }
-  }
-  // Explicit primary selection by LUID, monitor or WARP bypasses the normal candidate list.
-  else if (candidates.empty())
-  {
-    if (FAILED(enumerate_adapters(state.d3d12Env, state.dxgi14, feature_level, gpu_cfg, candidates)))
-      failureReason = MultiGpuFallbackReason::adapterEnumerationFailed;
-  }
-
-  // AO can use an integrated adapter without displacing the preferred rendering GPU.
-  // Other hardware adapters remain candidates when no integrated device can be created.
-  prefer_adapter_architecture(state.d3d12Env, candidates, feature_level, true);
-  NAU_LOG_INFO("DX12: MGPU secondary order: UMA first, then remaining Windows performance order");
-
-  for (const auto &candidate : candidates)
-  {
-    if (!is_secondary_gpu_candidate(candidate.info, primaryInfo.AdapterLuid))
-      continue;
-    if (requested && (candidate.info.AdapterLuid.HighPart != requestedLuid.HighPart ||
-        candidate.info.AdapterLuid.LowPart != requestedLuid.LowPart))
-      continue;
-    if (same_physical_adapter(primaryIdentity, query_physical_adapter_identity(candidate.info.AdapterLuid)))
-      continue;
-    const HRESULT hr = state.secondaryDevice.init(candidate.adapter.Get(), primaryInfo.AdapterLuid, feature_level,
-      state.d3d12Env.D3D12CreateDevice);
-    if (FAILED(hr))
-    {
-      failureReason = MultiGpuFallbackReason::deviceCreationFailed;
-      NAU_LOG_WARNING("DX12: Secondary GPU creation failed for LUID {:#010x}:{:#010x}: {}",
-        static_cast<uint32_t>(candidate.info.AdapterLuid.HighPart), candidate.info.AdapterLuid.LowPart,
-        dxgi_error_code_to_string(hr));
-      continue;
-    }
-    log_multi_gpu_adapter(d3d::SECONDARY_GPU, state.secondaryDevice.getDescription(),
-      state.secondaryDevice.getCrossAdapterSupport());
-    if (FAILED(state.secondaryDevice.getCrossAdapterSupport().queryResult))
-    {
-      state.secondaryDevice.reset();
-      failureReason = MultiGpuFallbackReason::capabilityQueryFailed;
-      continue;
-    }
-    if (FAILED(state.secondaryDevice.getDevice()->GetDeviceRemovedReason()))
-    {
-      state.secondaryDevice.reset();
-      failureReason = MultiGpuFallbackReason::secondaryDeviceRemoved;
-      continue;
-    }
-    state.multiGpuFallbackReason = MultiGpuFallbackReason::available;
-    NAU_LOG_INFO("DX12: MGPU secondary device available; transfer channels must validate resource support");
+    state.primaryContext.reset();
+    set_multi_gpu_fallback(MultiGpuFallbackReason::deviceCreationFailed);
     return;
   }
+  auto secondary = std::make_shared<nau::mgpu::DeviceContext>();
+  const bool useWarp = GetEnvironmentVariableA("NAU_MGPU_TEST_WARP", nullptr, 0) != 0;
+  result = secondary->selectSecondary(primaryInfo.AdapterLuid, requested ? &requestedLuid : nullptr, useWarp);
+  if (SUCCEEDED(result))
+  {
+    CrossAdapterSupport support;
+    support.query(secondary->device());
+    log_multi_gpu_adapter(d3d::SECONDARY_GPU, secondary->description(), support);
+    state.secondaryDevice = std::move(secondary);
+    state.multiGpuFallbackReason = MultiGpuFallbackReason::available;
+    NAU_LOG_INFO("DX12: MGPU device and queues owned by sm_team GDeviceFactory");
+    return;
+  }
+  failureReason = result == DXGI_ERROR_NOT_FOUND ? MultiGpuFallbackReason::noSecondaryAdapter :
+    MultiGpuFallbackReason::deviceCreationFailed;
+#endif
 
   set_multi_gpu_fallback(failureReason);
 }
@@ -1524,9 +1482,14 @@ void *d3d::get_device(GpuId gpu_id)
     return get_device();
 #if _TARGET_PC_WIN
   if (gpu_id == SECONDARY_GPU)
-    return is_multi_gpu_available() ? drv3d_dx12::api_state.secondaryDevice.getDevice() : nullptr;
+    return is_multi_gpu_available() ? drv3d_dx12::api_state.secondaryDevice->device() : nullptr;
 #endif
   return nullptr;
+}
+
+std::shared_ptr<nau::mgpu::DeviceContext> drv3d_dx12::get_mgpu_device_context(d3d::GpuId gpu)
+{
+  return gpu == d3d::PRIMARY_GPU ? api_state.primaryContext : api_state.secondaryDevice;
 }
 
 bool d3d::has_secondary_gpu() { return get_device(SECONDARY_GPU) != nullptr; }
@@ -1538,7 +1501,7 @@ bool d3d::is_multi_gpu_available()
 #if _TARGET_PC_WIN
   check_secondary_gpu_health();
   return drv3d_dx12::api_state.multiGpuFallbackReason == MultiGpuFallbackReason::available &&
-    drv3d_dx12::api_state.secondaryDevice.getDevice() != nullptr;
+    drv3d_dx12::api_state.secondaryDevice && drv3d_dx12::api_state.secondaryDevice->device() != nullptr;
 #else
   return false;
 #endif

@@ -1,4 +1,4 @@
-// device_ssao_pass.h
+// ao_device_pass.h
 //
 // Copyright 2026 N-GINN LLC. All rights reserved.
 //
@@ -7,15 +7,16 @@
 #include <EASTL/shared_ptr.h>
 #include <EASTL/unique_ptr.h>
 
-#include "device_resource.h"
-#include "multi_gpu_transfer.h"
-#include "nau/3d/multi_gpu_ssao_types.h"
+#include "nau/3d/ao_constants.h"
+#include "nau/3d/ao_executor.h"
+#include "nau/mgpu/bridge/device_context.h"
+#include "nau/mgpu/mailbox/mailbox_job.h"
 
 namespace drv3d_dx12
 {
-    struct DeviceSsaoPassDesc
+    struct AoDevicePassDesc
     {
-        eastl::shared_ptr<IDeviceResourceAllocator> allocator;
+        std::shared_ptr<nau::mgpu::DeviceContext> context;
         UINT width = 0;
         UINT height = 0;
         UINT inputWidth = 0;
@@ -23,11 +24,9 @@ namespace drv3d_dx12
         D3D12_SHADER_BYTECODE vertexShader = {};
         D3D12_SHADER_BYTECODE rawShader = {};
         D3D12_SHADER_BYTECODE rawComputeShader = {};
-        D3D12_SHADER_BYTECODE xePrefilterShader = {};
-        D3D12_SHADER_BYTECODE xeMainShader = {};
-        D3D12_SHADER_BYTECODE xeDenoiseShader = {};
-        D3D12_SHADER_BYTECODE xeDenoiseLastShader = {};
-        D3D12_SHADER_BYTECODE xeCompositeShader = {};
+        nau::render::ao::NativeAlgorithmFactory createAlgorithm = nullptr;
+        const nau::render::ao::ShaderBytecode* algorithmShaders = nullptr;
+        uint32_t algorithmShaderCount = 0;
         bool reconstructNormals = false;
         bool packedNormals = false;
         bool linearDepth16 = false;
@@ -37,41 +36,25 @@ namespace drv3d_dx12
     };
 
     /** @brief Shared textures as seen by GPU1. */
-    struct MailboxSsaoTextures
+    struct AoDeviceInputs
     {
         ID3D12Resource* normals = nullptr;
         ID3D12Resource* depth = nullptr;
         ID3D12Resource* result = nullptr;
     };
 
-    /** @brief Input dependency and output resources for a native GPU1 mailbox job. */
-    struct MailboxSsaoJob
-    {
-        CrossAdapterSyncPoint inputsReady;
-        CrossAdapterFence* completion = nullptr;
-        ID3D12Resource* frameId = nullptr;
-        ID3D12Resource* mailbox = nullptr;
-        uint32_t outputSlot = 0;
-    };
-
-    struct MailboxSsaoCompletion
-    {
-        uint64_t dataReady = 0;  ///< Completion fence value for AO and its frame ID.
-        uint64_t published = 0;  ///< Completion fence value including mailbox metadata publication.
-    };
-
     /** @brief Native GPU1 AO compute and publication for mailbox 2b. */
-    class DeviceSsaoPass final
+    class AoDevicePass final
     {
     public:
-        DeviceSsaoPass();
-        DeviceSsaoPass(const DeviceSsaoPass&) = delete;
-        DeviceSsaoPass(DeviceSsaoPass&&) = delete;
-        DeviceSsaoPass& operator=(const DeviceSsaoPass&) = delete;
-        DeviceSsaoPass& operator=(DeviceSsaoPass&&) = delete;
-        ~DeviceSsaoPass();
+        AoDevicePass();
+        AoDevicePass(const AoDevicePass&) = delete;
+        AoDevicePass(AoDevicePass&&) = delete;
+        AoDevicePass& operator=(const AoDevicePass&) = delete;
+        AoDevicePass& operator=(AoDevicePass&&) = delete;
+        ~AoDevicePass();
 
-        HRESULT init(const DeviceSsaoPassDesc& desc);
+        HRESULT init(const AoDevicePassDesc& desc);
         /**
          * @brief Waits for native submissions before releasing the producer's resources.
          * @param timeoutMs Maximum wait in milliseconds.
@@ -87,9 +70,9 @@ namespace drv3d_dx12
          * @param[out] completion Fence values for the output and its publication.
          * @return S_OK when queued, S_FALSE when no recording is free, or a failure HRESULT.
          */
-        HRESULT executeMailbox(const d3d::mgpu::SsaoConstants& constants, const MailboxSsaoTextures& shared, const MailboxSsaoJob& job, uint64_t frame, MailboxSsaoCompletion& completion);
+        HRESULT executeMailbox(const nau::render::AoConstants& constants, const AoDeviceInputs& shared, const nau::mgpu::MailboxJob& job, uint64_t frame, nau::mgpu::MailboxCompletion& completion);
         void retainMailboxResources(const eastl::shared_ptr<void>& resources);
-        d3d::mgpu::SsaoGpuTiming pollTiming();
+        nau::render::ao::ExecutionStats pollTiming();
         /**
          * @brief Releases retired GPU1 resources whose work has completed, without blocking.
          * @return Number of retired pass states still pending.

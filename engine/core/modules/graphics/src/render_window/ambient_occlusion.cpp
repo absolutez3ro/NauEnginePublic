@@ -1,3 +1,5 @@
+// ambient_occlusion.cpp
+//
 // Copyright 2026 N-GINN LLC. All rights reserved.
 #include "ambient_occlusion.h"
 
@@ -5,9 +7,10 @@
 
 #include <cstring>
 
-#include "nau/app/global_properties.h"
-#include "nau/3d/ssao_random_texture.h"
 #include "nau/3d/dag_drv3dCmd.h"
+#include "nau/3d/dag_drv3d_multi_gpu.h"
+#include "nau/3d/ssao_random_texture.h"
+#include "nau/app/global_properties.h"
 #include "nau/diag/logging.h"
 #include "nau/service/service_provider.h"
 #include "nau/shaders/shader_globals.h"
@@ -25,11 +28,6 @@ namespace nau::render
 
         constexpr uint32_t AO_DIVISOR = 2;
         constexpr float DEPTH_THRESHOLD = 0.2f;
-
-        bool reconstructNormals(AmbientOcclusionAlgorithm algorithm)
-        {
-            return algorithm != AmbientOcclusionAlgorithm::xegtao;
-        }
 
         void clearAoTarget(BaseTexture* target)
         {
@@ -62,19 +60,12 @@ namespace nau::render
 
     async::Task<> AmbientOcclusion::loadAssets()
     {
-        MaterialAssetRef raw{"file:/res/materials/ssao.nmat_json"};
         MaterialAssetRef post{"file:/res/materials/ssao_blur.nmat_json"};
-        m_rawMaterial = co_await raw.getAssetViewTyped<MaterialAssetView>();
-        if (!m_rawMaterial)
-        {
-            co_yield NauMakeError("Failed to load /res/materials/ssao.nmat_json");
-        }
         m_postMaterial = co_await post.getAssetViewTyped<MaterialAssetView>();
         if (!m_postMaterial)
         {
             co_yield NauMakeError("Failed to load /res/materials/ssao_blur.nmat_json");
         }
-        m_rawMaterial->enableAutoSetTextures(false);
         m_postMaterial->enableAutoSetTextures(false);
         d3d::SamplerInfo sampler;
         sampler.filter_min_mode = sampler.filter_mag_mode = d3d::FilterMode::Linear;
@@ -82,68 +73,29 @@ namespace nau::render
         m_linearWrap = d3d::create_sampler(sampler);
         sampler.address_mode_u = sampler.address_mode_v = sampler.address_mode_w = d3d::AddressMode::Clamp;
         m_linearClamp = d3d::create_sampler(sampler);
-        sampler.filter_min_mode = sampler.filter_mag_mode = d3d::FilterMode::Point;
-        m_xePointClamp = d3d::create_sampler(sampler);
-        for (MaterialAssetView* material : {m_rawMaterial.get(), m_postMaterial.get()})
+        for (const auto id : {AmbientOcclusionAlgorithm::ssao, AmbientOcclusionAlgorithm::hbao, AmbientOcclusionAlgorithm::xegtao})
         {
-            for (const auto& pipeline : material->getPipelineNames())
+            auto algorithm = ao::createAlgorithm(id);
+            co_await algorithm->loadAssets();
+            if (auto* material = algorithm->material())
             {
-                material->setSampler(pipeline, "aoLinearClamp", m_linearClamp, 0);
-                material->setSampler(pipeline, "aoLinearWrap", m_linearWrap, 1);
+                material->setSampler("default", "aoLinearClamp", m_linearClamp, 0);
+                material->setSampler("default", "aoLinearWrap", m_linearWrap, 1);
             }
+            m_algorithms[static_cast<size_t>(id)] = std::move(algorithm);
         }
-
-        const char* xeShaderPaths[] = {
-            "file:/res/shaders/cache/shader_cache.nsbc+[xegtao_prefilter.cs.csmain]",
-            "file:/res/shaders/cache/shader_cache.nsbc+[xegtao_main.cs.csmain]",
-            "file:/res/shaders/cache/shader_cache.nsbc+[xegtao_denoise.cs.csmain]",
-            "file:/res/shaders/cache/shader_cache.nsbc+[xegtao_denoise.cs.cslast]",
-            "file:/res/shaders/cache/shader_cache.nsbc+[xegtao_composite.cs.csmain]"};
-        for (size_t index = 0; index < m_xeShaders.size(); ++index)
+        for (const auto& pipeline : m_postMaterial->getPipelineNames())
         {
-            ShaderAssetRef shader{xeShaderPaths[index]};
-            auto loaded = co_await shader.getAssetViewTyped<ShaderAssetView>().doTry();
-            if (loaded)
-            {
-                m_xeShaders[index] = *loaded;
-                m_xePrograms[index] = ShaderAssetView::makeShaderProgram(eastl::span<ShaderAssetView::Ptr>(&m_xeShaders[index], 1));
-            }
-            else
-            {
-                NAU_LOG_ERROR("XeGTAO: compute shader unavailable, {}", xeShaderPaths[index]);
-            }
+            m_postMaterial->setSampler(pipeline, "aoLinearClamp", m_linearClamp, 0);
+            m_postMaterial->setSampler(pipeline, "aoLinearWrap", m_linearWrap, 1);
         }
-        // Keep the secondary shaders ready for switching to Multi GPU.
-        if (d3d::is_multi_gpu_available())
-        {
-            ShaderAssetRef vertex{"file:/res/shaders/cache/shader_cache.nsbc+[ssao.vs.vsmain]"};
-            ShaderAssetRef rawShader{"file:/res/shaders/cache/shader_cache.nsbc+[ssao.ps.psmain]"};
-            m_vertexShader = co_await vertex.getAssetViewTyped<ShaderAssetView>();
-            m_rawShader = co_await rawShader.getAssetViewTyped<ShaderAssetView>();
-            // HBAO's compute path is optional; the raw pixel shader remains a fallback on either GPU.
-            ShaderAssetRef hbaoShader{"file:/res/shaders/cache/shader_cache.nsbc+[hbao.cs.csmain]"};
-            auto hbao = co_await hbaoShader.getAssetViewTyped<ShaderAssetView>().doTry();
-            if (hbao)
-            {
-                m_hbaoShader = *hbao;
-            }
-            if (!m_vertexShader || !m_rawShader)
-            {
-                NAU_LOG_ERROR("SSAO: secondary shaders unavailable, using GPU 0");
-            }
-        }
+        ShaderAssetRef vertex{"file:/res/shaders/cache/shader_cache.nsbc+[ssao.vs.vsmain]"};
+        m_vertexShader = co_await vertex.getAssetViewTyped<ShaderAssetView>();
     }
 
     AmbientOcclusion::~AmbientOcclusion()
     {
         resetSecondary();
-        for (PROGRAM program : m_xePrograms)
-        {
-            if (program != BAD_PROGRAM)
-            {
-                d3d::delete_program(program);
-            }
-        }
         if (m_randomTexture)
         {
             m_randomTexture->destroy();
@@ -153,9 +105,9 @@ namespace nau::render
     void AmbientOcclusion::resetSecondary()
     {
         // Release the producer before destroying surfaces that its queues may still use.
-        d3d::mgpu::destroySsaoProducer(m_secondary);
+        nau::render::ao::destroySecondaryExecutor(m_secondary);
         m_secondary = nullptr;
-        for (BaseTexture** texture : {&m_inputNormals, &m_inputDepth, &m_result, &m_xeDepth, &m_xePing, &m_xePong, &m_xeEdges})
+        for (BaseTexture** texture : {&m_inputNormals, &m_inputDepth, &m_result})
         {
             if (*texture)
             {
@@ -167,7 +119,13 @@ namespace nau::render
         m_resultInitialized = false;
         m_usingSecondary = false;
         m_secondaryAttempted = false;
-        m_xeAttempted = false;
+        for (auto& algorithm : m_algorithms)
+        {
+            if (algorithm)
+            {
+                algorithm->reset();
+            }
+        }
         m_primaryWidth = 0;
         m_primaryHeight = 0;
         m_secondaryWidth = 0;
@@ -188,7 +146,7 @@ namespace nau::render
         prepareTargets(width, height);
         if (m_measureTimings)
         {
-            m_measurements.gpu1Timing = d3d::mgpu::pollSsaoTiming(m_secondary);
+            m_measurements.gpu1Timing = nau::render::ao::pollSecondary(m_secondary);
         }
     }
 
@@ -197,7 +155,7 @@ namespace nau::render
         m_measurements.frame = ++m_frameIndex;
         m_measurements.aoWidth = m_measurements.inputWidth = m_secondaryWidth;
         m_measurements.aoHeight = m_measurements.inputHeight = m_secondaryHeight;
-        m_measurements.reconstructNormals = reconstructNormals(m_settings.algorithm);
+        m_measurements.reconstructNormals = algorithm().reconstructNormals();
         if (m_measureTimings)
         {
             m_measurements.phase = readSetting<uint32_t>("sample/automation/phase", 0);
@@ -217,10 +175,8 @@ namespace nau::render
         std::memcpy(m_constants.projection, &projection, sizeof(projection));
         std::memcpy(m_constants.inverseProjection, &inverseProjection, sizeof(inverseProjection));
         std::memcpy(m_constants.view, &view, sizeof(view));
-        const bool hbao = m_settings.algorithm == AmbientOcclusionAlgorithm::hbao;
-        m_constants.parameters[0] = hbao ? 2.f : 0.5f;
+        algorithm().configureConstants(m_constants);
         m_constants.options[0] = m_measurements.reconstructNormals ? 1.f : 0.f;
-        m_constants.options[3] = hbao ? 16.f : 14.f;
         m_constants.pipeline[3] = static_cast<float>(m_settings.algorithm);
         m_constants.sizes[0] = m_constants.sizes[2] = static_cast<float>(m_secondaryWidth);
         m_constants.sizes[1] = m_constants.sizes[3] = static_cast<float>(m_secondaryHeight);
@@ -238,10 +194,10 @@ namespace nau::render
                 clearAoTarget(m_result);
                 m_resultInitialized = true;
             }
-            m_usingSecondary = d3d::mgpu::submitMailboxSsao(m_secondary, m_constants, m_inputNormals, m_inputDepth, m_frameIndex);
+            m_usingSecondary = nau::render::ao::submitSecondary(m_secondary, m_constants, m_inputNormals, m_inputDepth, m_frameIndex);
             if (!m_usingSecondary)
             {
-                d3d::mgpu::destroySsaoProducer(m_secondary);
+                nau::render::ao::destroySecondaryExecutor(m_secondary);
                 m_secondary = nullptr;
                 m_measurements.gpu1Timing = {};
                 m_logSettings = true;
@@ -261,10 +217,10 @@ namespace nau::render
             return;
         }
 
-        if (m_usingSecondary && !d3d::mgpu::receiveMailboxSsao(m_secondary, m_result, m_frameIndex))
+        if (m_usingSecondary && !nau::render::ao::receiveSecondary(m_secondary, m_result, m_frameIndex))
         {
             // Drain partial work before falling back to local AO.
-            d3d::mgpu::destroySsaoProducer(m_secondary);
+            nau::render::ao::destroySecondaryExecutor(m_secondary);
             m_secondary = nullptr;
             m_usingSecondary = false;
             m_measurements.gpu1Timing = {};
@@ -282,12 +238,12 @@ namespace nau::render
 
     bool AmbientOcclusion::drawRaw()
     {
-        if (m_settings.algorithm != AmbientOcclusionAlgorithm::xegtao)
+        if (auto* material = algorithm().material())
         {
-            draw(m_result, *m_rawMaterial, "default");
+            draw(m_result, *material, "default");
             return true;
         }
-        if (drawXeGtao())
+        if (algorithm().draw({m_secondaryWidth, m_secondaryHeight, m_inputNormals, m_inputDepth, m_result, m_constants}))
         {
             return true;
         }
@@ -295,116 +251,6 @@ namespace nau::render
         d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
         d3d::set_render_target();
         return false;
-    }
-
-    bool AmbientOcclusion::drawXeGtao()
-    {
-        for (PROGRAM program : m_xePrograms)
-        {
-            if (program == BAD_PROGRAM)
-            {
-                return false;
-            }
-        }
-        if (!m_xeDepth)
-        {
-            if (m_xeAttempted)
-            {
-                return false;
-            }
-            m_xeAttempted = true;
-            m_xeDepth = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R16F | TEXCF_UNORDERED, 5, u8"xegtao_depth_mips");
-            m_xePing = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R32UI | TEXCF_UNORDERED, 1, u8"xegtao_ao_ping");
-            m_xePong = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R32UI | TEXCF_UNORDERED, 1, u8"xegtao_ao_pong");
-            m_xeEdges = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_UNORDERED, 1, u8"xegtao_edges");
-            if (!m_xeDepth || !m_xePing || !m_xePong || !m_xeEdges)
-            {
-                NAU_LOG_ERROR("XeGTAO: could not allocate GPU 0 working textures");
-                for (BaseTexture** texture : {&m_xeDepth, &m_xePing, &m_xePong, &m_xeEdges})
-                {
-                    if (*texture)
-                    {
-                        (*texture)->destroy();
-                    }
-                    *texture = nullptr;
-                }
-                return false;
-            }
-            NAU_LOG_INFO("XeGTAO: GPU 0 AO path=compute, quality=high, denoise=2");
-        }
-        if (!m_xePing || !m_xePong || !m_xeEdges)
-        {
-            return false;
-        }
-        if (!m_resultInitialized)
-        {
-            // Initialize render-target metadata before the first UAV write.
-            d3d::set_render_target(m_result, 0);
-            d3d::clearview(CLEAR_TARGET, math::E3DCOLOR(255, 255, 255, 255), 0, 0);
-            m_resultInitialized = true;
-        }
-        d3d::set_render_target();
-        d3d::set_depth(nullptr, DepthAccess::RW);
-        d3d::set_cs_constbuffer_size(sizeof(m_constants) / 16);
-        d3d::set_cs_const(0, &m_constants, sizeof(m_constants) / 16);
-        d3d::set_sampler(STAGE_CS, 0, m_xePointClamp);
-        d3d::resource_barrier({m_inputDepth, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
-        d3d::resource_barrier({m_inputNormals, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
-        d3d::set_tex(STAGE_CS, 0, m_inputNormals);
-        d3d::set_tex(STAGE_CS, 1, m_inputDepth);
-
-        d3d::resource_barrier({m_xeDepth, RB_RW_UAV | RB_STAGE_COMPUTE, 0, 0});
-        d3d::set_program(m_xePrograms[0]);
-        for (uint32_t mip = 0; mip < 5; ++mip)
-        {
-            d3d::set_rwtex(STAGE_CS, mip, m_xeDepth, 0, mip);
-        }
-        d3d::dispatch((m_secondaryWidth + 15) / 16, (m_secondaryHeight + 15) / 16, 1);
-        for (uint32_t slot = 0; slot < 5; ++slot)
-        {
-            d3d::set_rwtex(STAGE_CS, slot, nullptr, 0, 0);
-        }
-        d3d::resource_barrier({m_xeDepth, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
-
-        d3d::resource_barrier({m_xePing, RB_RW_UAV | RB_STAGE_COMPUTE, 0, 0});
-        d3d::resource_barrier({m_xeEdges, RB_RW_UAV | RB_STAGE_COMPUTE, 0, 0});
-        d3d::set_program(m_xePrograms[1]);
-        d3d::set_tex(STAGE_CS, 2, m_xeDepth);
-        d3d::set_rwtex(STAGE_CS, 0, m_xePing, 0, 0);
-        d3d::set_rwtex(STAGE_CS, 1, m_xeEdges, 0, 0);
-        d3d::dispatch((m_secondaryWidth + 7) / 8, (m_secondaryHeight + 7) / 8, 1);
-        d3d::set_rwtex(STAGE_CS, 0, nullptr, 0, 0);
-        d3d::set_rwtex(STAGE_CS, 1, nullptr, 0, 0);
-        d3d::resource_barrier({m_xeEdges, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
-        d3d::set_tex(STAGE_CS, 3, m_xeEdges);
-
-        BaseTexture* source = m_xePing;
-        BaseTexture* destination = m_xePong;
-        for (size_t pass = 2; pass < 4; ++pass)
-        {
-            d3d::set_tex(STAGE_CS, 2, nullptr);
-            d3d::resource_barrier({source, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
-            d3d::resource_barrier({destination, RB_RW_UAV | RB_STAGE_COMPUTE, 0, 0});
-            d3d::set_program(m_xePrograms[pass]);
-            d3d::set_tex(STAGE_CS, 2, source);
-            d3d::set_rwtex(STAGE_CS, 0, destination, 0, 0);
-            d3d::dispatch((m_secondaryWidth + 15) / 16, (m_secondaryHeight + 7) / 8, 1);
-            d3d::set_rwtex(STAGE_CS, 0, nullptr, 0, 0);
-            eastl::swap(source, destination);
-        }
-        d3d::resource_barrier({source, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
-        d3d::resource_barrier({m_result, RB_RW_UAV | RB_STAGE_COMPUTE, 0, 0});
-        d3d::set_program(m_xePrograms[4]);
-        d3d::set_tex(STAGE_CS, 2, source);
-        d3d::set_rwtex(STAGE_CS, 0, m_result, 0, 0);
-        d3d::dispatch((m_secondaryWidth + 7) / 8, (m_secondaryHeight + 7) / 8, 1);
-        d3d::set_rwtex(STAGE_CS, 0, nullptr, 0, 0);
-        for (uint32_t slot = 0; slot < 4; ++slot)
-        {
-            d3d::set_tex(STAGE_CS, slot, nullptr);
-        }
-        d3d::resource_barrier({m_result, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
-        return true;
     }
 
     bool AmbientOcclusion::prepareTargets(uint32_t width, uint32_t height)
@@ -422,20 +268,15 @@ namespace nau::render
         m_primaryHeight = height;
         m_secondaryWidth = (width + AO_DIVISOR - 1) / AO_DIVISOR;
         m_secondaryHeight = (height + AO_DIVISOR - 1) / AO_DIVISOR;
-        const bool xegtao = m_settings.algorithm == AmbientOcclusionAlgorithm::xegtao;
-        if (xegtao)
-        {
-            // Five depth mips require a minimum extent of sixteen texels.
-            m_secondaryWidth = eastl::max(m_secondaryWidth, 16u);
-            m_secondaryHeight = eastl::max(m_secondaryHeight, 16u);
-        }
+        m_secondaryWidth = eastl::max(m_secondaryWidth, algorithm().minimumExtent());
+        m_secondaryHeight = eastl::max(m_secondaryHeight, algorithm().minimumExtent());
         if (!createRandomTexture())
         {
             return false;
         }
         m_inputNormals = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_G16R16F | TEXCF_RTARGET, 1, u8"ao_input_normals");
         m_inputDepth = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ao_input_depth");
-        m_result = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_RTARGET | (xegtao ? TEXCF_UNORDERED : 0), 1, u8"ao_result");
+        m_result = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_RTARGET | (algorithm().unorderedOutput() ? TEXCF_UNORDERED : 0), 1, u8"ao_result");
         if (!m_inputNormals || !m_inputDepth || !m_result)
         {
             NAU_LOG_ERROR("AO: could not allocate half-resolution targets");
@@ -448,80 +289,35 @@ namespace nau::render
 
     bool AmbientOcclusion::prepareSecondary()
     {
-        if (!d3d::is_multi_gpu_available() || !m_vertexShader || !m_rawShader)
+        if (!d3d::is_multi_gpu_available() || !m_vertexShader)
         {
             return false;
         }
         if (!m_secondaryAttempted)
         {
             m_secondaryAttempted = true;
-            const bool hbao = m_settings.algorithm == AmbientOcclusionAlgorithm::hbao;
-            const bool xegtao = m_settings.algorithm == AmbientOcclusionAlgorithm::xegtao;
-            const Shader* vertex = m_vertexShader->getShader();
-            const Shader* raw = m_rawShader->getShader();
-            d3d::mgpu::SsaoProducerDesc desc;
+            const auto& vertex = m_vertexShader->getShader()->bytecode;
+            ao::ExecutorDescription desc;
             desc.width = m_secondaryWidth;
             desc.height = m_secondaryHeight;
-            desc.vertexBytecode = vertex->bytecode.data();
-            desc.vertexBytecodeSize = vertex->bytecode.size();
-            desc.rawBytecode = raw->bytecode.data();
-            desc.rawBytecodeSize = raw->bytecode.size();
-            if (xegtao)
+            desc.vertexBytecode = vertex.data();
+            desc.vertexBytecodeSize = vertex.size();
+            if (!algorithm().configureSecondary(desc))
             {
-                for (const auto& shader : m_xeShaders)
-                {
-                    if (!shader || shader->getShader()->bytecode.empty())
-                    {
-                        NAU_LOG_ERROR("XeGTAO: compute shaders unavailable");
-                        return false;
-                    }
-                }
-                const auto& prefilter = m_xeShaders[0]->getShader()->bytecode;
-                desc.xePrefilterBytecode = prefilter.data();
-                desc.xePrefilterBytecodeSize = prefilter.size();
-                const auto& main = m_xeShaders[1]->getShader()->bytecode;
-                desc.xeMainBytecode = main.data();
-                desc.xeMainBytecodeSize = main.size();
-                const auto& denoise = m_xeShaders[2]->getShader()->bytecode;
-                desc.xeDenoiseBytecode = denoise.data();
-                desc.xeDenoiseBytecodeSize = denoise.size();
-                const auto& denoiseLast = m_xeShaders[3]->getShader()->bytecode;
-                desc.xeDenoiseLastBytecode = denoiseLast.data();
-                desc.xeDenoiseLastBytecodeSize = denoiseLast.size();
-                const auto& composite = m_xeShaders[4]->getShader()->bytecode;
-                desc.xeCompositeBytecode = composite.data();
-                desc.xeCompositeBytecodeSize = composite.size();
+                return false;
             }
-            if (hbao && m_hbaoShader && !m_hbaoShader->getShader()->bytecode.empty())
-            {
-                const Shader* compute = m_hbaoShader->getShader();
-                desc.rawComputeBytecode = compute->bytecode.data();
-                desc.rawComputeBytecodeSize = compute->bytecode.size();
-            }
-            else if (hbao)
-            {
-                NAU_LOG_WARNING("HBAO: secondary compute shader unavailable, using the GPU 1 pixel path");
-            }
-            desc.reconstructNormals = reconstructNormals(m_settings.algorithm);
+            desc.reconstructNormals = algorithm().reconstructNormals();
             desc.measureTimings = m_measureTimings;
-            m_secondary = d3d::mgpu::createSsaoProducer(desc);
+            m_secondary = ao::createSecondaryExecutor(desc);
             if (!m_secondary)
             {
                 return false;
             }
-            if (hbao && !desc.rawComputeBytecode)
-            {
-                NAU_LOG_INFO("HBAO: GPU 1 raw AO path=pixel");
-            }
             ++m_measurements.gpu1Generation;
-            NAU_LOG_INFO("AO: GPU 1 producer, AO {}x{}, algorithm={}, mailbox 2b",
+            NAU_LOG_INFO("AO: GPU 1 producer, AO {}x{}, algorithm={}, common MGPU mailbox",
                          m_secondaryWidth, m_secondaryHeight, getAlgorithmLabel());
         }
-        if (!m_secondary)
-        {
-            return false;
-        }
-        return true;
+        return m_secondary != nullptr;
     }
 
     void AmbientOcclusion::downsampleInputs()
@@ -546,7 +342,7 @@ namespace nau::render
         d3d::set_render_target();
     }
 
-    void AmbientOcclusion::setConstants(MaterialAssetView& material, const char* pipeline, const d3d::mgpu::SsaoConstants& constants)
+    void AmbientOcclusion::setConstants(MaterialAssetView& material, const char* pipeline, const nau::render::AoConstants& constants)
     {
         const auto matrix = [](const float* values)
         {
@@ -631,21 +427,13 @@ namespace nau::render
             return "MGPU mailbox GPU (2b)";
         }
         return m_settings.execution == AmbientOcclusionExecution::multiGpu
-            ? "single GPU, half AO (MGPU unavailable)"
-            : "single GPU, half AO";
+                   ? "single GPU, half AO (MGPU unavailable)"
+                   : "single GPU, half AO";
     }
 
     const char* AmbientOcclusion::getAlgorithmLabel() const
     {
-        switch (m_settings.algorithm)
-        {
-            case AmbientOcclusionAlgorithm::hbao:
-                return "HBAO";
-            case AmbientOcclusionAlgorithm::xegtao:
-                return "XeGTAO";
-            default:
-                return "SSAO";
-        }
+        return algorithm().label();
     }
 
     void AmbientOcclusion::logSettings()
@@ -656,8 +444,8 @@ namespace nau::render
         }
         NAU_LOG_INFO("AO pipeline: {}, AO={}x{}, inputs={}x{}, algorithm={}, radius={}, normals={}, requestedNormals={}, blur=0, blurGPU=0, upsample=1, RG8=false, R16F=false, weighted=true, reject=false, gatherUp=true, wait=false, mode={}",
                      getExecutionLabel(), m_secondaryWidth, m_secondaryHeight, m_secondaryWidth, m_secondaryHeight,
-                     static_cast<uint32_t>(m_settings.algorithm), m_constants.parameters[0], reconstructNormals(m_settings.algorithm) ? 1 : 0,
-                     reconstructNormals(m_settings.algorithm) ? 1 : 0, static_cast<uint32_t>(m_settings.mode));
+                     static_cast<uint32_t>(m_settings.algorithm), m_constants.parameters[0], algorithm().reconstructNormals() ? 1 : 0,
+                     algorithm().reconstructNormals() ? 1 : 0, static_cast<uint32_t>(m_settings.mode));
         m_logSettings = false;
     }
 
@@ -673,7 +461,7 @@ namespace nau::render
             d3d::resource_barrier({m_result, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
             d3d::resource_barrier({m_inputDepth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         }
-        d3d::settex(7, m_measurements.aoValid ? m_inputDepth : nullptr);
+        d3d::settex(7, m_measurements.aoValid ? m_inputDepth : m_depth);
         const math::Vector4 reconstruction(static_cast<float>(AO_DIVISOR), DEPTH_THRESHOLD,
                                            m_constants.projection[14], m_constants.projection[10]);
         shader_globals::setVariable("ssaoReconstruction", &reconstruction);
@@ -693,7 +481,7 @@ namespace nau::render
         {
             return true;
         }
-        constexpr uint32_t SIZE = d3d::mgpu::SSAO_RANDOM_TEXTURE_SIZE;
+        constexpr uint32_t SIZE = nau::render::SSAO_RANDOM_TEXTURE_SIZE;
         m_randomTexture = d3d::create_tex(nullptr, SIZE, SIZE, TEXFMT_R8G8B8A8, 1, u8"ssao_random_vectors");
         void* mapped = nullptr;
         int stride = 0;
@@ -711,7 +499,7 @@ namespace nau::render
             uint32_t* row = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(mapped) + y * stride);
             for (uint32_t x = 0; x < SIZE; ++x)
             {
-                row[x] = d3d::mgpu::ssaoRandomTexel(y * SIZE + x);
+                row[x] = nau::render::ssaoRandomTexel(y * SIZE + x);
             }
         }
         m_randomTexture->unlockimg();

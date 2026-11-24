@@ -64,11 +64,14 @@ namespace nau::PEPEngine::Graphics
 
     public:
         GDevice(const ComPtr<IDXGIAdapter3>& adapter);
+        GDevice(const ComPtr<IDXGIAdapter3>& adapter, ID3D12Device* existingDevice);
 
         ~GDevice();
 
         bool IsInitialized() const { return isInitialized; }
         void Initialize();
+        /** @brief Drains queues and breaks device/queue/resource ownership cycles before driver shutdown. */
+        void Shutdown();
 
         const DXGI_ADAPTER_DESC2& GetDesc() const { return desc; }
 

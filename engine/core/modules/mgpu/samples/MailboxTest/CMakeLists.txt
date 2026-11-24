@@ -1,0 +1,5 @@
+add_executable(MgpuMailboxTest main.cpp)
+target_link_libraries(MgpuMailboxTest PRIVATE Mgpu)
+nau_add_compile_options(MgpuMailboxTest)
+target_compile_options(MgpuMailboxTest PRIVATE /permissive)
+mgpu_copy_runtime_resources(MgpuMailboxTest)

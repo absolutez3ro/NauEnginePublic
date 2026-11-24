@@ -3,6 +3,7 @@
 
 
 #include "render_window_impl.h"
+#include "nau/3d/dag_drv3d_multi_gpu.h"
 
 #include <algorithm>
 #include <cstdlib>

@@ -1,17 +1,17 @@
-// multi_gpu_ssao_types.h
+// ao_execution_stats.h
 //
 // Copyright 2026 N-GINN LLC. All rights reserved.
 //
 #pragma once
 #include <cstdint>
 
-namespace d3d::mgpu
+namespace nau::render::ao
 {
     /**
      * @brief AO timing and mailbox counters collected from different queues.
      * Queue-local intervals must not be added to infer end-to-end latency. Negative intervals are unavailable.
      */
-    struct SsaoGpuTiming
+    struct ExecutionStats
     {
         uint64_t frame = 0;
         float rawMilliseconds = -1.f;
@@ -36,20 +36,4 @@ namespace d3d::mgpu
         uint64_t submitOnlySignals = 0, badFrameIds = 0, unavailableAoFrames = 0, droppedAgeSamples = 0;
         uint64_t primaryInputCopyFrames = 0;
     };
-    /**
-     * @brief Column-major matrices and parameters matching ssao_common.hlsli.
-     */
-    struct SsaoConstants
-    {
-        float projection[16] = {};
-        float inverseProjection[16] = {};
-        float view[16] = {};
-        float parameters[4] = {0.5f, 0.2f, 1.0f, 0.05f};
-        float filter[4] = {0.0f, 0.0f, 0.2f, 1.0f};
-        float options[4] = {0.0f, 0.0f, 0.0f, 14.0f};
-        float pipeline[4] = {1.0f, 0.0f, 0.0f, 0.0f};
-        float sizes[4] = {};
-        float reconstruction[4] = {};
-    };
-    static_assert(sizeof(SsaoConstants) == 288);
-}  // namespace d3d::mgpu
+}  // namespace nau::render::ao

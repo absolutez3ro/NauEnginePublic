@@ -34,5 +34,8 @@ namespace nau::sample
         float m_measureSeconds = 0.f;
         uint32_t m_phase = 0;
         bool m_cameraMotion = true;
+        bool m_lifecycleChecks = false;
+        uint32_t m_lifecycleStep = UINT32_MAX;
+        async::Task<> m_resize;
     };
 }

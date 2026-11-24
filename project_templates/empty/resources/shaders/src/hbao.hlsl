@@ -11,3 +11,8 @@ void CSMain(uint3 dispatchId : SV_DispatchThreadID)
     // All in-bounds threads write, including sky, radius-zero and subpixel cases.
     hbaoOutput[dispatchId.xy] = computeHbao(dispatchId.xy);
 }
+
+float PSMain(float4 position : SV_Position) : SV_Target
+{
+    return computeHbao(uint2(position.xy));
+}

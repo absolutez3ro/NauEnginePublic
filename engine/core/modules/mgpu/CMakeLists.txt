@@ -64,7 +64,7 @@ target_link_libraries(${TargetName} PUBLIC
 target_compile_options(${TargetName} PRIVATE /permissive)
 
 # A builds all projects with CharacterSet=Unicode.
-target_compile_definitions(${TargetName} PUBLIC NOMINMAX UNICODE _UNICODE)
+target_compile_definitions(${TargetName} PRIVATE NOMINMAX UNICODE _UNICODE)
 
 # Tells nau/mgpu/bridge/mgpu_bridge.h to declare the real bridge instead of the inline stubs.
 target_compile_definitions(${TargetName} PUBLIC NAU_ENABLE_MGPU=1)
@@ -103,4 +103,5 @@ nau_install(${TargetName} core)
 # Bridge transfer check without Nau (needs two GPUs). Only for the static runtime: Mgpu has no DLL exports.
 if(NOT BUILD_SHARED_LIBS)
   add_subdirectory(samples/BridgeTransferTest)
+  add_subdirectory(samples/MailboxTest)
 endif()

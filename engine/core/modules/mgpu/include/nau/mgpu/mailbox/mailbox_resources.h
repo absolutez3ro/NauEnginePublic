@@ -1,4 +1,4 @@
-// mailbox_ssao_resources.h
+// mailbox_resources.h
 //
 // Copyright 2026 N-GINN LLC. All rights reserved.
 #pragma once
@@ -6,23 +6,36 @@
 #include <cstring>
 #include <cwchar>
 #include <initializer_list>
+#include <memory>
 #include <new>
 
-#include <EASTL/unique_ptr.h>
-#include <new>
-
-#include "device_ssao_pass.h"
 #include "mailbox_receive.h"
-#include "shared_ssao_texture.h"
+#include "nau/mgpu/bridge/device_context.h"
+#include "shared_texture.h"
 
-namespace drv3d_dx12
+namespace nau::mgpu
 {
     /**
      * @brief Owns the shared and native resources of one mailbox producer.
      * The producer drains both adapters before destruction. Borrowing a handle does not transfer
      * responsibility for its resource state.
      */
-    class MailboxSsaoResources
+    struct MailboxDescription
+    {
+        struct Texture
+        {
+            UINT width = 0, height = 0;
+            DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+            UINT peerWidth = 0;
+            DXGI_FORMAT peerFormat = DXGI_FORMAT_UNKNOWN;
+        };
+        static constexpr UINT MAX_INPUTS = 4;
+        Texture inputs[MAX_INPUTS];
+        UINT inputCount = 0;
+        Texture output;
+    };
+
+    class MailboxResources
     {
         struct RetiredSetup
         {
@@ -54,61 +67,11 @@ namespace drv3d_dx12
             return pending;
         }
 
-        struct SharedBuffer
-        {
-            Microsoft::WRL::ComPtr<ID3D12Heap> heaps[2];
-            Microsoft::WRL::ComPtr<ID3D12Resource> buffers[2];
-
-            HRESULT init(ID3D12Device* primary, ID3D12Device* secondary, UINT64 bytes)
-            {
-                D3D12_RESOURCE_DESC desc = bufferDescription(bytes);
-                desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
-                const auto a = primary->GetResourceAllocationInfo(0, 1, &desc);
-                const auto b = secondary->GetResourceAllocationInfo(0, 1, &desc);
-                if (!a.SizeInBytes || !b.SizeInBytes || a.SizeInBytes == UINT64_MAX || b.SizeInBytes == UINT64_MAX)
-                {
-                    return DXGI_ERROR_UNSUPPORTED;
-                }
-                D3D12_HEAP_DESC heap = {};
-                heap.SizeInBytes = a.SizeInBytes > b.SizeInBytes ? a.SizeInBytes : b.SizeInBytes;
-                heap.Alignment = a.Alignment > b.Alignment ? a.Alignment : b.Alignment;
-                heap.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
-                heap.Flags = D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER;
-                HRESULT result = primary->CreateHeap(&heap, IID_PPV_ARGS(&heaps[0]));
-                HANDLE handle = nullptr;
-                if (SUCCEEDED(result))
-                {
-                    result = primary->CreateSharedHandle(heaps[0].Get(), nullptr, GENERIC_ALL, nullptr, &handle);
-                }
-                if (SUCCEEDED(result))
-                {
-                    result = secondary->OpenSharedHandle(handle, IID_PPV_ARGS(&heaps[1]));
-                    CloseHandle(handle);
-                }
-                if (SUCCEEDED(result))
-                {
-                    result = primary->CreatePlacedResource(heaps[0].Get(), 0, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&buffers[0]));
-                }
-                if (SUCCEEDED(result))
-                {
-                    result = secondary->CreatePlacedResource(heaps[1].Get(), 0, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&buffers[1]));
-                }
-                if (SUCCEEDED(result))
-                {
-                    for (const auto& buffer : buffers)
-                    {
-                        buffer->SetName(L"SSAO shared mailbox");
-                    }
-                }
-                return result;
-            }
-        };
-
-        SharedSsaoTexture m_depth[MAILBOX_IN_SLOTS];
-        SharedSsaoTexture m_normals[MAILBOX_IN_SLOTS];
-        SharedSsaoTexture m_ao[MAILBOX_OUT_SLOTS];
-        SharedSsaoTexture m_id[MAILBOX_OUT_SLOTS];
-        SharedBuffer m_mailbox;
+        std::shared_ptr<DeviceContext> m_primary, m_secondary;
+        SharedTexture m_inputs[MAILBOX_IN_SLOTS][MailboxDescription::MAX_INPUTS];
+        SharedTexture m_payload[MAILBOX_OUT_SLOTS];
+        SharedTexture m_id[MAILBOX_OUT_SLOTS];
+        SharedResource m_mailbox;
         Microsoft::WRL::ComPtr<ID3D12Resource> m_predicate;
         Microsoft::WRL::ComPtr<ID3D12Resource> m_frameId;
         Microsoft::WRL::ComPtr<ID3D12Resource> m_readback;
@@ -150,7 +113,7 @@ namespace drv3d_dx12
             Microsoft::WRL::ComPtr<ID3D12Fence> done;
             constexpr UINT64 uploadBytes = 2 * D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
             HRESULT result = createBuffer(primary, uploadBytes, D3D12_HEAP_TYPE_UPLOAD,
-                                          D3D12_RESOURCE_STATE_GENERIC_READ, L"SSAO mailbox initialization", upload);
+                                          D3D12_RESOURCE_STATE_GENERIC_READ, L"MGPU mailbox initialization", upload);
             if (SUCCEEDED(result))
             {
                 const D3D12_RANGE noRead = {0, 0};
@@ -167,7 +130,8 @@ namespace drv3d_dx12
             queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
             if (SUCCEEDED(result))
             {
-                result = primary->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue));
+                queue = m_primary->graphicsQueue();
+                result = queue ? S_OK : E_FAIL;
             }
             if (SUCCEEDED(result))
             {
@@ -199,7 +163,7 @@ namespace drv3d_dx12
                     barrier.Transition = {resource, 0, before, after};
                     list->ResourceBarrier(1, &barrier);
                 };
-                for (auto* buffer : {m_mailbox.buffers[0].Get(), m_predicate.Get()})
+                for (auto* buffer : {m_mailbox.resource(0), m_predicate.Get()})
                 {
                     transition(buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
                     list->CopyBufferRegion(buffer, 0, upload.Get(), 0, MAILBOX_BYTES);
@@ -221,7 +185,7 @@ namespace drv3d_dx12
             {
                 result = done->SetEventOnCompletion(1, event);
             }
-            eastl::unique_ptr<RetiredSetup> retained;
+            std::unique_ptr<RetiredSetup> retained;
             if (SUCCEEDED(result))
             {
                 // Reserve failure-path storage before submitting; retaining work must not allocate after Signal fails.
@@ -238,12 +202,12 @@ namespace drv3d_dx12
                     retained->list = list;
                     retained->done = done;
                     retained->upload = upload;
-                    retained->targets[0] = m_mailbox.buffers[0];
+                    retained->targets[0] = m_mailbox.resource(0);
                     retained->targets[1] = m_predicate;
                     retained->targets[2] = m_frameId;
                     for (UINT side = 0; side < 2; ++side)
                     {
-                        retained->sharedHeaps[side] = m_mailbox.heaps[side];
+                        retained->sharedHeaps[side] = m_mailbox.heap(side);
                     }
                 }
             }
@@ -308,10 +272,10 @@ namespace drv3d_dx12
             }
         }
 
-        MailboxSsaoResources() = default;
-        MailboxSsaoResources(const MailboxSsaoResources&) = delete;
-        MailboxSsaoResources& operator=(const MailboxSsaoResources&) = delete;
-        ~MailboxSsaoResources()
+        MailboxResources() = default;
+        MailboxResources(const MailboxResources&) = delete;
+        MailboxResources& operator=(const MailboxResources&) = delete;
+        ~MailboxResources()
         {
             if (m_readbackMapped)
             {
@@ -320,56 +284,46 @@ namespace drv3d_dx12
             }
         }
 
-        HRESULT init(ID3D12Device* primary, ID3D12Device* secondary, const DeviceSsaoPassDesc& desc)
+        HRESULT init(const std::shared_ptr<DeviceContext>& primaryContext,
+                     const std::shared_ptr<DeviceContext>& secondaryContext,
+                     const MailboxDescription& desc)
         {
             collectRetiredSetups();
-            if (!primary || !secondary || !desc.width || !desc.height || m_frameId)
+            if (!primaryContext || !secondaryContext || !desc.inputCount ||
+                desc.inputCount > MailboxDescription::MAX_INPUTS || m_frameId)
             {
                 return E_INVALIDARG;
             }
-            const UINT width = desc.inputWidth ? desc.inputWidth : desc.width;
-            const UINT height = desc.inputHeight ? desc.inputHeight : desc.height;
-            const UINT depthGroup = desc.linearDepth16 ? 8u : 4u;
-            const UINT depthWidth = desc.packedFrameworkDepth ? (width + depthGroup - 1) / depthGroup : 0u;
-            const UINT normalGroup = desc.packedNormals ? 8u : 4u;
-            const UINT normalWidth = desc.packedFrameworkNormals ? (width + normalGroup - 1) / normalGroup : 0u;
+            m_primary = primaryContext;
+            m_secondary = secondaryContext;
+            auto* primary = m_primary->device();
             HRESULT result = S_OK;
-            for (UINT i = 0; i < IN_SLOTS && SUCCEEDED(result); ++i)
+            for (UINT slot = 0; slot < IN_SLOTS && SUCCEEDED(result); ++slot)
             {
-                result = m_depth[i].init(primary, secondary, width, height,
-                                         desc.linearDepth16 ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_R32_FLOAT, depthWidth, DXGI_FORMAT_R32G32B32A32_UINT);
-                if (SUCCEEDED(result) && !desc.reconstructNormals)
+                for (UINT input = 0; input < desc.inputCount && SUCCEEDED(result); ++input)
                 {
-                    result = m_normals[i].init(primary, secondary, width, height,
-                                               desc.packedNormals ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_FLOAT, normalWidth, DXGI_FORMAT_R32G32B32A32_UINT);
+                    const auto& texture = desc.inputs[input];
+                    result = m_inputs[slot][input].init(*m_primary, *m_secondary, texture.width, texture.height,
+                                                        texture.format, texture.peerWidth, texture.peerFormat);
                 }
-                wchar_t name[64] = {};
-                std::swprintf(name, 64, L"SSAO mailbox depth input %u", i);
-                m_depth[i].setName(name);
-                std::swprintf(name, 64, L"SSAO mailbox normal input %u", i);
-                m_normals[i].setName(name);
             }
-            for (UINT j = 0; j < OUT_SLOTS && SUCCEEDED(result); ++j)
+            for (UINT slot = 0; slot < OUT_SLOTS && SUCCEEDED(result); ++slot)
             {
-                result = m_ao[j].init(primary, secondary, desc.width, desc.height, DXGI_FORMAT_R8_UNORM);
+                result = m_payload[slot].init(*m_primary, *m_secondary, desc.output.width, desc.output.height, desc.output.format);
                 if (SUCCEEDED(result))
                 {
-                    result = m_id[j].init(primary, secondary, 1, 1, DXGI_FORMAT_R32_UINT);
+                    result = m_id[slot].init(*m_primary, *m_secondary, 1, 1, DXGI_FORMAT_R32_UINT);
                 }
-                wchar_t name[64] = {};
-                std::swprintf(name, 64, L"SSAO mailbox AO output %u", j);
-                m_ao[j].setName(name);
-                std::swprintf(name, 64, L"SSAO mailbox frame ID output %u", j);
-                m_id[j].setName(name);
             }
             if (SUCCEEDED(result))
             {
-                result = m_mailbox.init(primary, secondary, MAILBOX_BYTES);
+                const auto description = bufferDescription(MAILBOX_BYTES);
+                result = m_mailbox.init(*m_primary, *m_secondary, description);
             }
             if (SUCCEEDED(result))
             {
                 result = createBuffer(primary, MAILBOX_BYTES, D3D12_HEAP_TYPE_DEFAULT,
-                                      D3D12_RESOURCE_STATE_COMMON, L"SSAO local mailbox predicate", m_predicate);
+                                      D3D12_RESOURCE_STATE_COMMON, L"MGPU local mailbox predicate", m_predicate);
             }
             if (SUCCEEDED(result))
             {
@@ -383,13 +337,13 @@ namespace drv3d_dx12
                                                           D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_frameId));
                 if (SUCCEEDED(result))
                 {
-                    m_frameId->SetName(L"SSAO received frame ID");
+                    m_frameId->SetName(L"MGPU received frame ID");
                 }
             }
             if (SUCCEEDED(result))
             {
                 result = createBuffer(primary, READBACK_SLOTS * READBACK_STRIDE, D3D12_HEAP_TYPE_READBACK,
-                                      D3D12_RESOURCE_STATE_COPY_DEST, L"SSAO received frame ID readback ring", m_readback);
+                                      D3D12_RESOURCE_STATE_COPY_DEST, L"MGPU received frame ID readback ring", m_readback);
             }
             if (SUCCEEDED(result))
             {
@@ -408,41 +362,25 @@ namespace drv3d_dx12
             return result;
         }
 
-        MailboxSsaoTextures shared(UINT i, UINT j) const
+        ID3D12Resource* input(UINT slot, UINT channel, UINT side) const
         {
-            return {m_normals[i].textures[1].Get(), m_depth[i].textures[1].Get(), m_ao[j].textures[1].Get()};
+            return m_inputs[slot][channel].resource(side);
         }
-        ID3D12Resource* inputDepthPrimary(UINT i) const
+        ID3D12Resource* output(UINT slot, UINT side) const
         {
-            return m_depth[i].textures[0].Get();
+            return m_payload[slot].resource(side);
         }
-        ID3D12Resource* inputNormalsPrimary(UINT i) const
+        ID3D12Resource* outputId(UINT slot, UINT side) const
         {
-            return m_normals[i].textures[0].Get();
-        }
-        ID3D12Resource* outputAoPrimary(UINT j) const
-        {
-            return m_ao[j].textures[0].Get();
-        }
-        ID3D12Resource* outputIdPrimary(UINT j) const
-        {
-            return m_id[j].textures[0].Get();
-        }
-        ID3D12Resource* outputAoSecondary(UINT j) const
-        {
-            return m_ao[j].textures[1].Get();
-        }
-        ID3D12Resource* outputIdSecondary(UINT j) const
-        {
-            return m_id[j].textures[1].Get();
+            return m_id[slot].resource(side);
         }
         ID3D12Resource* mailboxPrimary() const
         {
-            return m_mailbox.buffers[0].Get();
+            return m_mailbox.resource(0);
         }
         ID3D12Resource* mailboxSecondary() const
         {
-            return m_mailbox.buffers[1].Get();
+            return m_mailbox.resource(1);
         }
         ID3D12Resource* predicate() const
         {
@@ -461,4 +399,4 @@ namespace drv3d_dx12
             return m_readbackMapped;
         }
     };
-}
+}  // namespace nau::mgpu

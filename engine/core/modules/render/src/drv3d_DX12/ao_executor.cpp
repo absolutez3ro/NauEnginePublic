@@ -1,19 +1,24 @@
-// multi_gpu_ssao.cpp
+// ao_executor.cpp
 //
 // Copyright 2026 N-GINN LLC. All rights reserved.
-#include "nau/3d/multi_gpu_ssao.h"
+#include "nau/3d/ao_executor.h"
 
-#include "device_ssao_pass.h"
-#include "mailbox_ssao_state.h"
+#include "ao_device_pass.h"
 #include "device.h"
-#include "texture.h"
-#include "nau/3d/dag_drv3d_multi_gpu.h"
-#include "nau/3d/dag_drv3dCmd.h"
-#include "nau_device_resource_allocator.h"
+#include "mgpu_context.h"
 #include "multi_gpu_device.h"
+#include "nau/3d/dag_drv3dCmd.h"
+#include "nau/3d/dag_drv3d_multi_gpu.h"
+#include "nau/mgpu/mailbox/mailbox_state.h"
+#include "texture.h"
 
-namespace d3d::mgpu
+#if defined(NAU_ENABLE_MGPU)
+namespace nau::render::ao
 {
+    using d3d::is_multi_gpu_available;
+    using d3d::PRIMARY_GPU;
+    using d3d::report_secondary_gpu_failure;
+    using d3d::SECONDARY_GPU;
     namespace
     {
 
@@ -27,18 +32,18 @@ namespace d3d::mgpu
                    SUCCEEDED(factory->EnumAdapterByLuid(device->GetAdapterLuid(), IID_PPV_ARGS(&adapter))) &&
                    SUCCEEDED(adapter->GetDesc1(&desc)) && drv3d_dx12::is_software_device(desc);
         }
-    }
+    }  // namespace
 
-    struct SsaoProducer
+    struct SecondaryExecutor
     {
-        SsaoProducer() = default;
-        SsaoProducer(const SsaoProducer&) = delete;
-        SsaoProducer(SsaoProducer&&) = delete;
-        SsaoProducer& operator=(const SsaoProducer&) = delete;
-        SsaoProducer& operator=(SsaoProducer&&) = delete;
+        SecondaryExecutor() = default;
+        SecondaryExecutor(const SecondaryExecutor&) = delete;
+        SecondaryExecutor(SecondaryExecutor&&) = delete;
+        SecondaryExecutor& operator=(const SecondaryExecutor&) = delete;
+        SecondaryExecutor& operator=(SecondaryExecutor&&) = delete;
 
-        drv3d_dx12::DeviceSsaoPass pass;
-        eastl::shared_ptr<drv3d_dx12::MailboxSsaoState> mailbox;
+        drv3d_dx12::AoDevicePass pass;
+        eastl::shared_ptr<nau::mgpu::MailboxState> mailbox;
         bool reconstructNormals = false;
         bool measureTimings = false;
         struct PrimaryTiming
@@ -84,7 +89,7 @@ namespace d3d::mgpu
             }
         }
 
-        ~SsaoProducer()
+        ~SecondaryExecutor()
         {
             if (mailbox)
             {
@@ -112,42 +117,47 @@ namespace d3d::mgpu
         }
     };
 
-    SsaoProducer* createSsaoProducer(const SsaoProducerDesc& desc)
+    SecondaryExecutor* createSecondaryExecutor(const ExecutorDescription& desc)
     {
         if (!is_multi_gpu_available())
         {
             return nullptr;
         }
-        const eastl::shared_ptr<drv3d_dx12::NauDeviceResourceAllocator> allocator = eastl::make_shared<drv3d_dx12::NauDeviceResourceAllocator>();
-        HRESULT result = allocator->init(static_cast<ID3D12Device*>(get_device(SECONDARY_GPU)));
-        eastl::unique_ptr<SsaoProducer> producer = eastl::make_unique<SsaoProducer>();
+        const auto primary = drv3d_dx12::get_mgpu_device_context(PRIMARY_GPU);
+        const auto secondary = drv3d_dx12::get_mgpu_device_context(SECONDARY_GPU);
+        HRESULT result = primary && secondary ? S_OK : E_FAIL;
+        eastl::unique_ptr<SecondaryExecutor> producer = eastl::make_unique<SecondaryExecutor>();
         producer->measureTimings = desc.measureTimings;
         if (SUCCEEDED(result))
         {
-            drv3d_dx12::DeviceSsaoPassDesc pass;
-            pass.allocator = allocator;
+            drv3d_dx12::AoDevicePassDesc pass;
+            pass.context = secondary;
             pass.width = desc.width;
             pass.height = desc.height;
             pass.vertexShader = {desc.vertexBytecode, desc.vertexBytecodeSize};
             pass.rawShader = {desc.rawBytecode, desc.rawBytecodeSize};
             pass.rawComputeShader = {desc.rawComputeBytecode, desc.rawComputeBytecodeSize};
-            pass.xePrefilterShader = {desc.xePrefilterBytecode, desc.xePrefilterBytecodeSize};
-            pass.xeMainShader = {desc.xeMainBytecode, desc.xeMainBytecodeSize};
-            pass.xeDenoiseShader = {desc.xeDenoiseBytecode, desc.xeDenoiseBytecodeSize};
-            pass.xeDenoiseLastShader = {desc.xeDenoiseLastBytecode, desc.xeDenoiseLastBytecodeSize};
-            pass.xeCompositeShader = {desc.xeCompositeBytecode, desc.xeCompositeBytecodeSize};
+            pass.createAlgorithm = desc.createAlgorithm;
+            pass.algorithmShaders = desc.algorithmShaders;
+            pass.algorithmShaderCount = desc.algorithmShaderCount;
             pass.reconstructNormals = producer->reconstructNormals = desc.reconstructNormals;
             pass.measureTimings = desc.measureTimings;
-            pass.packedFrameworkDepth = usePackedSoftwareDepth(allocator->getDevice());
+            pass.packedFrameworkDepth = usePackedSoftwareDepth(secondary->device());
             pass.packedFrameworkNormals = pass.packedFrameworkDepth && !desc.reconstructNormals;
             for (uint32_t attempt = 0; attempt < 2; ++attempt)
             {
                 result = producer->pass.init(pass);
                 if (SUCCEEDED(result))
                 {
-                    producer->mailbox = eastl::make_shared<drv3d_dx12::MailboxSsaoState>();
-                    result = producer->mailbox->init(static_cast<ID3D12Device*>(get_device(PRIMARY_GPU)),
-                                                     allocator->getDevice(), pass);
+                    producer->mailbox = eastl::make_shared<nau::mgpu::MailboxState>();
+                    nau::mgpu::MailboxDescription layout;
+                    layout.inputCount = desc.reconstructNormals ? 1 : 2;
+                    layout.inputs[0] = {desc.width, desc.height, DXGI_FORMAT_R32_FLOAT,
+                                        pass.packedFrameworkDepth ? (desc.width + 3) / 4 : 0, DXGI_FORMAT_R32G32B32A32_UINT};
+                    layout.inputs[1] = {desc.width, desc.height, DXGI_FORMAT_R16G16_FLOAT,
+                                        pass.packedFrameworkNormals ? (desc.width + 3) / 4 : 0, DXGI_FORMAT_R32G32B32A32_UINT};
+                    layout.output = {desc.width, desc.height, DXGI_FORMAT_R8_UNORM};
+                    result = producer->mailbox->init(primary, secondary, layout);
                     if (SUCCEEDED(result))
                     {
                         producer->pass.retainMailboxResources(producer->mailbox);
@@ -172,7 +182,7 @@ namespace d3d::mgpu
         return producer.release();
     }
 
-    SsaoGpuTiming pollSsaoTiming(SsaoProducer* producer)
+    ExecutionStats pollSecondary(SecondaryExecutor* producer)
     {
         if (!producer)
         {
@@ -189,12 +199,25 @@ namespace d3d::mgpu
         timing.primaryReceiveMilliseconds = producer->receiveMilliseconds;
         if (producer->mailbox)
         {
-            producer->mailbox->copyObservations(timing);
+            const auto& observation = producer->mailbox->observations;
+            timing.mailbox = timing.gpuMailbox = true;
+            timing.displayedFrame = observation.displayedFrame;
+            timing.displayedAoFrame = observation.displayedSourceFrame;
+            timing.ageSamples = observation.ageSamples;
+            std::memcpy(timing.ageHistogram, observation.ageHistogram, sizeof(timing.ageHistogram));
+            timing.skippedInput = observation.skippedInput;
+            timing.skippedOutput = observation.skippedOutput;
+            timing.skippedBacklog = observation.skippedBacklog;
+            timing.submitOnlySignals = observation.submitOnlySignals;
+            timing.badFrameIds = observation.badFrameIds;
+            timing.unavailableAoFrames = observation.unavailableFrames;
+            timing.droppedAgeSamples = observation.droppedAgeSamples;
+            timing.primaryInputCopyFrames = observation.inputCopyFrames;
         }
         return timing;
     }
 
-    bool submitMailboxSsao(SsaoProducer* producer, const SsaoConstants& constants, BaseTexture* normals, BaseTexture* depth, uint64_t frame)
+    bool submitSecondary(SecondaryExecutor* producer, const nau::render::AoConstants& constants, BaseTexture* normals, BaseTexture* depth, uint64_t frame)
     {
         if (!producer || !producer->mailbox || !depth || (!producer->reconstructNormals && !normals) ||
             !frame || frame > UINT32_MAX || !is_multi_gpu_available())
@@ -220,39 +243,23 @@ namespace d3d::mgpu
         auto& context = drv3d_dx12::get_device().getContext();
         const auto copyInputs = [&](UINT input)
         {
-            context.copySharedTexture(depthImage, mailbox.resources.inputDepthPrimary(input), true);
+            context.copySharedTexture(depthImage, mailbox.resources.input(input, 0, 0), true);
             if (!producer->reconstructNormals)
             {
-                context.copySharedTexture(normalImage, mailbox.resources.inputNormalsPrimary(input), true);
+                context.copySharedTexture(normalImage, mailbox.resources.input(input, 1, 0), true);
             }
         };
-        // Reserve the F0 value before choosing an output: GPU1's input wait also protects
-        // reuse of retired output slots whose old GPU0 readers precede this signal.
-        const uint64_t v0 = mailbox.inputsReady.reserveSignal();
+        const auto reservation = mailbox.reserve();
+        const auto v0 = reservation.inputValue;
+        const auto input = reservation.input;
+        const auto output = reservation.output;
+        const bool issue = reservation.accepted;
         if (!v0)
         {
             return false;
         }
-        const int input = mailbox.freeInput();
-        const int output = mailbox.reusableOutput(v0);
-        bool issue = true;
-        if (input < 0)
-        {
-            ++mailbox.observations.skippedInput;
-            issue = false;
-        }
-        else if (output < 0)
-        {
-            ++mailbox.observations.skippedOutput;
-            issue = false;
-        }
-        else if (mailbox.runnableJobs() > 1)
-        {
-            ++mailbox.observations.skippedBacklog;
-            issue = false;
-        }
 
-        SsaoProducer::PrimaryTiming* timing = nullptr;
+        SecondaryExecutor::PrimaryTiming* timing = nullptr;
         if (producer->measureTimings)
         {
             for (auto& query : producer->primaryQueries)
@@ -270,29 +277,29 @@ namespace d3d::mgpu
         if (issue)
         {
             copyInputs(input);
-            ++mailbox.observations.primaryInputCopyFrames;
+            ++mailbox.observations.inputCopyFrames;
         }
         if (timing)
         {
             d3d::driver_command(D3V3D_COMMAND_TIMESTAMPISSUE, &timing->published, nullptr, nullptr);
         }
         // Even skipped frames submit one progress signal, allowing retired outputs/readbacks to become reusable.
-        context.signalForeignFenceAfterSubmit(mailbox.inputsReady.getFence(drv3d_dx12::CrossAdapterFence::Side::SIGNALER), v0);
+        context.signalForeignFenceAfterSubmit(mailbox.inputsReady.getFence(nau::mgpu::CrossAdapterFence::Side::SIGNALER), v0);
         ++mailbox.observations.submitOnlySignals;
         if (!issue)
         {
             return true;
         }
 
-        drv3d_dx12::MailboxSsaoJob job;
-        job.inputsReady = {mailbox.inputsReady.getFence(drv3d_dx12::CrossAdapterFence::Side::WAITER), v0};
+        nau::mgpu::MailboxJob job;
+        job.inputsReady = {mailbox.inputsReady.getFence(nau::mgpu::CrossAdapterFence::Side::WAITER), v0};
         job.completion = &mailbox.resultsReady;
-        job.frameId = mailbox.resources.outputIdSecondary(output);
+        job.frameId = mailbox.resources.outputId(output, 1);
         job.mailbox = mailbox.resources.mailboxSecondary();
         job.outputSlot = output;
-        drv3d_dx12::MailboxSsaoCompletion done;
+        nau::mgpu::MailboxCompletion done;
         const HRESULT result = producer->pass.executeMailbox(constants,
-                                                             mailbox.resources.shared(input, output), job, frame, done);
+                                                             {mailbox.resources.input(input, 1, 1), mailbox.resources.input(input, 0, 1), mailbox.resources.output(output, 1)}, job, frame, done);
         if (FAILED(result))
         {
             report_secondary_gpu_failure(static_cast<uint32_t>(result));
@@ -302,12 +309,11 @@ namespace d3d::mgpu
         {
             return true;
         }
-        mailbox.inputs[input].readDone = done.dataReady;
-        mailbox.outputs[output] = {v0, done.dataReady, done.published, frame, 0};
+        mailbox.commit(reservation, done.dataReady, done.published, frame);
         return true;
     }
 
-    bool receiveMailboxSsao(SsaoProducer* producer, BaseTexture* destination, uint64_t frame)
+    bool receiveSecondary(SecondaryExecutor* producer, BaseTexture* destination, uint64_t frame)
     {
         if (!producer || !producer->mailbox || !destination || !is_multi_gpu_available())
         {
@@ -323,49 +329,8 @@ namespace d3d::mgpu
         {
             return false;
         }
-        drv3d_dx12::MailboxReceiveDesc desc;
-        desc.mailbox = mailbox.resources.mailboxPrimary();
-        desc.predicate = mailbox.resources.predicate();
-        desc.frameId = mailbox.resources.frameId();
-        for (UINT i = 0; i < drv3d_dx12::MAILBOX_OUT_SLOTS; ++i)
-        {
-            desc.ao[i] = mailbox.resources.outputAoPrimary(i);
-            desc.id[i] = mailbox.resources.outputIdPrimary(i);
-        }
-        // A torn mailbox may expose old and new entries together. Copy in source-frame order,
-        // keeping predicate offsets tied to their actual slots, so the newest visible ID wins.
-        for (UINT i = 1; i < drv3d_dx12::MAILBOX_OUT_SLOTS; ++i)
-        {
-            UINT j = i;
-            while (j && mailbox.outputs[desc.copyOrder[j]].frame < mailbox.outputs[desc.copyOrder[j - 1]].frame)
-            {
-                const UINT swap = desc.copyOrder[j];
-                desc.copyOrder[j] = desc.copyOrder[j - 1];
-                desc.copyOrder[j - 1] = swap;
-                --j;
-            }
-        }
-        if (producer->measureTimings)
-        {
-            bool sampleAllocated = false;
-            for (UINT i = 0; i < drv3d_dx12::MailboxSsaoResources::READBACK_SLOTS; ++i)
-            {
-                if (!mailbox.samples[i].pending)
-                {
-                    // Next frame's F0 signal is ordered after this receive and readback on GPU0.
-                    mailbox.samples[i] = {frame, mailbox.inputsReady.issuedValue() + 1, true};
-                    desc.readback = mailbox.resources.readback();
-                    desc.readbackOffset = i * drv3d_dx12::MailboxSsaoResources::READBACK_STRIDE;
-                    sampleAllocated = true;
-                    break;
-                }
-            }
-            if (!sampleAllocated)
-            {
-                ++mailbox.observations.droppedAgeSamples;
-            }
-        }
-        SsaoProducer::PrimaryTiming* timing = nullptr;
+        const auto desc = mailbox.receive(frame, producer->measureTimings);
+        SecondaryExecutor::PrimaryTiming* timing = nullptr;
         for (auto& query : producer->primaryQueries)
         {
             if (query.pending && query.frame == frame)
@@ -386,15 +351,43 @@ namespace d3d::mgpu
         return true;
     }
 
-    void destroySsaoProducer(SsaoProducer* producer)
+    void destroySecondaryExecutor(SecondaryExecutor* producer)
     {
         delete producer;
-        collectSsaoResources();
+        collectSecondaryResources();
     }
 
-    void collectSsaoResources()
+    void collectSecondaryResources()
     {
-        drv3d_dx12::DeviceSsaoPass::collectRetiredResources();
-        drv3d_dx12::MailboxSsaoResources::collectRetiredSetups();
+        drv3d_dx12::AoDevicePass::collectRetiredResources();
+        nau::mgpu::MailboxResources::collectRetiredSetups();
     }
-}  // namespace d3d::mgpu
+}  // namespace nau::render::ao
+
+#else
+namespace nau::render::ao
+{
+    SecondaryExecutor* createSecondaryExecutor(const ExecutorDescription&)
+    {
+        return nullptr;
+    }
+    ExecutionStats pollSecondary(SecondaryExecutor*)
+    {
+        return {};
+    }
+    bool submitSecondary(SecondaryExecutor*, const nau::render::AoConstants&, BaseTexture*, BaseTexture*, uint64_t)
+    {
+        return false;
+    }
+    bool receiveSecondary(SecondaryExecutor*, BaseTexture*, uint64_t)
+    {
+        return false;
+    }
+    void destroySecondaryExecutor(SecondaryExecutor*)
+    {
+    }
+    void collectSecondaryResources()
+    {
+    }
+}  // namespace nau::render::ao
+#endif

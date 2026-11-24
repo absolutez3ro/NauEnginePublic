@@ -5,8 +5,8 @@
 #pragma once
 #include <array>
 
+#include "ao_algorithm.h"
 #include "graphics_assets/material_asset.h"
-#include "nau/3d/multi_gpu_ssao.h"
 #include "nau/render/render_window.h"
 
 namespace nau::render
@@ -76,7 +76,7 @@ namespace nau::render
             uint32_t phase = 0;
             bool gpu1 = false, aoValid = false;
             bool reconstructNormals = false;
-            d3d::mgpu::SsaoGpuTiming gpu1Timing;
+            nau::render::ao::ExecutionStats gpu1Timing;
             uint64_t gpu1Generation = 0;
             uint32_t aoWidth = 0, aoHeight = 0, inputWidth = 0, inputHeight = 0;
         };
@@ -88,33 +88,26 @@ namespace nau::render
     private:
         void draw(BaseTexture* target, MaterialAssetView& material, const char* pipeline, BaseTexture* source = nullptr);
         bool drawRaw();
-        bool drawXeGtao();
         void resetSecondary();
         void downsampleInputs();
         bool prepareTargets(uint32_t width, uint32_t height);
         bool prepareSecondary();
-        void setConstants(MaterialAssetView& material, const char* pipeline, const d3d::mgpu::SsaoConstants& constants);
+        void setConstants(MaterialAssetView& material, const char* pipeline, const nau::render::AoConstants& constants);
         void logSettings();
         bool createRandomTexture();
 
-        MaterialAssetView::Ptr m_rawMaterial;
+        ao::Algorithm& algorithm() const
+        {
+            return *m_algorithms[static_cast<size_t>(m_settings.algorithm)];
+        }
+        std::array<eastl::unique_ptr<ao::Algorithm>, 4> m_algorithms;
         MaterialAssetView::Ptr m_postMaterial;
         ShaderAssetView::Ptr m_vertexShader;
-        ShaderAssetView::Ptr m_rawShader;
-        ShaderAssetView::Ptr m_hbaoShader;
-        std::array<ShaderAssetView::Ptr, 5> m_xeShaders;
-        std::array<PROGRAM, 5> m_xePrograms = {BAD_PROGRAM, BAD_PROGRAM, BAD_PROGRAM, BAD_PROGRAM, BAD_PROGRAM};
-        d3d::SamplerHandle m_xePointClamp = {};
-        BaseTexture* m_xeDepth = nullptr;
-        BaseTexture* m_xePing = nullptr;
-        BaseTexture* m_xePong = nullptr;
-        BaseTexture* m_xeEdges = nullptr;
-        bool m_xeAttempted = false;
         Texture* m_randomTexture = nullptr;
         d3d::SamplerHandle m_linearClamp = {};
         d3d::SamplerHandle m_linearWrap = {};
-        d3d::mgpu::SsaoProducer* m_secondary = nullptr;
-        d3d::mgpu::SsaoConstants m_constants;
+        nau::render::ao::SecondaryExecutor* m_secondary = nullptr;
+        nau::render::AoConstants m_constants;
         BaseTexture* m_result = nullptr;
         BaseTexture* m_inputDepth = nullptr;
         BaseTexture* m_inputNormals = nullptr;

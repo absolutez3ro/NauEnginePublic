@@ -9,6 +9,8 @@
 #include "nau/app/application.h"
 #include "nau/app/global_properties.h"
 #include "nau/service/service_provider.h"
+#include "nau/graphics/core_graphics.h"
+#include "nau/render/render_window.h"
 
 namespace nau::sample
 {
@@ -25,6 +27,7 @@ namespace nau::sample
         m_measurementStart = warmup + settle;
         m_measureSeconds = eastl::clamp(properties.getValue<float>("sample/automation/measureSeconds").value_or(15.f), 1.f, 300.f);
         m_cameraMotion = properties.getValue<bool>("sample/automation/cameraMotion").value_or(true);
+        m_lifecycleChecks = properties.getValue<bool>("sample/automation/lifecycleChecks").value_or(false);
     }
 
     void JungleAutomation::updateComponent(float)
@@ -46,6 +49,34 @@ namespace nau::sample
         {
             getApplication().stop();
             return;
+        }
+        if (m_lifecycleChecks && phase == 2)
+        {
+            const uint32_t step = static_cast<uint32_t>((elapsed - m_measurementStart) / 3.f);
+            if (step != m_lifecycleStep && (!m_resize || m_resize.isReady()))
+            {
+                m_lifecycleStep = step;
+                ICoreGraphics* graphics = getServiceProvider().find<ICoreGraphics>();
+                const render::IRenderWindow::Ptr window = graphics ? graphics->getDefaultRenderWindow().lock() : nullptr;
+                if (window)
+                {
+                    constexpr render::AmbientOcclusionAlgorithm algorithms[] = {
+                        render::AmbientOcclusionAlgorithm::ssao,
+                        render::AmbientOcclusionAlgorithm::hbao,
+                        render::AmbientOcclusionAlgorithm::xegtao};
+                    const uint32_t stage = step % 10;
+                    window->setAmbientOcclusionAlgorithm(algorithms[stage % 3]);
+                    window->setAmbientOcclusionExecution(stage < 7 ? render::AmbientOcclusionExecution::multiGpu :
+                        render::AmbientOcclusionExecution::singleGpu);
+                    window->setAmbientOcclusionMode(stage == 4 ? render::AmbientOcclusionMode::off : render::AmbientOcclusionMode::lighting);
+                    if (stage == 3 || stage == 6)
+                    {
+                        m_resize = window->requestViewportResize(stage == 3 ? 960 : 1280, stage == 3 ? 540 : 720);
+                    }
+                    NAU_LOG_INFO("AO_LIFECYCLE: step={}, algorithm={}, execution={}, enabled={}", step,
+                        static_cast<uint32_t>(algorithms[stage % 3]), stage < 7 ? "MGPU" : "single", stage != 4);
+                }
+            }
         }
         if (m_cameraMotion)
         {

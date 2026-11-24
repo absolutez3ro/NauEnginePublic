@@ -1,7 +1,6 @@
 // Copyright 2026 N-GINN LLC. All rights reserved.
 // Fourteen-sample SSAO following Bogdanov M.K.'s Shaders/Common/Ssao.hlsl.
 #include "ssao_common.hlsli"
-#include "hbao_common.hlsli"
 
 static const float3 SAMPLE_DIRECTIONS[14] = {
     float3(1, 1, 1), float3(-1, -1, -1), float3(-1, 1, 1), float3(1, -1, -1),
@@ -69,6 +68,5 @@ float PSNau(float4 position : SV_Position) : SV_Target
 
 float PSMain(float4 position : SV_Position) : SV_Target
 {
-    if (aoPipeline.w == 2.0) return computeHbao(uint2(position.xy));
     return PSNau(position);
 }

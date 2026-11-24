@@ -6,7 +6,7 @@
 
 #include <cstdint>
 
-namespace d3d::mgpu
+namespace nau::render
 {
     constexpr uint32_t SSAO_RANDOM_TEXTURE_SIZE = 256;
 
@@ -29,4 +29,4 @@ namespace d3d::mgpu
                ((hash(index * 3u + 18u) & 255u) << 8) |
                ((hash(index * 3u + 19u) & 255u) << 16) | 0xff000000u;
     }
-}  // namespace d3d::mgpu
+}  // namespace nau::render

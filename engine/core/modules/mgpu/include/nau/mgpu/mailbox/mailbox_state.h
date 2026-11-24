@@ -1,19 +1,20 @@
-// mailbox_ssao_state.h
+// mailbox_state.h
 //
 // Copyright 2026 N-GINN LLC. All rights reserved.
 #pragma once
 
-#include "mailbox_ssao_resources.h"
-#include "multi_gpu_fence.h"
 #include <cstring>
 
-namespace drv3d_dx12
+#include "cross_adapter_fence.h"
+#include "mailbox_resources.h"
+
+namespace nau::mgpu
 {
     /** @brief Tracks input, output and readback slot ownership on the render thread. */
-    class MailboxSsaoState
+    class MailboxState
     {
     public:
-        MailboxSsaoResources resources;
+        MailboxResources resources;
         CrossAdapterFence inputsReady, resultsReady;
         struct Input
         {
@@ -27,29 +28,119 @@ namespace drv3d_dx12
         {
             uint64_t frame = 0, ready = 0;
             bool pending = false;
-        } samples[MailboxSsaoResources::READBACK_SLOTS];
+        } samples[MailboxResources::READBACK_SLOTS];
         int newestSlot = -1;
         uint64_t newestFrame = 0;
-        d3d::mgpu::SsaoGpuTiming observations;
-
-        HRESULT init(ID3D12Device* primary, ID3D12Device* secondary, const DeviceSsaoPassDesc& desc)
+        struct Observations
         {
-            observations.mailbox = true;
-            observations.gpuMailbox = true;
+            uint64_t displayedFrame = 0, displayedSourceFrame = 0, ageSamples = 0;
+            uint64_t ageHistogram[8] = {};
+            uint64_t skippedInput = 0, skippedOutput = 0, skippedBacklog = 0;
+            uint64_t submitOnlySignals = 0, badFrameIds = 0, unavailableFrames = 0;
+            uint64_t droppedAgeSamples = 0, inputCopyFrames = 0;
+        } observations;
+
+        struct Submission
+        {
+            uint64_t inputValue = 0;
+            int input = -1, output = -1;
+            bool accepted = false;
+        };
+
+        /** @brief Reserves a progress signal even when a frame is skipped. The caller must submit that signal. */
+        Submission reserve()
+        {
+            Submission result;
+            result.inputValue = inputsReady.reserveSignal();
+            if (!result.inputValue)
+            {
+                return result;
+            }
+            result.input = freeInput();
+            result.output = reusableOutput(result.inputValue);
+            if (result.input < 0)
+            {
+                ++observations.skippedInput;
+            }
+            else if (result.output < 0)
+            {
+                ++observations.skippedOutput;
+            }
+            else if (runnableJobs() > 1)
+            {
+                ++observations.skippedBacklog;
+            }
+            else
+            {
+                result.accepted = true;
+            }
+            return result;
+        }
+
+        /** @brief Commits ownership only after both payload and publication were successfully queued. */
+        void commit(const Submission& reservation, uint64_t dataReady, uint64_t published, uint64_t frame)
+        {
+            inputs[reservation.input].readDone = dataReady;
+            outputs[reservation.output] = {reservation.inputValue, dataReady, published, frame, 0};
+        }
+
+        /** @brief Describes a GPU-selected receive; a future input signal retires its readback storage. */
+        MailboxReceiveDesc receive(uint64_t frame, bool sampleAge)
+        {
+            MailboxReceiveDesc desc;
+            desc.mailbox = resources.mailboxPrimary();
+            desc.predicate = resources.predicate();
+            desc.frameId = resources.frameId();
+            for (UINT slot = 0; slot < MAILBOX_OUT_SLOTS; ++slot)
+            {
+                desc.payload[slot] = resources.output(slot, 0);
+                desc.id[slot] = resources.outputId(slot, 0);
+            }
+            for (UINT i = 1; i < MAILBOX_OUT_SLOTS; ++i)
+            {
+                UINT j = i;
+                while (j && outputs[desc.copyOrder[j]].frame < outputs[desc.copyOrder[j - 1]].frame)
+                {
+                    std::swap(desc.copyOrder[j], desc.copyOrder[j - 1]);
+                    --j;
+                }
+            }
+            if (sampleAge)
+            {
+                for (UINT slot = 0; slot < MailboxResources::READBACK_SLOTS; ++slot)
+                {
+                    if (!samples[slot].pending)
+                    {
+                        samples[slot] = {frame, inputsReady.issuedValue() + 1, true};
+                        desc.readback = resources.readback();
+                        desc.readbackOffset = slot * MailboxResources::READBACK_STRIDE;
+                        break;
+                    }
+                }
+                if (!desc.readback)
+                {
+                    ++observations.droppedAgeSamples;
+                }
+            }
+            return desc;
+        }
+
+        HRESULT init(const std::shared_ptr<DeviceContext>& primary, const std::shared_ptr<DeviceContext>& secondary, const MailboxDescription& desc)
+        {
             HRESULT result = resources.init(primary, secondary, desc);
             if (SUCCEEDED(result))
             {
-                result = inputsReady.init(primary, secondary);
+                result = inputsReady.init(primary->device(), secondary->device());
             }
             if (SUCCEEDED(result))
             {
-                result = resultsReady.init(secondary, primary);
+                result = resultsReady.init(secondary->device(), primary->device());
             }
             return result;
         }
 
         /**
-         * @brief Retires completed work and reads available AO age samples without waiting.
+         * @brief Retires completed work and reads available source age samples without waiting.
          * @return False if either fence reports device removal.
          */
         bool poll()
@@ -84,7 +175,7 @@ namespace drv3d_dx12
                     output = {};
                 }
             }
-            for (UINT i = 0; i < MailboxSsaoResources::READBACK_SLOTS; ++i)
+            for (UINT i = 0; i < MailboxResources::READBACK_SLOTS; ++i)
             {
                 auto& sample = samples[i];
                 if (!sample.pending || f0 < sample.ready)
@@ -92,16 +183,16 @@ namespace drv3d_dx12
                     continue;
                 }
                 uint32_t id = 0;
-                std::memcpy(&id, resources.mappedReadback() + i * MailboxSsaoResources::READBACK_STRIDE, sizeof(id));
+                std::memcpy(&id, resources.mappedReadback() + i * MailboxResources::READBACK_STRIDE, sizeof(id));
                 const uint64_t sourceFrame = id;
                 if (sample.frame > observations.displayedFrame)
                 {
                     observations.displayedFrame = sample.frame;
-                    observations.displayedAoFrame = sourceFrame;
+                    observations.displayedSourceFrame = sourceFrame;
                 }
                 if (!id)
                 {
-                    ++observations.unavailableAoFrames;
+                    ++observations.unavailableFrames;
                 }
                 else if (id > sample.frame)
                 {
@@ -175,25 +266,5 @@ namespace drv3d_dx12
             }
             return count;
         }
-        void copyObservations(d3d::mgpu::SsaoGpuTiming& timing) const
-        {
-            timing.mailbox = true;
-            timing.gpuMailbox = true;
-            timing.displayedFrame = observations.displayedFrame;
-            timing.displayedAoFrame = observations.displayedAoFrame;
-            timing.ageSamples = observations.ageSamples;
-            for (UINT i = 0; i < 8; ++i)
-            {
-                timing.ageHistogram[i] = observations.ageHistogram[i];
-            }
-            timing.skippedInput = observations.skippedInput;
-            timing.skippedOutput = observations.skippedOutput;
-            timing.skippedBacklog = observations.skippedBacklog;
-            timing.submitOnlySignals = observations.submitOnlySignals;
-            timing.badFrameIds = observations.badFrameIds;
-            timing.unavailableAoFrames = observations.unavailableAoFrames;
-            timing.droppedAgeSamples = observations.droppedAgeSamples;
-            timing.primaryInputCopyFrames = observations.primaryInputCopyFrames;
-        }
     };
-}
+}  // namespace nau::mgpu
