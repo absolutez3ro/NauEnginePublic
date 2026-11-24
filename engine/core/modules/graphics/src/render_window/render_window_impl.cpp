@@ -4,8 +4,16 @@
 
 #include "render_window_impl.h"
 
+#include <algorithm>
+#include <cstdlib>
+
+#include "nau/diag/logging.h"
+
+#include "nau/app/core_window_manager.h"
+#include "nau/app/global_properties.h"
 #include "nau/graphics/core_graphics.h"
 #include "nau/input.h"
+#include "nau/platform/windows/app/windows_window.h"
 
 namespace nau::render
 {
@@ -100,6 +108,26 @@ namespace nau::render
         m_ambientOcclusionMode.store(mode, std::memory_order_relaxed);
     }
 
+    AmbientOcclusionExecution RenderWindowImpl::getAmbientOcclusionExecution() const
+    {
+        return m_ambientOcclusionExecution.load(std::memory_order_relaxed);
+    }
+
+    void RenderWindowImpl::setAmbientOcclusionExecution(AmbientOcclusionExecution execution)
+    {
+        m_ambientOcclusionExecution.store(execution, std::memory_order_relaxed);
+    }
+
+    AmbientOcclusionAlgorithm RenderWindowImpl::getAmbientOcclusionAlgorithm() const
+    {
+        return m_ambientOcclusionAlgorithm.load(std::memory_order_relaxed);
+    }
+
+    void RenderWindowImpl::setAmbientOcclusionAlgorithm(AmbientOcclusionAlgorithm algorithm)
+    {
+        m_ambientOcclusionAlgorithm.store(algorithm, std::memory_order_relaxed);
+    }
+
     void RenderWindowImpl::render()
     {
         for (auto& [_, nodeGroup] : m_graphStages)
@@ -161,6 +189,11 @@ namespace nau::render
             {
                 m_resizeFrameCounter--;
             }
+        }
+        if (m_ambientOcclusion)
+        {
+            const AmbientOcclusion::Settings settings{getAmbientOcclusionMode(), getAmbientOcclusionExecution(), getAmbientOcclusionAlgorithm()};
+            m_ambientOcclusion->beginFrame(m_gBuffer->getWidth(), m_gBuffer->getHeight(), settings);
         }
     }
 

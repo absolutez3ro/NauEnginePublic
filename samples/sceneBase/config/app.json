@@ -24,8 +24,13 @@
         "ssao": {
             "enabled": true,
             "material": "file:/res/materials/ssao.nmat_json",
-            "postMaterial": "file:/res/materials/ssao_blur.nmat_json"
+            "postMaterial": "file:/res/materials/ssao_blur.nmat_json",
+            "vertexShader": "file:/res/shaders/cache/shader_cache.nsbc+[ssao.vs.vsmain]",
+            "pixelShader": "file:/res/shaders/cache/shader_cache.nsbc+[ssao.ps.psmain]"
         }
     },
-    "contentPath": "test"
+    "contentPath": "test",
+    "dx12": {
+        "multiGpu": true
+    }
 }
