@@ -92,6 +92,22 @@ namespace nau
         co_return asset;
     }
 
+    bool MaterialAssetView::hasPipeline(eastl::string_view pipelineName) const
+    {
+        return m_pipelines.contains(pipelineName);
+    }
+
+    BaseTexture* MaterialAssetView::findTexture(eastl::string_view pipelineName, eastl::string_view propertyName)
+    {
+        const auto pipeline = m_pipelines.find(pipelineName.data());
+        if (pipeline == m_pipelines.end())
+        {
+            return nullptr;
+        }
+        const auto texture = pipeline->second.samplerTextures.find(propertyName.data());
+        return texture != pipeline->second.samplerTextures.end() ? texture->second.getTexture() : nullptr;
+    }
+
     eastl::unordered_set<eastl::string> MaterialAssetView::getPipelineNames() const
     {
         eastl::unordered_set<eastl::string> names;
@@ -223,6 +239,14 @@ namespace nau
         property.parentTexture->isOwned = false;
         property.currentValue = makeValueCopy(eastl::string{"Internal BaseTexture"});
         property.timestamp = std::chrono::steady_clock::now();
+    }
+
+    BaseTexture* MaterialAssetView::getTexture(eastl::string_view pipelineName, eastl::string_view propertyName)
+    {
+        NAU_ASSERT(m_pipelines.contains(pipelineName));
+        const auto& pipeline = m_pipelines.at(pipelineName.data());
+        NAU_ASSERT(pipeline.samplerTextures.contains(propertyName));
+        return pipeline.samplerTextures.at(propertyName.data()).getTexture();
     }
 
     void MaterialAssetView::setSolidColorTexture(eastl::string_view pipelineName, eastl::string_view propertyName, math::E3DCOLOR color)
@@ -1375,7 +1399,7 @@ namespace nau
                         if (!samplers.contains(bind.name))
                         {
                             d3d::SamplerInfo sampInfo;
-                            samplers[pipelineName.data()] = {
+                            samplers[bind.name] = {
                                 .handle = create_sampler(sampInfo),
                                 .slot = bind.bindPoint};
                         }
@@ -1600,6 +1624,7 @@ namespace nau
             .constantBuffers = eastl::move(constantBuffers),
             .samplerTextures = eastl::move(textures),
             .samplers = masterPipeline.samplers,
+            .samplerOverrides = masterPipeline.samplerOverrides,
             .programID = PROGRAM_NULL,
             .renderStateId = eastl::nullopt,
             .cullMode = materialPipeline.cullMode.has_value() ? materialPipeline.cullMode : masterPipeline.cullMode,
@@ -1627,6 +1652,15 @@ namespace nau
             default:
                 NAU_FAILURE_ALWAYS("Unreachable code");
         }
+    }
+
+    void MaterialAssetView::setSampler(eastl::string_view pipelineName, eastl::string_view samplerName, d3d::SamplerHandle sampler, uint32_t slot)
+    {
+        NAU_ASSERT(m_pipelines.contains(pipelineName));
+        SamplerCache& binding = m_pipelines.at(pipelineName.data()).samplerOverrides[samplerName.data()];
+        binding.handle = sampler;
+        binding.slot = slot;
+        binding.stages.insert(STAGE_PS);
     }
 
     void MaterialAssetView::makeDepthMode(DepthMode depthMode, shaders::RenderState& renderState)
@@ -2150,6 +2184,10 @@ namespace nau
                 set_sampler(stage, sampl.slot, sampl.handle);
             }
         }
+        for (const auto& [name, sampl] : pipeline.samplerOverrides)
+        {
+            set_sampler(STAGE_PS, sampl.slot, sampl.handle);
+        }
 
         for (const auto& [name, rwBuf] : pipeline.rwBuffers)
         {
@@ -2340,6 +2378,10 @@ namespace nau
                     d3d::set_cs_constbuffer_size(regCount);
                 }
 
+                // Register-backed globals must replace an explicit buffer left by a
+                // previous material (for example, single-GPU SSAO at pixel b0).
+                // DX12 skips register uploads while that explicit buffer is bound.
+                d3d::set_const_buffer(getStage(shaderTarget), bind.bindPoint, nullptr);
                 d3d::set_const(getStage(shaderTarget), bind.bindPoint, buffer.data(), regCount);
             }
         }
@@ -2491,6 +2533,10 @@ namespace nau
                 set_sampler(stage, sampl.slot, sampl.handle);
             }
         }
+        for (const auto& [name, sampl] : instancePipeline.samplerOverrides)
+        {
+            set_sampler(STAGE_PS, sampl.slot, sampl.handle);
+        }
 
         // Some SRV and UAV resources may exist only in the master material.
         // We must always consider this and process these resources correctly.
@@ -2578,6 +2624,13 @@ namespace nau
                 instancePipeline.isDirty = true;
             }
         }
+    }
+
+    BaseTexture* MaterialInstanceAssetView::getTexture(eastl::string_view pipelineName, eastl::string_view propertyName)
+    {
+        NAU_ASSERT(m_pipelines.contains(pipelineName));
+        syncTextures(m_masterMaterial->m_pipelines.at(pipelineName.data()), m_pipelines.at(pipelineName.data()));
+        return MaterialAssetView::getTexture(pipelineName, propertyName);
     }
 
     void MaterialInstanceAssetView::syncTextures(const Pipeline& masterPipeline, Pipeline& instancePipeline)

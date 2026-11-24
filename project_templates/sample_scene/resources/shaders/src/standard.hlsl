@@ -8,6 +8,7 @@
 
 #include "shader_global.hlsli"
 #include "gbuffer_base.hlsli"
+#include "foliage_alpha.hlsli"
 
 Texture2D albedoTex : register(t0);
 Texture2D normalTex : register(t1);
@@ -21,6 +22,7 @@ SamplerState metalRoughnessAoSampler : register(s2);
 
 GLOBAL_CBUFFER(SceneBuffer) : register(b0)
 {
+    float4x4 vp;
     float4x4 mvp;
     float4x4 worldMatrix;
     float4x4 normalMatrix;
@@ -31,7 +33,8 @@ VsOutputGBuff VSMain(VsInputLit input)
 {
     VsOutputGBuff output;
 
-    output.position = mul(mvp, float4(input.position, 1.0f));
+    // Match the prepass transform and operation order for identical depth values.
+    output.position = mul(mul(vp, worldMatrix), float4(input.position, 1.0f));
     output.norm = normalize(mul(normalMatrix, float4(input.normal, 0.0f)).xyz);
     output.tangent = normalize(mul(worldMatrix, float4(input.tangent.xyz, 0.0f)).xyz);
     output.texCoord = input.texCoord;
@@ -70,13 +73,20 @@ VsOutputGBuff VSMain(VsInputLit input, uint instID : SV_InstanceID)
 
 #endif // !INSTANCED
 
-GBUFFER_OUTPUT PSMain(VsOutputGBuff input)
+GBUFFER_OUTPUT PSMain(VsOutputGBuff input, bool frontFace : SV_IsFrontFace)
 {
-    half3 albedo = albedoTex.Sample(albedoSampler, input.texCoord).rgb;
+    half4 albedoSample = albedoTex.Sample(albedoSampler, input.texCoord);
+#ifdef ALPHA_TEST
+    clipFoliageAlpha(albedoSample.a);
+#endif
+    half3 albedo = albedoSample.rgb;
     half4 metalRoughnessAo = metalRoughnessAoTex.Sample(metalRoughnessAoSampler, input.texCoord);
 
     float3 tangentNormal = normalTex.Sample(normalSampler, input.texCoord).xyz * 2.0f - 1.0f;
     float3 worldSpaceNormal = normalize(TangentToWorld(tangentNormal, GetTBN(input.norm, input.tangent)));
+#ifdef ALPHA_TEST
+    worldSpaceNormal *= frontFace ? 1.0f : -1.0f;
+#endif
 
     float4 screenpos = input.position;
     

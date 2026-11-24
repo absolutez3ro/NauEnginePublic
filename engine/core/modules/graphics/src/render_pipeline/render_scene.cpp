@@ -93,13 +93,13 @@ namespace nau
         }
     }
 
-    void RenderScene::renderDepth(const nau::math::Matrix4& vp)
+    void RenderScene::renderDepth(const nau::math::Matrix4& vp, bool writeNormals)
     {
         for (auto& view : m_views)
         {
             if (view->containsTag(Tags::opaqueTag))
             {
-                view->renderZPrepass(vp, m_zPrepassMaterial.get());
+                view->renderZPrepass(vp, m_zPrepassMaterial.get(), writeNormals);
             }
         }
     }

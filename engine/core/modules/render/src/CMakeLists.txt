@@ -54,6 +54,10 @@ target_link_libraries(${TargetName} PUBLIC
   xxHash
 )
 
+if(WIN32)
+  target_link_libraries(${TargetName} PRIVATE d3d12 dxgi)
+endif()
+
 nau_target_link_modules(${TargetName}
   NauKernel
   vectormath

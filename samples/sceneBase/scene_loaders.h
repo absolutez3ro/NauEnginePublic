@@ -7,6 +7,9 @@
 
 namespace nau::sample
 {
+    /** @brief Loads Jungle Ruins and installs the sample's camera and benchmark controls. */
+    async::Task<> startupJungleRuins();
+
     /**
      */
     scene::IScene::Ptr makeTransformDemoScene(math::vec3 rootPos, bool addCamera);

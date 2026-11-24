@@ -6,11 +6,15 @@
 #include "gbuffer_read.hlsli"
 #include "pbr.hlsli"
 #include "csm.hlsli"
+#include "ssao_reconstruction.hlsli"
 
 #define DIELECTRIC_F0 float3(0.04, 0.04, 0.04)
 
 TextureCube irradianceMap: register(t4);
 TextureCube reflectionMap: register(t5);
+Texture2D<float> ssaoMap : register(t6);
+SamplerState ssaoLinearClamp : register(s6);
+Texture2D<float> ssaoDepth : register(t7);
 
 GLOBAL_CBUFFER(SceneBuffer) : register(b0)
 {
@@ -19,6 +23,8 @@ GLOBAL_CBUFFER(SceneBuffer) : register(b0)
     float4 lightDirection;
     float4 lightColorIntensity;
     float4 envIntensity;
+    float4 ssaoControl; // Enabled, reconstruction (-1 = full texture), linear depth, GatherRed.
+    float4 ssaoReconstruction; // Screen divisor, threshold, projection B, projection A.
 };
 
 VsOutputResolve VSMain(uint id : SV_VertexID)
@@ -46,6 +52,11 @@ float4 PSMain(VsOutputResolve input) : SV_Target
     }
     
     ProcessedGbuffer gbuffer = readProcessedGbuffer(input.texCoord);
+    if (ssaoControl.x > 0.0)
+    {
+        gbuffer.ao *= ssaoReconstruct(input.texCoord,rawDepth,ssaoMap,ssaoDepth,ssaoLinearClamp,
+            ssaoReconstruction.y, ssaoReconstruction.zw);
+    }
 
     // depth / viewpos
     float4 farpos = float4(input.texCoord.x * 2 - 1, (1 - input.texCoord.y) * 2 - 1, rawDepth, 1.0);

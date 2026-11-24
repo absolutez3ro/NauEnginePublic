@@ -1,21 +1,25 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
-
 #include "nau/samples/sample_app_delegate.h"
+
 #include "./sample_components/asset_reloader.h"
+#include "./sample_components/jungle_automation.h"
 #include "./sample_components/mgpu_toggle.h"
 #include "./sample_components/scene_reloader.h"
 #include "./sample_components/window_maker.h"
 #include "./texture_import_settings.h"
-#include "nau/samples/components/camera_control.h"
-#include "nau/samples/components/rotator.h"
-#include "nau/utils/functor.h"
 #include "nau/app/application_delegate.h"
 #include "nau/app/global_properties.h"
+#include "nau/graphics/core_graphics.h"
+#include "nau/gui/imguiInput.h"
 #include "nau/input.h"
+#include "nau/render/render_window.h"
+#include "nau/samples/components/camera_control.h"
+#include "nau/samples/components/rotator.h"
 #include "nau/scene/internal/scene_listener.h"
 #include "nau/scene/internal/scene_manager_internal.h"
+#include "nau/utils/functor.h"
 
 namespace nau::sample
 {
@@ -68,6 +72,7 @@ namespace nau::sample
         {
             getServiceProvider().addService<TextureImportSettingsProvider>();
             getServiceProvider().addClass<nau::sample::CameraControl>();
+            getServiceProvider().addClass<nau::sample::JungleAutomation>();
             getServiceProvider().addClass<nau::sample::MyRotator>();
             getServiceProvider().addClass<nau::sample::AssetReloader>();
             getServiceProvider().addClass<nau::sample::SceneReloader>();
@@ -79,6 +84,12 @@ namespace nau::sample
 
         async::Task<> startupApplication() override
         {
+            if (getApplication().isClosing())
+            {
+                return async::Task<>::makeResolved();
+            }
+            // The overview camera shares input with ImGui outside its panels.
+            imgui_use_hybrid_input_mode(getServiceProvider().get<GlobalProperties>().getValue<bool>("sample/camera/overview").value_or(false));
             return m_startup();
         }
 

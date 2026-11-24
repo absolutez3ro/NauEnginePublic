@@ -91,6 +91,7 @@ namespace nau
 
 
 
+        bool hasPreRenderWork();
         async::Task<> executeRenderJobs();
 
         void stopGraphics();

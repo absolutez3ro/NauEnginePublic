@@ -45,15 +45,39 @@ class ResourceHeapFeatureController : public BufferDescriptorProvider
   };
 
   Features::Type features{};
+  bool m_reportErrorsToDriver = true;
+
+public:
+  struct SetupInfo : BaseType::SetupInfo
+  {
+    // Independent-device pools return errors to their owner instead of changing api_state.lastErrorCode.
+    bool reportErrorsToDriver = true;
+  };
 
 protected:
+  HRESULT checkHeapResult(HRESULT result, const char *operation, bool debug = false) const
+  {
+    if (m_reportErrorsToDriver)
+    {
+      return debug ? dx12_debug_result(result, operation, __FILE__, __LINE__)
+                   : dx12_check_result_no_oom_report(result, operation, __FILE__, __LINE__);
+    }
+    if (FAILED(result))
+    {
+      NAU_LOG_WARNING("DX12: independent-device heap operation {} failed: {}", operation, result);
+    }
+    return result;
+  }
+
   void setup(const SetupInfo &info)
   {
+    m_reportErrorsToDriver = info.reportErrorsToDriver;
     BaseType::setup(info);
 
     NAU_LOG_DEBUG("DX12: Checking resource heap properties...");
     D3D12_FEATURE_DATA_ARCHITECTURE archInfo{};
-    if (DX12_DEBUG_FAIL(info.device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &archInfo, sizeof(archInfo))))
+    if (FAILED(checkHeapResult(info.device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &archInfo, sizeof(archInfo)),
+                              "CheckFeatureSupport(ARCHITECTURE)", true)))
     {
       // assume NUMA system
       features.reset(Features::IS_UMA);
@@ -66,7 +90,8 @@ protected:
     }
 
     D3D12_FEATURE_DATA_D3D12_OPTIONS featureInfo{};
-    if (DX12_DEBUG_FAIL(info.device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &featureInfo, sizeof(featureInfo))))
+    if (FAILED(checkHeapResult(info.device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &featureInfo, sizeof(featureInfo)),
+                              "CheckFeatureSupport(D3D12_OPTIONS)", true)))
     {
       // assume D3D12_RESOURCE_HEAP_TIER_1
       features.reset(Features::CAN_MIX_RESOURCES);
@@ -100,6 +125,9 @@ protected:
   struct SetupInfo : BaseType::SetupInfo
   {
     DXGIAdapter *adapter;
+    // On UMA, CPU-visible L0 memory belongs to the LOCAL segment, not NON_LOCAL.
+    // Opt-in keeps the existing primary-device policy unchanged.
+    bool useLocalBudgetForUMA = false;
 
     DXGIAdapter *getAdapter() const { return adapter; }
   };
@@ -1190,7 +1218,7 @@ public:
   static D3D12_RESOURCE_STATES getInitialTextureResourceState(D3D12_RESOURCE_FLAGS flags);
 
   ResourceMemory allocate(DXGIAdapter *adapter, ID3D12Device *device, ResourceHeapProperties props,
-    const D3D12_RESOURCE_ALLOCATION_INFO &alloc_info, AllocationFlags flags);
+    const D3D12_RESOURCE_ALLOCATION_INFO &alloc_info, AllocationFlags flags, HRESULT *allocationError = nullptr);
   void free(ResourceMemory allocation);
 
   template <typename T>

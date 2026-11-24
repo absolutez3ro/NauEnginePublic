@@ -51,7 +51,7 @@ namespace nau
         void updateViews(const nau::math::Matrix4& vp);
         void updateManagers();
         void renderScene(const nau::math::Matrix4& vp);
-        void renderDepth(const nau::math::Matrix4& vp);
+        void renderDepth(const nau::math::Matrix4& vp, bool writeNormals);
         void renderTranslucency(const nau::math::Matrix4& vp);
         void renderOutlineMask(const nau::math::Matrix4& vp);
 

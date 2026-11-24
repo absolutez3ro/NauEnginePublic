@@ -86,9 +86,13 @@ bool DearImGuiInputHandler::OnDeviceButtonFloat(gainput::DeviceId device, gainpu
                 {
                     int w, h;
                     d3d::get_screen_size(w, h);
-                    float xAxis = nau::input::getMouseAxisValue(device, nau::input::MouseKey::AxisX);
-                    float yAxis = nau::input::getMouseAxisValue(device, nau::input::MouseKey::AxisY);
-                    ImGui::GetIO().MousePos = ImVec2(xAxis * w + viewPortOffsetX, yAxis * h + viewPortOffsetY);
+                    // Gainput notifies listeners before publishing the new device state.
+                    // Reading InputMap here uses the previous event's position.
+                    ImVec2& position = ImGui::GetIO().MousePos;
+                    if (deviceButton == gainput::MouseButton::MouseAxisX)
+                        position.x = newValue * w + viewPortOffsetX;
+                    else
+                        position.y = newValue * h + viewPortOffsetY;
                     break;
                 }
         }

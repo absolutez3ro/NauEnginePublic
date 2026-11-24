@@ -912,7 +912,7 @@ bool fill_interface_table(D3dInterfaceTable &d3dit);
 
 
 /// returns driver name (pointer to static string)
-const char *get_driver_name();
+NAU_RENDER_EXPORT const char *get_driver_name();
 
 /// returns driver code
 NAU_RENDER_EXPORT DriverCode get_driver_code();
@@ -923,7 +923,7 @@ static inline bool is_stub_driver() { return get_driver_code().is(d3d::stub); }
 const char *get_device_driver_version();
 
 /// returns device name (pointer to static string)
-const char *get_device_name();
+NAU_RENDER_EXPORT const char *get_device_name();
 
 /// returns pointer to static buffer containing last error message
 NAU_RENDER_EXPORT const char *get_last_error();
@@ -941,6 +941,53 @@ void window_destroyed(void *hwnd);
 
 /// returns raw pointer to device interface (implementation and platform specific)
 void *get_device();
+
+using GpuId = uint32_t;
+inline constexpr GpuId PRIMARY_GPU = 0;
+inline constexpr GpuId SECONDARY_GPU = 1;
+
+/**
+ * @brief Returns a borrowed native device pointer for the requested GPU.
+ * @param gpu_id PRIMARY_GPU (0) or SECONDARY_GPU (1).
+ * @return The native device, or nullptr if the GPU is unavailable, the id is unknown,
+ *         or the driver is not initialized.
+ * @note Call on the render thread. Do not release the returned pointer. Release resources
+ *       created through it before driver shutdown or device recovery.
+ */
+NAU_RENDER_EXPORT void *get_device(GpuId gpu_id);
+
+/**
+ * @brief Checks whether the secondary GPU device is available.
+ * @return true if the initialized driver has a secondary GPU device; otherwise false.
+ */
+NAU_RENDER_EXPORT bool has_secondary_gpu();
+
+/**
+ * @brief Checks whether a healthy secondary device is available for multi-GPU work.
+ *
+ * Checks device health on the render thread. Transfer-channel creation still has
+ * to validate the actual format, shared resources and fences on both adapters.
+ * A false result selects the technique's single-GPU path.
+ */
+NAU_RENDER_EXPORT bool is_multi_gpu_available();
+
+/**
+ * @brief Returns the last reason why multi-GPU fell back to GPU 0.
+ *
+ * The returned pointer is static storage. When is_multi_gpu_available() is true,
+ * this returns "available". Before driver initialization or after shutdown it
+ * returns "driver not initialized".
+ */
+NAU_RENDER_EXPORT const char *get_multi_gpu_fallback_reason();
+
+/**
+ * @brief Latches single-GPU fallback after a secondary transfer or resource failure.
+ *
+ * The transfer layer calls this on the render thread with the failing HRESULT.
+ * Successful HRESULTs are ignored. Existing consumer-owned resources must be
+ * retired by their owner; the driver keeps the secondary device alive until teardown.
+ */
+NAU_RENDER_EXPORT void report_secondary_gpu_failure(uint32_t error_code);
 
 /// returns raw pointer to device interface
 void *get_context();
@@ -1527,7 +1574,7 @@ PROGRAM get_debug_program();
 void beginEvent(const char *); // for debugging
 void endEvent();               // for debugging
 bool get_vrr_supported();
-bool get_vsync_enabled();
+NAU_RENDER_EXPORT bool get_vsync_enabled();
 bool enable_vsync(bool enable);
 
 // Backbuffer is only valid while the GPU is acquired, and can be recreated in between.

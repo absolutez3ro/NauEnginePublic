@@ -28,6 +28,26 @@ namespace nau::render
 
     NAU_DEFINE_TYPED_FLAG(NauRenderStage)
 
+    enum class AmbientOcclusionMode : uint32_t
+    {
+        off = 0,
+        lighting = 1,
+        debug = 2
+    };
+
+    enum class AmbientOcclusionExecution : uint32_t
+    {
+        singleGpu = 0,
+        multiGpu = 1
+    };
+
+    enum class AmbientOcclusionAlgorithm : uint32_t
+    {
+        ssao = 0,
+        hbao = 2,
+        xegtao = 3
+    };
+
     struct NAU_ABSTRACT_TYPE IRenderWindow : public virtual IRefCounted
     {
         NAU_INTERFACE(nau::render::IRenderWindow, IRefCounted)
@@ -40,6 +60,37 @@ namespace nau::render
 
         virtual int32_t getMainCameraIndex() = 0;
         virtual void setMainCameraIndex(int32_t ind) = 0;
+
+        /**
+         * @brief Returns the most recently requested AO mode. Thread safe.
+         * @return The requested mode, independent of whether AO was enabled at startup.
+         */
+        virtual AmbientOcclusionMode getAmbientOcclusionMode() const = 0;
+        /**
+         * @brief Requests a mode for an existing AO pipeline while preserving its resources. Thread safe.
+         * @param mode The requested AO mode. Requires render/ssao/enabled at startup.
+         */
+        virtual void setAmbientOcclusionMode(AmbientOcclusionMode mode) = 0;
+
+        /**
+         * @brief Returns the requested AO execution mode. Thread safe.
+         */
+        virtual AmbientOcclusionExecution getAmbientOcclusionExecution() const = 0;
+        /**
+         * @brief Requests the GPU for raw AO. MGPU requires dx12/multiGpu at startup. Thread safe.
+         * @param execution The requested execution mode; unavailable MGPU falls back to GPU 0.
+         */
+        virtual void setAmbientOcclusionExecution(AmbientOcclusionExecution execution) = 0;
+        /**
+         * @brief Returns the requested AO algorithm. Thread safe.
+         */
+        virtual AmbientOcclusionAlgorithm getAmbientOcclusionAlgorithm() const = 0;
+        /**
+         * @brief Requests an AO algorithm at the next frame boundary. Thread safe.
+         * @param algorithm The algorithm to use with the engine's fixed AO settings.
+         */
+        virtual void setAmbientOcclusionAlgorithm(AmbientOcclusionAlgorithm algorithm) = 0;
+        virtual float getFrameRate() const = 0;
 
         virtual async::Task<> requestViewportResize(int32_t width, int32_t height) = 0;
         virtual async::Task<> requestViewportResizeImmediate(int32_t width, int32_t height) = 0;

@@ -21,6 +21,7 @@
 #include "nau/app/global_properties.h"
 #include "nau/app/run_application.h"
 #include "nau/dataBlock/dag_dataBlock.h"
+#include "nau/io/file_system.h"
 #include "nau/module/module_manager.h"
 #include "nau/physics/components/rigid_body_component.h"
 #include "nau/physics/physics_body.h"
@@ -241,6 +242,15 @@ namespace nau::sample
 
     async::Task<> startupDemo()
     {
+        auto& properties = getServiceProvider().get<GlobalProperties>();
+        const auto sceneName = properties.getValue<eastl::string>("sample/scene").value_or("");
+        if (sceneName == "jungleRuins" &&
+            getServiceProvider().get<io::IFileSystem>().exists("/content/scenes/jungle_ruins/manifest.json"))
+        {
+            co_await startupJungleRuins();
+            co_return;
+        }
+
         using namespace nau::async;
         using namespace nau::scene;
 #if 1

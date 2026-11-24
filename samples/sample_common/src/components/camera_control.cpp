@@ -6,12 +6,69 @@
 #include <imgui.h>
 
 #include "nau/input.h"
+#include "nau/app/global_properties.h"
+#include "nau/3d/dag_drv3d.h"
+#include "nau/graphics/core_graphics.h"
+#include "nau/render/render_window.h"
 #include "nau/scene/camera/camera_manager.h"
 #include "nau/scene/components/camera_component.h"
 #include "nau/scene/scene.h"
 
 namespace nau::sample
 {
+    namespace
+    {
+        void drawAoControls()
+        {
+            using render::AmbientOcclusionAlgorithm;
+            using render::AmbientOcclusionExecution;
+
+            ICoreGraphics* graphics = getServiceProvider().find<ICoreGraphics>();
+            const render::IRenderWindow::Ptr window = graphics ? graphics->getDefaultRenderWindow().lock() : nullptr;
+            if (!window || !getServiceProvider().get<GlobalProperties>().getValue<bool>("render/ssao/enabled").value_or(false))
+            {
+                return;
+            }
+
+            ImGui::SetNextWindowPos(ImVec2(280.f, 40.f), ImGuiCond_FirstUseEver);
+            if (ImGui::Begin("AO", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+            {
+                int execution = static_cast<int>(window->getAmbientOcclusionExecution());
+                ImGui::SetNextItemWidth(145.f);
+                if (ImGui::Combo("Execution", &execution, "Single GPU\0Multi GPU\0"))
+                {
+                    window->setAmbientOcclusionExecution(static_cast<AmbientOcclusionExecution>(execution));
+                }
+                if (execution == static_cast<int>(AmbientOcclusionExecution::multiGpu) && !d3d::is_multi_gpu_available())
+                {
+                    ImGui::TextUnformatted("Second GPU unavailable. AO runs on GPU 0.");
+                }
+
+                constexpr AmbientOcclusionAlgorithm ALGORITHMS[] = {
+                    AmbientOcclusionAlgorithm::ssao,
+                    AmbientOcclusionAlgorithm::hbao,
+                    AmbientOcclusionAlgorithm::xegtao
+                };
+                int algorithm = 0;
+                const AmbientOcclusionAlgorithm requested = window->getAmbientOcclusionAlgorithm();
+                for (int index = 0; index < IM_ARRAYSIZE(ALGORITHMS); ++index)
+                {
+                    if (ALGORITHMS[index] == requested)
+                    {
+                        algorithm = index;
+                        break;
+                    }
+                }
+                ImGui::SetNextItemWidth(145.f);
+                if (ImGui::Combo("Algorithm", &algorithm, "SSAO\0HBAO\0XeGTAO\0"))
+                {
+                    window->setAmbientOcclusionAlgorithm(ALGORITHMS[algorithm]);
+                }
+            }
+            ImGui::End();
+        }
+    }
+
     NAU_IMPLEMENT_DYNAMIC_OBJECT(CameraControl)
 
     CameraControl::~CameraControl()
@@ -61,7 +118,9 @@ namespace nau::sample
 
     void CameraControl::updateComponent(float dt)
     {
+        if (getServiceProvider().get<GlobalProperties>().getValue<bool>("sample/automation/enabled").value_or(false)) return;
         using namespace nau::input;
+        drawAoControls();
 
         ImGui::Begin("Component Window");
         ImGui::SetWindowSize(ImVec2(200, 100), ImGuiCond_Once);
@@ -107,7 +166,7 @@ namespace nau::sample
             setCamControlKind(newControlKind);
         }
 
-        if (isMouseButtonHold(0, MouseKey::Button0))
+        if (!ImGui::GetIO().WantCaptureMouse && isMouseButtonHold(0, MouseKey::Button0))
         {
             if (const float xr = getMouseAxisDelta(0, MouseKey::AxisX); xr != 0.f)
             {

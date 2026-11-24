@@ -31,6 +31,13 @@
 #include "drv3d_commonCode/frameStateTM.inc.h"
 
 #include "nau/dataBlock/dag_dataBlock.h"
+#if _TARGET_PC_WIN
+#include <atomic>
+#include "multi_gpu_device.h"
+#include "adapter_identity.h"
+#include "nau/app/global_properties.h"
+#include "nau/service/service_provider.h"
+#endif
 
 //#include <util/dag_watchdog.h>
 #include <drv3d_commonCode/renderPassGeneric.h>
@@ -65,16 +72,6 @@ namespace
 constexpr int min_major_feature_level = 11;
 constexpr int min_minor_feature_level = 0;
 
-bool is_software_device(const DXGI_ADAPTER_DESC1 &desc)
-{
-  constexpr UINT software_driver_vendor = 0x1414;
-  constexpr UINT software_driver_id = 0x8c;
-  // checking software flag is insuficient, on some systems (even with exact same patch level and
-  // drivers) this flag might not be set by the dx runtime and we have to manually check for
-  // software device and vendor id.
-  return (0 != (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) ||
-         (desc.VendorId == software_driver_vendor && desc.DeviceId == software_driver_id);
-}
 D3D_FEATURE_LEVEL make_feature_level(int major, int minor)
 {
   struct FeatureLevelTableEntry
@@ -227,19 +224,30 @@ static void report_agility_sdk_error(HRESULT hr)
 
 static PresentationMode get_presentation_mode_from_settings()
 {
-  //TODO: repair
-  //const nau::DataBlock *videoBlk = ::dgs_get_settings()->getBlockByNameEx("video");
-  PresentationMode mode;
-  // Only Nvidia modes are disabled
-  const lowlatency::LatencyMode latencyMode = lowlatency::get_from_blk();
-  const bool vsyncDisabled = (latencyMode == lowlatency::LATENCY_MODE_NV_ON || latencyMode == lowlatency::LATENCY_MODE_NV_BOOST);
-  //if (videoBlk->getBool("vsync", false) && !vsyncDisabled)
-    mode = PresentationMode::VSYNCED;
-  //else if (videoBlk->getBool("adaptive_vsync", false))
-    //mode = PresentationMode::CONDITIONAL_VSYNCED;
-  //else
-    //mode = PresentationMode::UNSYNCED;
-  return mode;
+    const nau::DataBlock* video = ::dgs_get_settings()->getBlockByNameEx("video");
+    bool vsync = video->getBool("vsync", true);
+    bool adaptiveVsync = video->getBool("adaptive_vsync", false);
+    if (nau::hasServiceProvider())
+    {
+        if (nau::GlobalProperties* properties = nau::getServiceProvider().find<nau::GlobalProperties>())
+        {
+            vsync = properties->getValue<bool>("video/vsync").value_or(vsync);
+            adaptiveVsync = properties->getValue<bool>("video/adaptive_vsync").value_or(adaptiveVsync);
+        }
+    }
+    const lowlatency::LatencyMode latencyMode = lowlatency::get_from_blk();
+    const bool forceUnsynced = latencyMode == lowlatency::LATENCY_MODE_NV_ON || latencyMode == lowlatency::LATENCY_MODE_NV_BOOST;
+    PresentationMode mode = PresentationMode::UNSYNCED;
+    if (vsync && !forceUnsynced)
+    {
+        mode = PresentationMode::VSYNCED;
+    }
+    else if (adaptiveVsync && !forceUnsynced)
+    {
+        mode = PresentationMode::CONDITIONAL_VSYNCED;
+    }
+    NAU_LOG_INFO("DX12: presentation vsync={}, adaptive={}, mode={}", vsync, adaptiveVsync, static_cast<uint32_t>(mode));
+    return mode;
 }
 
 struct WindowState
@@ -426,6 +434,9 @@ struct ApiState
 #if _TARGET_PC_WIN
   Direct3D12Enviroment d3d12Env;
   ComPtr<DXGIFactory> dxgi14;
+  SecondaryGpuDevice secondaryDevice;
+  bool multiGpuEnabled = false;
+  std::atomic<MultiGpuFallbackReason> multiGpuFallbackReason{MultiGpuFallbackReason::driverNotInitialized};
 #endif
   Device device;
   HRESULT lastErrorCode;
@@ -504,6 +515,9 @@ struct ApiState
 
     windowState.closeWindow();
 #if _TARGET_PC_WIN
+    secondaryDevice.reset();
+    multiGpuEnabled = false;
+    multiGpuFallbackReason = MultiGpuFallbackReason::driverNotInitialized;
     debugState.teardown();
     dxgi14.Reset();
     d3d12Env.teardown();
@@ -848,39 +862,249 @@ void check_and_add_adapter(Direct3D12Enviroment &d3d12_env, D3D_FEATURE_LEVEL fe
     return;
   }
 
+  const auto identity = query_physical_adapter_identity(info.info.AdapterLuid);
+  if (identity.virtualDisplay)
+  {
+    NAU_LOG_INFO("DX12: Ignoring a software/indirect display adapter");
+    return;
+  }
+  for (const auto &existing : adapter_list)
+  {
+    if (same_physical_adapter(identity, query_physical_adapter_identity(existing.info.AdapterLuid)))
+    {
+      NAU_LOG_INFO("DX12: Ignoring duplicate physical adapter LUID {:#010x}:{:#010x}",
+        static_cast<uint32_t>(info.info.AdapterLuid.HighPart), info.info.AdapterLuid.LowPart);
+      return;
+    }
+  }
   info.adapter = eastl::move(adapter);
   adapter_list.push_back(eastl::move(info));
 }
 
-// sort from dedicated to integrated by vram memory size
-void sort_adapters_by_perf(eastl::vector<Device::AdapterInfo> &adapter_list)
-{
-  eastl::sort(begin(adapter_list), end(adapter_list), [](const Device::AdapterInfo &l, const Device::AdapterInfo &r) {
-    return l.info.DedicatedVideoMemory > r.info.DedicatedVideoMemory;
-  });
-}
-
-// sort from integrated to dedicated by testing for UMA
-void sort_adapters_by_integrated(eastl::vector<Device::AdapterInfo> &adapter_list, D3D_FEATURE_LEVEL feature_level)
+// Keep DXGI's order within each architecture class. VRAM capacity is not a speed ranking.
+void prefer_adapter_architecture(Direct3D12Enviroment &environment,
+  eastl::vector<Device::AdapterInfo> &adapter_list, D3D_FEATURE_LEVEL feature_level, bool prefer_integrated)
 {
   for (Device::AdapterInfo &adapter : adapter_list)
   {
-    VersionedComPtr<D3DDevice> device;
-    if (device.autoQuery([&adapter, feature_level](auto uuid, auto ptr) {
-          return SUCCEEDED(drv3d_dx12::api_state.d3d12Env.D3D12CreateDevice(adapter.adapter.Get(), feature_level, uuid, ptr));
-        }))
+    ComPtr<ID3D12Device> device;
+    if (SUCCEEDED(environment.D3D12CreateDevice(adapter.adapter.Get(), feature_level, COM_ARGS(&device))))
     {
       D3D12_FEATURE_DATA_ARCHITECTURE data = {};
       if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &data, sizeof(data))))
-        adapter.integrated = data.UMA;
+        adapter.integrated = data.UMA != FALSE;
     }
   }
 
-  eastl::sort(begin(adapter_list), end(adapter_list), [](const Device::AdapterInfo &l, const Device::AdapterInfo &r) {
-    if (l.integrated != r.integrated)
-      return l.integrated;
-    return l.info.DedicatedVideoMemory > r.info.DedicatedVideoMemory;
+  eastl::stable_sort(begin(adapter_list), end(adapter_list), [prefer_integrated](const Device::AdapterInfo &l,
+    const Device::AdapterInfo &r) {
+    return l.integrated != r.integrated && l.integrated == prefer_integrated;
   });
+}
+
+HRESULT enumerate_adapters(Direct3D12Enviroment &environment, const ComPtr<DXGIFactory> &factory,
+  D3D_FEATURE_LEVEL feature_level, const nau::DataBlock *gpu_cfg,
+  eastl::vector<Device::AdapterInfo> &candidates, bool prefer_integrated = false)
+{
+  ComPtr<IDXGIFactory6> factory6;
+  const bool hasPreference = SUCCEEDED(factory.As(&factory6));
+  const auto preference = prefer_integrated ? DXGI_GPU_PREFERENCE_MINIMUM_POWER : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
+  NAU_LOG_INFO("DX12: Automatic adapter order: {}",
+    hasPreference ? (prefer_integrated ? "Windows minimum power" : "Windows high performance") : "DXGI architecture fallback");
+  HRESULT result = S_OK;
+  for (UINT index = 0;; ++index)
+  {
+    ComPtr<IDXGIAdapter1> adapter;
+    const HRESULT hr = hasPreference ? factory6->EnumAdapterByGpuPreference(index, preference, COM_ARGS(&adapter)) :
+      factory->EnumAdapters1(index, &adapter);
+    if (hr == DXGI_ERROR_NOT_FOUND)
+      break;
+    if (FAILED(hr) || !adapter)
+    {
+      result = FAILED(hr) ? hr : E_FAIL;
+      NAU_LOG_WARNING("DX12: Adapter enumeration failed at index {}: {}", index, dxgi_error_code_to_string(result));
+      break;
+    }
+    check_and_add_adapter(environment, feature_level, gpu_cfg, adapter, candidates);
+  }
+  if (!hasPreference)
+    prefer_adapter_architecture(environment, candidates, feature_level, prefer_integrated);
+  return result;
+}
+
+// Used only by the measurement launcher to pin a directed pair. Normal startup is automatic.
+bool read_benchmark_adapter_luid(const char *name, LUID &luid, bool &specified)
+{
+  char value[18]{};
+  const DWORD length = GetEnvironmentVariableA(name, value, sizeof(value));
+  specified = length != 0;
+  if (!specified)
+    return true;
+  if (length != 17 || value[8] != ':')
+    return false;
+  uint32_t parts[2]{};
+  for (unsigned part = 0; part < 2; ++part)
+    for (unsigned digit = 0; digit < 8; ++digit)
+    {
+      const char c = value[part * 9 + digit];
+      const int hex = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+        c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+      if (hex < 0)
+        return false;
+      parts[part] = (parts[part] << 4) | static_cast<uint32_t>(hex);
+    }
+  luid.HighPart = static_cast<LONG>(parts[0]);
+  luid.LowPart = parts[1];
+  return true;
+}
+
+bool multi_gpu_enabled(const nau::DataBlock *dx_cfg)
+{
+  if (nau::hasServiceProvider())
+  {
+    if (auto *properties = nau::getServiceProvider().find<nau::GlobalProperties>())
+    {
+      if (auto enabled = properties->getValue<bool>("dx12/multiGpu"))
+        return *enabled;
+    }
+  }
+  return dx_cfg->getBool("multiGpu", false);
+}
+
+void log_multi_gpu_adapter(d3d::GpuId gpu_id, const DXGI_ADAPTER_DESC1 &info, const CrossAdapterSupport &support)
+{
+  char name[sizeof(info.Description) * 3] = {};
+  WideCharToMultiByte(CP_UTF8, 0, info.Description, -1, name, sizeof(name), nullptr, nullptr);
+  NAU_LOG_INFO("DX12: GPU {}: {}, LUID {:#010x}:{:#010x}", gpu_id, name,
+    static_cast<uint32_t>(info.AdapterLuid.HighPart), info.AdapterLuid.LowPart);
+  NAU_LOG_INFO("DX12: GPU {}: D3D12_OPTIONS HRESULT={:#010x}, CrossAdapterRowMajorTextureSupported={}, CrossNodeSharingTier={}",
+    gpu_id, static_cast<uint32_t>(support.queryResult), support.options.CrossAdapterRowMajorTextureSupported != FALSE,
+    static_cast<uint32_t>(support.options.CrossNodeSharingTier));
+}
+
+void set_multi_gpu_fallback(MultiGpuFallbackReason reason)
+{
+  auto &state = drv3d_dx12::api_state;
+  if (state.multiGpuFallbackReason.exchange(reason) == reason)
+    return;
+  NAU_LOG_WARNING("DX12: MGPU fallback to GPU 0: {}", multi_gpu_fallback_reason_to_string(reason));
+}
+
+void check_secondary_gpu_health()
+{
+  auto &state = drv3d_dx12::api_state;
+  if (state.multiGpuFallbackReason != MultiGpuFallbackReason::available)
+    return;
+  auto *device = state.secondaryDevice.getDevice();
+  const HRESULT hr = device ? device->GetDeviceRemovedReason() : DXGI_ERROR_DEVICE_REMOVED;
+  auto expected = MultiGpuFallbackReason::available;
+  const auto reason = drv3d_dx12::check_secondary_gpu_health(expected, hr);
+  if (reason != expected && state.multiGpuFallbackReason.compare_exchange_strong(expected, reason))
+  {
+    NAU_LOG_WARNING("DX12: Secondary GPU failure: {}", dxgi_error_code_to_string(hr));
+    NAU_LOG_WARNING("DX12: MGPU fallback to GPU 0: {}", multi_gpu_fallback_reason_to_string(reason));
+  }
+}
+
+void init_secondary_gpu(D3D_FEATURE_LEVEL feature_level, const nau::DataBlock *gpu_cfg,
+  eastl::vector<Device::AdapterInfo> &candidates)
+{
+  auto &state = drv3d_dx12::api_state;
+  state.secondaryDevice.reset();
+  const auto primaryInfo = state.device.getAdapterInfo().info;
+  CrossAdapterSupport primarySupport;
+  primarySupport.query(state.device.getDevice());
+  log_multi_gpu_adapter(d3d::PRIMARY_GPU, primaryInfo, primarySupport);
+  if (FAILED(primarySupport.queryResult))
+  {
+    set_multi_gpu_fallback(MultiGpuFallbackReason::capabilityQueryFailed);
+    return;
+  }
+  auto failureReason = MultiGpuFallbackReason::noSecondaryAdapter;
+  LUID requestedLuid{};
+  bool requested = false;
+  if (!read_benchmark_adapter_luid("NAU_BENCHMARK_GPU1_LUID", requestedLuid, requested))
+  {
+    NAU_LOG_ERROR("DX12: Invalid benchmark GPU1 LUID; expected hhhhhhhh:llllllll");
+    set_multi_gpu_fallback(MultiGpuFallbackReason::noSecondaryAdapter);
+    return;
+  }
+  const auto primaryIdentity = query_physical_adapter_identity(primaryInfo.AdapterLuid);
+  if (requested)
+    NAU_LOG_INFO("DX12: Benchmark GPU1 LUID {:#010x}:{:#010x}; automatic fallback is disabled",
+      static_cast<uint32_t>(requestedLuid.HighPart), requestedLuid.LowPart);
+
+
+  // A requested alias must not disappear when the ordinary candidate list is deduplicated.
+  if (requested)
+  {
+    candidates.clear();
+    ComPtr<IDXGIAdapter1> adapter;
+    const HRESULT hr = state.dxgi14->EnumAdapterByLuid(requestedLuid, COM_ARGS(&adapter));
+    if (FAILED(hr) || !adapter)
+    {
+      NAU_LOG_ERROR("DX12: Requested benchmark GPU1 is unavailable");
+      set_multi_gpu_fallback(MultiGpuFallbackReason::noSecondaryAdapter);
+      return;
+    }
+    check_and_add_adapter(state.d3d12Env, feature_level, gpu_cfg, adapter, candidates);
+    if (candidates.empty())
+    {
+      set_multi_gpu_fallback(MultiGpuFallbackReason::noSecondaryAdapter);
+      return;
+    }
+  }
+  // Explicit primary selection by LUID, monitor or WARP bypasses the normal candidate list.
+  else if (candidates.empty())
+  {
+    if (FAILED(enumerate_adapters(state.d3d12Env, state.dxgi14, feature_level, gpu_cfg, candidates)))
+      failureReason = MultiGpuFallbackReason::adapterEnumerationFailed;
+  }
+
+  // AO can use an integrated adapter without displacing the preferred rendering GPU.
+  // Other hardware adapters remain candidates when no integrated device can be created.
+  prefer_adapter_architecture(state.d3d12Env, candidates, feature_level, true);
+  NAU_LOG_INFO("DX12: MGPU secondary order: UMA first, then remaining Windows performance order");
+
+  for (const auto &candidate : candidates)
+  {
+    if (!is_secondary_gpu_candidate(candidate.info, primaryInfo.AdapterLuid))
+      continue;
+    if (requested && (candidate.info.AdapterLuid.HighPart != requestedLuid.HighPart ||
+        candidate.info.AdapterLuid.LowPart != requestedLuid.LowPart))
+      continue;
+    if (same_physical_adapter(primaryIdentity, query_physical_adapter_identity(candidate.info.AdapterLuid)))
+      continue;
+    const HRESULT hr = state.secondaryDevice.init(candidate.adapter.Get(), primaryInfo.AdapterLuid, feature_level,
+      state.d3d12Env.D3D12CreateDevice);
+    if (FAILED(hr))
+    {
+      failureReason = MultiGpuFallbackReason::deviceCreationFailed;
+      NAU_LOG_WARNING("DX12: Secondary GPU creation failed for LUID {:#010x}:{:#010x}: {}",
+        static_cast<uint32_t>(candidate.info.AdapterLuid.HighPart), candidate.info.AdapterLuid.LowPart,
+        dxgi_error_code_to_string(hr));
+      continue;
+    }
+    log_multi_gpu_adapter(d3d::SECONDARY_GPU, state.secondaryDevice.getDescription(),
+      state.secondaryDevice.getCrossAdapterSupport());
+    if (FAILED(state.secondaryDevice.getCrossAdapterSupport().queryResult))
+    {
+      state.secondaryDevice.reset();
+      failureReason = MultiGpuFallbackReason::capabilityQueryFailed;
+      continue;
+    }
+    if (FAILED(state.secondaryDevice.getDevice()->GetDeviceRemovedReason()))
+    {
+      state.secondaryDevice.reset();
+      failureReason = MultiGpuFallbackReason::secondaryDeviceRemoved;
+      continue;
+    }
+    state.multiGpuFallbackReason = MultiGpuFallbackReason::available;
+    NAU_LOG_INFO("DX12: MGPU secondary device available; transfer channels must validate resource support");
+    return;
+  }
+
+  set_multi_gpu_fallback(failureReason);
 }
 } // namespace
 
@@ -985,6 +1209,11 @@ bool d3d::init_video(void *hinst, main_wnd_f *wnd_proc, const char *wcname, int 
   auto featureLevel = make_feature_level(dxCfg->getInt("FeatureLevelMajor", min_major_feature_level),
     dxCfg->getInt("FeatureLevelMinor", min_minor_feature_level));
 
+  drv3d_dx12::api_state.multiGpuEnabled = multi_gpu_enabled(dxCfg);
+  if (!drv3d_dx12::api_state.multiGpuEnabled)
+    set_multi_gpu_fallback(MultiGpuFallbackReason::disabledByConfig);
+  eastl::vector<Device::AdapterInfo> secondaryCandidates;
+
   auto init_device = [&](ComPtr<IDXGIAdapter1> adapter1, ComPtr<IDXGIOutput> output) {
     DXGI_ADAPTER_DESC1 info = {};
     adapter1->GetDesc1(&info);
@@ -1002,7 +1231,32 @@ bool d3d::init_video(void *hinst, main_wnd_f *wnd_proc, const char *wcname, int 
   };
 
   ComPtr<IDXGIAdapter1> adapter1;
-  if (dxCfg->getBool("UseWARP", false))
+  LUID benchmarkLuid{};
+  bool benchmarkPrimary = false;
+  if (!read_benchmark_adapter_luid("NAU_BENCHMARK_GPU0_LUID", benchmarkLuid, benchmarkPrimary))
+  {
+    NAU_LOG_ERROR("DX12: Invalid benchmark GPU0 LUID; expected hhhhhhhh:llllllll");
+    drv3d_dx12::api_state.lastErrorCode = E_INVALIDARG;
+    drv3d_dx12::api_state.releaseAll();
+    return false;
+  }
+  if (benchmarkPrimary)
+  {
+    NAU_LOG_INFO("DX12: Benchmark GPU0 LUID {:#010x}:{:#010x}; automatic fallback is disabled",
+      static_cast<uint32_t>(benchmarkLuid.HighPart), benchmarkLuid.LowPart);
+    const HRESULT hr = drv3d_dx12::api_state.dxgi14->EnumAdapterByLuid(benchmarkLuid, COM_ARGS(&adapter1));
+    DXGI_ADAPTER_DESC1 benchmarkInfo{};
+    const bool validAdapter = SUCCEEDED(hr) && adapter1 && SUCCEEDED(adapter1->GetDesc1(&benchmarkInfo)) &&
+      !is_software_device(benchmarkInfo) && !query_physical_adapter_identity(benchmarkInfo.AdapterLuid).virtualDisplay;
+    if (!validAdapter || !init_device(eastl::move(adapter1), nullptr))
+    {
+      NAU_LOG_ERROR("DX12: Cannot initialize the requested benchmark GPU0");
+      drv3d_dx12::api_state.lastErrorCode = FAILED(hr) ? hr : E_FAIL;
+      drv3d_dx12::api_state.releaseAll();
+      return false;
+    }
+  }
+  if (!drv3d_dx12::api_state.device.isInitialized() && dxCfg->getBool("UseWARP", false))
   {
     NAU_LOG_DEBUG("DX12: WARP requested, DXGIFactory4::EnumWarpAdapter...");
     if (SUCCEEDED(drv3d_dx12::api_state.dxgi14->EnumWarpAdapter(COM_ARGS(&adapter1))))
@@ -1045,43 +1299,12 @@ bool d3d::init_video(void *hinst, main_wnd_f *wnd_proc, const char *wcname, int 
   {
     const nau::DataBlock *gpuCfg = dxCfg->getBlockByName("gpuPreferences");
     eastl::vector<Device::AdapterInfo> adapterList;
-    ComPtr<IDXGIFactory6> dxgi6;
-    //if (SUCCEEDED(drv3d_dx12::api_state.dxgi14.As(&dxgi6)))
-    //{
-    //  DXGI_GPU_PREFERENCE gpuPreference;
-    //  if (videoCfg->getBool("preferiGPU", false))
-    //  {
-    //    NAU_LOG_DEBUG("DX12: Enumerating available devices to prefer iGPU...");
-    //    gpuPreference = DXGI_GPU_PREFERENCE_MINIMUM_POWER;
-    //  }
-    //  else
-    //  {
-    //    NAU_LOG_DEBUG("DX12: Enumerating available devices in performance order...");
-    //    gpuPreference = DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
-    //  }
-    //
-    //  for (UINT index = 0; dxgi6->EnumAdapterByGpuPreference(index, gpuPreference, COM_ARGS(&adapter1)) != DXGI_ERROR_NOT_FOUND;
-    //       ++index)
-    //  {
-    //      if(adapter1)
-    //        check_and_add_adapter(drv3d_dx12::api_state.d3d12Env, featureLevel, gpuCfg, adapter1, adapterList);
-    //  }
-    //}
-    //else
-    {
-      NAU_LOG_DEBUG("DX12: Enumerating available devices...");
-      for (UINT index = 0; drv3d_dx12::api_state.dxgi14->EnumAdapters1(index, &adapter1) != DXGI_ERROR_NOT_FOUND; ++index)
-      {
-        check_and_add_adapter(drv3d_dx12::api_state.d3d12Env, featureLevel, gpuCfg, adapter1, adapterList);
-      }
-
-      // sort from best to worse
-      if (videoCfg->getBool("preferiGPU", false))
-        sort_adapters_by_integrated(adapterList, featureLevel);
-      else
-        sort_adapters_by_perf(adapterList);
-    }
+    enumerate_adapters(drv3d_dx12::api_state.d3d12Env, drv3d_dx12::api_state.dxgi14,
+      featureLevel, gpuCfg, adapterList, videoCfg->getBool("preferiGPU", false));
     NAU_LOG_DEBUG("DX12: Found {} candidates", adapterList.size());
+
+    if (drv3d_dx12::api_state.multiGpuEnabled)
+      secondaryCandidates = adapterList;
 
     for (auto &&adapter : adapterList)
     {
@@ -1114,6 +1337,9 @@ bool d3d::init_video(void *hinst, main_wnd_f *wnd_proc, const char *wcname, int 
     if (SUCCEEDED(drv3d_dx12::api_state.device.getDevice()->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &data, sizeof(data))) && !data.UMA)
       NAU_LOG_WARNING("DX12: Despite the preferiGPU flag being enabled, the dedicated GPU is used!");
   }
+
+  if (drv3d_dx12::api_state.multiGpuEnabled)
+    init_secondary_gpu(featureLevel, dxCfg->getBlockByName("gpuPreferences"), secondaryCandidates);
 
   // TODO
   // update luid to use the same adapter next time
@@ -1287,6 +1513,65 @@ uint32_t d3d::get_last_error_code() { return drv3d_dx12::api_state.lastErrorCode
 const char *d3d::get_device_driver_version() { return "1.0"; }
 
 void *d3d::get_device() { return drv3d_dx12::api_state.device.getDevice(); }
+
+void *d3d::get_device(GpuId gpu_id)
+{
+  if (!is_inited())
+    return nullptr;
+  if (gpu_id == PRIMARY_GPU)
+    return get_device();
+#if _TARGET_PC_WIN
+  if (gpu_id == SECONDARY_GPU)
+    return is_multi_gpu_available() ? drv3d_dx12::api_state.secondaryDevice.getDevice() : nullptr;
+#endif
+  return nullptr;
+}
+
+bool d3d::has_secondary_gpu() { return get_device(SECONDARY_GPU) != nullptr; }
+
+bool d3d::is_multi_gpu_available()
+{
+  if (!is_inited())
+    return false;
+#if _TARGET_PC_WIN
+  check_secondary_gpu_health();
+  return drv3d_dx12::api_state.multiGpuFallbackReason == MultiGpuFallbackReason::available &&
+    drv3d_dx12::api_state.secondaryDevice.getDevice() != nullptr;
+#else
+  return false;
+#endif
+}
+
+const char *d3d::get_multi_gpu_fallback_reason()
+{
+  if (!is_inited())
+    return "driver not initialized";
+#if _TARGET_PC_WIN
+  check_secondary_gpu_health();
+  return multi_gpu_fallback_reason_to_string(drv3d_dx12::api_state.multiGpuFallbackReason);
+#else
+  return "driver does not support multi-GPU";
+#endif
+}
+
+void d3d::report_secondary_gpu_failure(uint32_t error_code)
+{
+#if _TARGET_PC_WIN
+  if (!is_inited() || SUCCEEDED(static_cast<HRESULT>(error_code)))
+    return;
+  if (!is_multi_gpu_available())
+    return;
+  auto expected = MultiGpuFallbackReason::available;
+  if (drv3d_dx12::api_state.multiGpuFallbackReason.compare_exchange_strong(expected, MultiGpuFallbackReason::transferFailed))
+  {
+    NAU_LOG_WARNING("DX12: Secondary transfer failure: {}", dxgi_error_code_to_string(static_cast<HRESULT>(error_code)));
+    NAU_LOG_WARNING("DX12: MGPU fallback to GPU 0: {}",
+      multi_gpu_fallback_reason_to_string(MultiGpuFallbackReason::transferFailed));
+  }
+#else
+  G_UNUSED(error_code);
+#endif
+}
 
 const Driver3dDesc &d3d::get_driver_desc() { return drv3d_dx12::api_state.driverDesc; }
 
@@ -1948,6 +2233,11 @@ bool d3d::reset_device()
 
   if (dagor_d3d_force_driver_reset)
   {
+    if (drv3d_dx12::api_state.multiGpuEnabled)
+    {
+      drv3d_dx12::api_state.multiGpuFallbackReason = MultiGpuFallbackReason::driverNotInitialized;
+      drv3d_dx12::api_state.secondaryDevice.reset();
+    }
     drv3d_dx12::api_state.state.preRecovery();
 
     // this will tear down stuff as we need it, but keeps things that can be left alone
@@ -1986,6 +2276,11 @@ bool d3d::reset_device()
     {
       NAU_FAILURE("DX12: Observed an critical error while recovering from a previous critical error, can not continue");
       return false;
+    }
+    if (drv3d_dx12::api_state.multiGpuEnabled)
+    {
+      eastl::vector<Device::AdapterInfo> candidates;
+      init_secondary_gpu(featureLevel, blk_dx.getBlockByName("gpuPreferences"), candidates);
     }
   }
   else if (dagor_d3d_force_driver_mode_reset)
@@ -2873,6 +3168,9 @@ bool d3d::update_screen(bool app_active)
 {
   STORE_RETURN_ADDRESS();
   CHECK_MAIN_THREAD();
+#if _TARGET_PC_WIN
+  check_secondary_gpu_health();
+#endif
 
   if (!drv3d_dx12::api_state.device.getContext().wasCurrentFramePresentSubmitted())
   {
@@ -3722,56 +4020,18 @@ APISupport get_dx12_support_status(bool use_any_device = true)
     dxCfg.getInt("FeatureLevelMinor", min_minor_feature_level));
 
   APISupport apiSupport = APISupport::NO_DEVICE_FOUND;
-  ComPtr<IDXGIFactory6> dxgi6;
-  ComPtr<IDXGIAdapter1> adapter1;
-  if (SUCCEEDED(dxgi14.As(&dxgi6)))
+  eastl::vector<Device::AdapterInfo> candidates;
+  const auto *videoCfg = ::dgs_get_settings()->getBlockByNameEx("video");
+  enumerate_adapters(d3d12Env, dxgi14, featureLevel, nullptr, candidates, videoCfg->getBool("preferiGPU", false));
+  for (auto &candidate : candidates)
   {
-    NAU_LOG_DEBUG("DX12: Scanning for viable devices in performance order...");
-
-    UINT index = 0;
-    if (dxgi6->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, COM_ARGS(&adapter1)) != DXGI_ERROR_NOT_FOUND)
-    {
-      apiSupport = check_adapter(d3d12Env, featureLevel, gpuCfg, use_any_device, adapter1);
-      if (apiSupport == APISupport::FULL_SUPPORT)
-        return apiSupport;
-    }
-  }
-  else
-  {
-    NAU_LOG_DEBUG("DX12: Scanning for viable devices...");
-
-    eastl::vector<Device::AdapterInfo> adapterList;
-    for (UINT index = 0; dxgi14->EnumAdapters1(index, &adapter1) != DXGI_ERROR_NOT_FOUND; ++index)
-      check_and_add_adapter(d3d12Env, featureLevel, nullptr, adapter1, adapterList);
-
-    if (!adapterList.empty())
-    {
-      if (!gpuCfg)
-        return APISupport::FULL_SUPPORT;
-
-      sort_adapters_by_perf(adapterList);
-
-      if (!use_any_device && !is_prefered_device(*gpuCfg, adapterList.front().info.VendorId, adapterList.front().info.DeviceId))
-      {
-        NAU_LOG_DEBUG("DX12: Rejected, because the driver mode is \"auto\" and the device isn't a prefered one");
-        return APISupport::NO_DEVICE_FOUND;
-      }
-
-      auto version = get_driver_version_from_registry(adapterList.front().info.AdapterLuid);
-      apiSupport = check_driver_version(adapterList.front().info, version, *gpuCfg);
-      switch (apiSupport)
-      {
-        case APISupport::OUTDATED_DRIVER:
-          NAU_LOG_DEBUG("DX12: Rejected, because inadequate gpu driver, the {}.{}.{}.{} is outdated", version.productVersion,
-            version.majorVersion, version.minorVersion, version.buildNumber);
-          break;
-        case APISupport::BLACKLISTED_DRIVER:
-          NAU_LOG_DEBUG("DX12: Rejected, because inadequate gpu driver, the {}.{}.{}.{} is blacklisted", version.productVersion,
-            version.majorVersion, version.minorVersion, version.buildNumber);
-          break;
-        default: return apiSupport;
-      }
-    }
+    const auto support = check_adapter(d3d12Env, featureLevel, gpuCfg, use_any_device, candidate.adapter);
+    if (support == APISupport::FULL_SUPPORT)
+      return support;
+    if (support != APISupport::NO_DEVICE_FOUND)
+      apiSupport = support;
+    if (!use_any_device)
+      break;
   }
 
   NAU_LOG_DEBUG("DX12: No viable device found, DX12 is unavailable!");

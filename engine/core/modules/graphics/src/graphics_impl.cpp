@@ -25,6 +25,7 @@
 #include "nau/input.h"
 #include "nau/module/module_manager.h"
 #include "nau/osApiWrappers/dag_cpuJobs.h"
+#include "nau/runtime/internal/runtime_component.h"
 #include "nau/shaders/shader_defines.h"
 #include "nau/service/service_provider.h"
 #include "nau/shaders/shader_globals.h"
@@ -301,11 +302,13 @@ namespace nau
             task.detach();
         }
 
-        d3d::finish_render_commands();
-
-        co_await executeRenderJobs();
-
-        d3d::finish_render_commands();
+        // Asset jobs can change resources still in use by the preceding frame.
+        if (!m_defaultRenderWindow || !m_defaultRenderWindow->hasAmbientOcclusion() || hasPreRenderWork())
+        {
+            d3d::finish_render_commands();
+            co_await executeRenderJobs();
+            d3d::finish_render_commands();
+        }
 
         renderMainScene();
 
@@ -474,6 +477,19 @@ namespace nau
         NAU_FATAL(action);
         lock_(m_preRenderJobsMutex);
         m_preRenderJobs.emplace_back(std::move(action));
+    }
+
+    bool GraphicsImpl::hasPreRenderWork()
+    {
+        {
+            lock_(m_preRenderJobsMutex);
+            if (!m_preRenderJobs.empty())
+            {
+                return true;
+            }
+        }
+        auto* const component = m_preRenderWorkQueue->as<IRuntimeComponent*>();
+        return component == nullptr || component->hasWorks();
     }
 
     async::Task<> GraphicsImpl::executeRenderJobs()

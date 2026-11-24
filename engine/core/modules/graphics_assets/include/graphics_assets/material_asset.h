@@ -93,6 +93,23 @@ namespace nau
         virtual PROGRAM getPipelineProgram(eastl::string_view pipelineName) const = 0;
 
         /**
+         * @brief Checks whether the material has the specified pipeline.
+         *
+         * @param [in] pipelineName The name of the pipeline.
+         * @return                  true if the pipeline exists.
+         */
+        bool hasPipeline(eastl::string_view pipelineName) const;
+
+        /**
+         * @brief Retrieves a texture property of a pipeline.
+         *
+         * @param [in] pipelineName The name of the pipeline.
+         * @param [in] propertyName The name of the texture property.
+         * @return                  The texture, nullptr if the pipeline does not have the property.
+         */
+        BaseTexture* findTexture(eastl::string_view pipelineName, eastl::string_view propertyName);
+
+        /**
          * @brief Retrieves a set of all pipeline names.
          * 
          * @return A set containing the names of all pipelines.
@@ -180,6 +197,15 @@ namespace nau
         void enableAutoSetTextures(bool isEnabled) { m_autoSetTextures = isEnabled; }
 
         /**
+         * @brief Overrides a pixel-shader sampler after automatic material bindings.
+         * @param pipelineName The material pipeline.
+         * @param samplerName The sampler name declared in HLSL.
+         * @param sampler The sampler handle to bind.
+         * @param slot The HLSL sampler register.
+         */
+        void setSampler(eastl::string_view pipelineName, eastl::string_view samplerName, d3d::SamplerHandle sampler, uint32_t slot);
+
+        /**
          * @brief Checks if automatic texture setting is enabled.
          * 
          * @return `true` if automatic texture setting is enabled, `false` otherwise.
@@ -232,6 +258,9 @@ namespace nau
          * @param [in] texture      A pointer to the texture to assign.
          */
         void setTexture(eastl::string_view pipelineName, eastl::string_view propertyName, BaseTexture* texture);
+
+        /// Returns the current texture, including inherited material instance values.
+        virtual BaseTexture* getTexture(eastl::string_view pipelineName, eastl::string_view propertyName);
 
         /**
          * @brief Sets a solid color texture for a pipeline property.
@@ -322,7 +351,7 @@ namespace nau
          *
          * @param [in] pipelineName The name of the pipeline.
          * @param [in] bufferName   The name of the buffer to set.
-         * @param [in] rwBuffer     The buffer to assign to the pipeline.
+         * @param [in] roBuffer     The buffer to assign to the pipeline.
          */
         void setRoBuffer(eastl::string_view pipelineName, eastl::string_view bufferName, Sbuffer* roBuffer);
 
@@ -540,6 +569,7 @@ namespace nau
             
             eastl::unordered_map<eastl::string, TextureCache> samplerTextures;
             eastl::unordered_map<eastl::string, SamplerCache> samplers;
+            eastl::unordered_map<eastl::string, SamplerCache> samplerOverrides;
             
             PROGRAM programID;
 
@@ -728,6 +758,8 @@ namespace nau
          * @param [in] pipelineName The name of the pipeline to bind.
          */
         void bindPipeline(eastl::string_view pipelineName) override;
+
+        BaseTexture* getTexture(eastl::string_view pipelineName, eastl::string_view propertyName) override;
 
         /**
          * @brief Retrieves the program associated with the specified pipeline from the master material.
