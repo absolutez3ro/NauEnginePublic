@@ -32,6 +32,7 @@ void set_master_state(const OverrideState &);
 void reset_master_state();
 
 void destroy_all_managed_master_states();
+void release_all_states();
 } // namespace overrides
 
 // this is owning references. It will destroy referenced data in destructor.
