@@ -89,3 +89,6 @@ install(DIRECTORY ${moduleRoot}/include
 )
 
 nau_install(${TargetName} core)
+
+# DX12 records mailbox receives through the shared transport headers.
+target_include_directories(${TargetName} PRIVATE ${moduleRoot}/../mgpu/include)

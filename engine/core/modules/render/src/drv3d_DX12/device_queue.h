@@ -195,6 +195,7 @@ class DeviceQueueGroup
   DeviceQueue group[uint32_t(DeviceQueueType::COUNT)];
   AsyncProgress uploadProgress;
   AsyncProgress graphicsProgress;
+  AsyncProgress readBackProgress;
   AsyncProgress frameProgress;
 
 public:
@@ -235,6 +236,12 @@ public:
   void synchronizeGraphicsWithUpload()
   {
     uploadProgress.synchronize(group[static_cast<uint32_t>(DeviceQueueType::UPLOAD)],
+      group[static_cast<uint32_t>(DeviceQueueType::GRAPHICS)]);
+  }
+
+  void synchronizeGraphicsWithReadBack()
+  {
+    readBackProgress.synchronize(group[static_cast<uint32_t>(DeviceQueueType::READ_BACK)],
       group[static_cast<uint32_t>(DeviceQueueType::GRAPHICS)]);
   }
 };
