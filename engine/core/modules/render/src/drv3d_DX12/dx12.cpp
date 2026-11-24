@@ -19,6 +19,7 @@
 #include "nau/dag_ioSys/dag_genIo.h"
 #include "nau/dag_ioSys/dag_memIo.h"
 #include "nau/image/dag_texPixel.h"
+#include "nau/shaders/dag_overrideStateId.h"
 //#include <math/integer/dag_IPoint2.h>
 
 #include <EASTL/sort.h>
@@ -598,6 +599,7 @@ void d3d::release_driver()
   TEXQL_SHUTDOWN_TEX();
   tql::termTexStubs();
   drv3d_dx12::api_state.releaseAll();
+  shaders::overrides::release_all_states();
   drv3d_dx12::api_state.isInitialized = false;
 }
 
