@@ -170,6 +170,18 @@ void destroy_all_managed_master_states()
   masterToCurrent.clear();
 }
 
+void release_all_states()
+{
+  current_override = {};
+  overrideMaster.reset();
+  masterToCurrent.clear();
+  masterOverrideStatesHash.clear();
+  overrideStatesHash.clear();
+  // Free the backing storage while the engine allocator is still alive.
+  decltype(overrideStates) empty;
+  overrideStates.swap(empty);
+}
+
 OverrideStateId get_current_with_master()
 {
   auto it = masterToCurrent.find(get_current());
