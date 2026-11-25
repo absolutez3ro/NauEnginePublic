@@ -53,6 +53,10 @@ namespace nau::render
         }
         m_rawMaterial->enableAutoSetTextures(false);
         m_postMaterial->enableAutoSetTextures(false);
+        if (m_postMaterial->getPipelineNames().count("boxBlur") == 0)
+        {
+            NAU_LOG_WARNING("AO: the post material is missing boxBlur. Update the AO material and shader cache to enable filtering.");
+        }
 
         d3d::SamplerInfo sampler;
         sampler.filter_min_mode = sampler.filter_mag_mode = d3d::FilterMode::Linear;
@@ -60,6 +64,10 @@ namespace nau::render
         sampler.address_mode_u = sampler.address_mode_v = sampler.address_mode_w = d3d::AddressMode::Clamp;
         m_linearClamp = d3d::create_sampler(sampler);
         m_postMaterial->setSampler("debugBilinear", "aoLinearClamp", m_linearClamp, 0);
+        if (m_postMaterial->getPipelineNames().count("boxBlur") != 0)
+        {
+            m_postMaterial->setSampler("boxBlur", "aoLinearClamp", m_linearClamp, 0);
+        }
     }
 
     AmbientOcclusion::~AmbientOcclusion()
@@ -69,7 +77,7 @@ namespace nau::render
 
     void AmbientOcclusion::releaseTargets()
     {
-        for (BaseTexture** target : {&m_halfDepth, &m_result})
+        for (BaseTexture** target : {&m_halfDepth, &m_result, &m_blurredResult})
         {
             if (*target)
             {
@@ -96,7 +104,12 @@ namespace nau::render
         }
         m_halfDepth = d3d::create_tex(nullptr, width, height, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ao_depth");
         m_result = d3d::create_tex(nullptr, width, height, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ao_result");
-        if (!m_halfDepth || !m_result)
+        const bool blurAvailable = m_postMaterial->getPipelineNames().count("boxBlur") != 0;
+        if (blurAvailable)
+        {
+            m_blurredResult = d3d::create_tex(nullptr, width, height, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ao_blurred_result");
+        }
+        if (!m_halfDepth || !m_result || (blurAvailable && !m_blurredResult))
         {
             releaseTargets();
             return false;
@@ -124,6 +137,10 @@ namespace nau::render
         d3d::set_depth(nullptr, DepthAccess::RW);
         draw(*m_halfDepth, *m_postMaterial, "downsample", depth);
         draw(*m_result, *m_rawMaterial, "default", *m_halfDepth);
+        if (m_blurredResult)
+        {
+            draw(*m_blurredResult, *m_postMaterial, "boxBlur", *m_halfDepth, m_result);
+        }
         m_valid = true;
     }
 
@@ -164,7 +181,7 @@ namespace nau::render
     void AmbientOcclusion::drawDebug(BaseTexture& target)
     {
         d3d::set_depth(nullptr, DepthAccess::RW);
-        draw(target, *m_postMaterial, "debugBilinear", *m_halfDepth, m_result);
+        draw(target, *m_postMaterial, "debugBilinear", *m_halfDepth, m_blurredResult ? m_blurredResult : m_result);
     }
 
     bool AmbientOcclusion::isDebugView() const
@@ -190,12 +207,12 @@ namespace nau::render
     {
         if (m_valid)
         {
-            d3d::resource_barrier({m_result, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+            d3d::resource_barrier({m_blurredResult ? m_blurredResult : m_result, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
             d3d::resource_barrier({m_halfDepth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
             const math::Vector4 reconstruction(AO_DIVISOR, DEPTH_THRESHOLD, m_projection[3][2], m_projection[2][2]);
             shader_globals::setVariable("ssaoReconstruction", &reconstruction);
         }
-        d3d::settex(6, m_valid ? m_result : &fallbackAo);
+        d3d::settex(6, m_valid ? (m_blurredResult ? m_blurredResult : m_result) : &fallbackAo);
         d3d::settex(7, m_valid ? m_halfDepth : &fallbackDepth);
         const math::Vector4 control(m_valid ? 1.0f : 0.0f);
         shader_globals::setVariable("ssaoControl", &control);
