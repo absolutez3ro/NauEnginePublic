@@ -63,43 +63,73 @@ void nau::RenderEntity::renderInstanced(nau::math::Matrix4 viewProj, Sbuffer* in
     d3d::drawind_instanced(PRIM_TRILIST, startIndex, (endIndex - startIndex) / 3, 0, instancesCount, 0);
 }
 
-void nau::RenderEntity::renderZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const
+void nau::RenderEntity::renderZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals) const
 {
     const bool skinned = boneWeightsBuffer != nullptr && boneIndicesBuffer != nullptr;
 
     if (skinned)
     {
-        static constexpr auto bonesTransforms = "BonesTransforms";
+        shader_globals::setVariable("BonesTransforms", cbStructsData.at("BonesTransforms").dataPtr);
+        shader_globals::setVariable("BonesNormalTransforms", cbStructsData.at("BonesNormalTransforms").dataPtr);
 
-        auto& [size, ptr] = cbStructsData.at(bonesTransforms);
-
-        nau::shader_globals::setVariable(bonesTransforms, ptr);
-
-        prepareZPrepass("skinned", viewProj, zPrepassMat);
+        prepareZPrepass(writeNormals ? "skinnedNormals" : "skinned", viewProj, zPrepassMat);
         d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
-        d3d::setvsrc(1, boneWeightsBuffer, sizeof(nau::math::float4));
-        d3d::setvsrc(2, boneIndicesBuffer, sizeof(nau::math::float4));
+        d3d::setvsrc(2, boneWeightsBuffer, sizeof(math::float4));
+        d3d::setvsrc(3, boneIndicesBuffer, sizeof(math::IVector4));
     }
     else
     {
-        auto mvp = viewProj * worldTransform;
-        shader_globals::setVariable("vp", &mvp);
-        prepareZPrepass("default", viewProj, zPrepassMat);
+        const eastl::string_view pipeline = prepareStaticZPrepass(viewProj, zPrepassMat, writeNormals);
         d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
+        if (pipeline == "masked" || pipeline == "maskedNormals")
+        {
+            d3d::setvsrc(2, texcoordsBuffer, sizeof(math::float2));
+        }
     }
 
+    d3d::setvsrc(1, normalsBuffer, sizeof(math::float3));
     d3d::setind(indexBuffer);
     d3d::drawind(PRIM_TRILIST, startIndex, (endIndex - startIndex) / 3, 0);
 }
 
-void nau::RenderEntity::renderZPrepassInstanced(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const
+void nau::RenderEntity::renderZPrepassInstanced(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals) const
 {
     shader_globals::setVariable("vp", &viewProj);
-    prepareZPrepass("default", viewProj, zPrepassMat);
+    const eastl::string_view pipeline = prepareStaticZPrepass(viewProj, zPrepassMat, writeNormals);
 
     d3d::setvsrc(0, positionBuffer, sizeof(math::float3));
+    d3d::setvsrc(1, normalsBuffer, sizeof(math::float3));
+    if (pipeline == "masked" || pipeline == "maskedNormals")
+    {
+        d3d::setvsrc(2, texcoordsBuffer, sizeof(math::float2));
+    }
     d3d::setind(indexBuffer);
     d3d::drawind_instanced(PRIM_TRILIST, startIndex, (endIndex - startIndex) / 3, 0, instancesCount, 0);
+}
+
+BaseTexture* nau::RenderEntity::getDepthMask(MaterialAssetView* zPrepassMat) const
+{
+    if (!material || texcoordsBuffer == nullptr || !zPrepassMat->hasPipeline("masked") || material->getBlendMode("default") != nau::BlendMode::Masked)
+    {
+        return nullptr;
+    }
+    return material->findTexture("default", "albedoTex");
+}
+
+eastl::string_view nau::RenderEntity::prepareStaticZPrepass(const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat, bool writeNormals) const
+{
+    eastl::string_view pipeline = writeNormals ? "normals" : "default";
+    BaseTexture* const mask = getDepthMask(zPrepassMat);
+    if (mask)
+    {
+        pipeline = writeNormals ? "maskedNormals" : "masked";
+    }
+    prepareZPrepass(pipeline, viewProj, zPrepassMat);
+    if (mask)
+    {
+        d3d::set_tex(STAGE_PS, 0, mask);
+    }
+    return pipeline;
 }
 
 void nau::RenderEntity::prepareZPrepass(eastl::string_view pipeline, const math::Matrix4& viewProj, MaterialAssetView* zPrepassMat) const

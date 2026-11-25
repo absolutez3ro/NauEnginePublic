@@ -13,6 +13,24 @@ float PSDownsample(float4 position : SV_Position) : SV_Target
     return aoDepth.Load(int3(pixel, 0));
 }
 
+struct DownsampleOutput
+{
+    float2 normal : SV_Target0;
+    float depth : SV_Target1;
+};
+
+DownsampleOutput PSDownsampleNormals(float4 position : SV_Position)
+{
+    uint width, height;
+    aoDepth.GetDimensions(width, height);
+    int2 stride = int2(ceil(float2(width, height) / aoSizes.zw));
+    int2 pixel = min(int2(position.xy) * stride, int2(width, height) - 1);
+    DownsampleOutput result;
+    result.normal = aoNormals.Load(int3(pixel, 0));
+    result.depth = aoDepth.Load(int3(pixel, 0));
+    return result;
+}
+
 float PSBoxBlur(float4 position : SV_Position) : SV_Target
 {
     int2 pixel = int2(position.xy);

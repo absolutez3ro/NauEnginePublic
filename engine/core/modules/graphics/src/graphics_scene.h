@@ -47,7 +47,7 @@ namespace nau
         async::Task<> update();
 
         void renderFrame(bool withGBuffer = false);
-        void renderDepth();
+        void renderDepth(bool writeNormals);
         void renderOutlineMask();
         void renderTranslucency();
         void renderLights();

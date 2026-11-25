@@ -30,14 +30,32 @@ namespace nau::render
                                  .useAs(dabfg::Usage::COLOR_ATTACHMENT)
                                  .handle();
 
-            return [=, this]()
+            eastl::optional<dabfg::VirtualResourceHandle<BaseTexture, true, false>> normalsTarget;
+            if (m_ambientOcclusion && m_ambientOcclusion->usesPrepassNormals())
+            {
+                normalsTarget = registry
+                                    .createTexture2d(nau::utils::format("prepass_normals_{}", m_swapchain).c_str(),
+                                                     dabfg::History::No,
+                                                     dabfg::Texture2dCreateInfo{TEXFMT_G16R16F | TEXCF_RTARGET,
+                                                                                registry.getResolution(m_resolutionName.c_str())})
+                                    .atStage(dabfg::Stage::POST_RASTER)
+                                    .useAs(dabfg::Usage::COLOR_ATTACHMENT)
+                                    .handle();
+            }
+
+            return [this, uidTarget, normalsTarget]()
             {
                 d3d::set_render_target(const_cast<BaseTexture*>(uidTarget.get()), 0);
+                if (normalsTarget)
+                {
+                    d3d::set_render_target(1, normalsTarget->get(), 0);
+                }
                 d3d::set_depth(m_gBuffer->getDepth(), DepthAccess::RW);
                 d3d::clearview(CLEAR_TARGET | CLEAR_ZBUFFER | CLEAR_STENCIL, nau::math::E3DCOLOR(0, 0, 0, 0), 0, 0);
 
-                m_graphicsScene->renderDepth();
+                m_graphicsScene->renderDepth(normalsTarget.has_value());
                 d3d::set_depth(nullptr, DepthAccess::RW);
+                d3d::set_render_target();
             };
         }));
 
@@ -312,13 +330,21 @@ namespace nau::render
             registry.orderMeAfter(nau::utils::format("z-prepass_{}", m_swapchain).c_str());
             registry.orderMeBefore(nau::utils::format("fill_gbuffer_{}", m_swapchain).c_str());
             registry.executionHas(dabfg::SideEffects::External);
-            return [this]()
+            eastl::optional<dabfg::VirtualResourceHandle<const BaseTexture, true, false>> normals;
+            if (m_ambientOcclusion->usesPrepassNormals())
+            {
+                normals = registry.readTexture(nau::utils::format("prepass_normals_{}", m_swapchain).c_str())
+                    .atStage(dabfg::Stage::PS_OR_CS)
+                    .useAs(dabfg::Usage::SHADER_RESOURCE)
+                    .handle();
+            }
+            return [this, normals]()
             {
                 if (m_graphicsScene->hasCamera())
                 {
                     const CameraNode& camera = m_graphicsScene->getMainCamera();
                     d3d::setview(0, 0, m_gBuffer->getWidth(), m_gBuffer->getHeight(), 0.0f, 1.0f);
-                    m_ambientOcclusion->prepareFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), nullptr, m_gBuffer->getDepth());
+                    m_ambientOcclusion->prepareFrame(camera.getViewMatrix(), camera.getProjMatrixReverseZ(), normals ? const_cast<BaseTexture*>(normals->get()) : nullptr, m_gBuffer->getDepth());
                 }
             };
         }));

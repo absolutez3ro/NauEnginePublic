@@ -66,6 +66,8 @@ namespace nau::render
         BaseTexture* getResolveTexture(BaseTexture* fullSize) const;
         void configureResolveSampler(MaterialAssetView& material) const;
         void bindResolveInputs(BaseTexture* fallbackDepth);
+        /** @brief Whether the configured AO pipeline provides a view-normal texture. */
+        bool usesPrepassNormals() const;
         /**
          * @brief Per-frame AO snapshot for benchmark capture.
          * GPU timings and mailbox readbacks may describe older frames than the current frame.
