@@ -1,16 +1,14 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
-
 #include "graphics_assets/texture_asset.h"
+#include "nau/debugRenderer/debug_render_system.h"
 #include "nau/gui/imguiInput.h"
 #include "nau/image/dag_texPixel.h"
-#include "nau/shaders/shader_globals.h"
 #include "nau/shaders/dag_renderStateId.h"
-#include "nau/debugRenderer/debug_render_system.h"
+#include "nau/shaders/shader_globals.h"
 #include "render/daBfg/bfg.h"
 #include "render_window_impl.h"
-
 
 namespace nau::render
 {
@@ -141,7 +139,6 @@ namespace nau::render
             dabfg::register_node(nau::utils::format("{}_{}", "gbuffer_resolve", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
             registry.orderMeAfter(nau::utils::format("{}_{}", "CSM", m_swapchain).c_str());
-
             auto resolveTarget = registry
                                      .createTexture2d(nau::utils::format("{}_{}", "resolve_texture", m_swapchain).c_str(), dabfg::History::ClearZeroOnFirstFrame,
                                                       dabfg::Texture2dCreateInfo{
@@ -152,6 +149,10 @@ namespace nau::render
 
             return [resolveTarget, this]()
             {
+                if (m_ambientOcclusion)
+                {
+                    m_ambientOcclusion->invalidate();
+                }
                 if (m_graphicsScene->hasCamera())
                 {
                     const CameraNode& c = m_graphicsScene->getMainCamera();
@@ -183,6 +184,18 @@ namespace nau::render
                     const auto envIntensityVec = math::Vector4(envIntensity, 0, 0, 0);
                     shader_globals::setVariable("envIntensity", &envIntensityVec);
 
+                    if (m_ambientOcclusion)
+                    {
+                        m_ambientOcclusion->render(c.getProjMatrixReverseZ(), *m_gBuffer->getDepth(), getAmbientOcclusionMode());
+                        m_ambientOcclusion->bindResolveInputs(*m_gBuffer->getRt(0), *m_gBuffer->getDepth());
+                    }
+                    else
+                    {
+                        const math::Vector4 ssaoDisabled(0.0f);
+                        shader_globals::setVariable("ssaoControl", &ssaoDisabled);
+                        d3d::settex(6, m_gBuffer->getRt(0));
+                        d3d::settex(7, m_gBuffer->getDepth());
+                    }
                     m_csm->setCascadesToShader(m_gBuffer->getResolveShading()->getMaterial());
                     m_gBuffer->resolve(resolveTarget.get(),
                                        m_environmentRenderer->getIrradianceMap(),
@@ -199,7 +212,8 @@ namespace nau::render
                     m_graphicsScene->renderLights();
 
                     m_gBuffer->flushResolve();
-
+                    d3d::settex(6, nullptr);
+                    d3d::settex(7, nullptr);
                 }
             };
         }));

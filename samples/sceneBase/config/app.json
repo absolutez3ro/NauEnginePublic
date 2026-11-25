@@ -20,5 +20,12 @@
             "file:/content/textures/rusted_pbr/rusted_albedo_ao.png"
         ]
     },
+    "render": {
+        "ssao": {
+            "enabled": true,
+            "material": "file:/res/materials/ssao.nmat_json",
+            "postMaterial": "file:/res/materials/ssao_blur.nmat_json"
+        }
+    },
     "contentPath": "test"
 }
