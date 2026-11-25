@@ -1,6 +1,7 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
+#include <EASTL/optional.h>
 #include <nau/assets/asset_manager.h>
 
 #include "graphics_impl.h"
@@ -37,7 +38,10 @@ namespace nau::render
         if (m_swapchain == DEFAULT_SWAPID && AmbientOcclusion::isRequested())
         {
             m_ambientOcclusion = eastl::make_unique<AmbientOcclusion>();
-            setAmbientOcclusionMode(AmbientOcclusion::getInitialMode());
+            const AmbientOcclusion::Settings settings = AmbientOcclusion::getInitialSettings();
+            setAmbientOcclusionMode(settings.mode);
+            setAmbientOcclusionExecution(settings.execution);
+            setAmbientOcclusionAlgorithm(settings.algorithm);
             loadAmbientOcclusion = m_ambientOcclusion->loadAssets();
         }
 
@@ -86,14 +90,14 @@ namespace nau::render
         }
         if (!shader_globals::containsName("ssaoReconstruction"))
         {
-            const math::Vector4 reconstruction(0.0f);
-            shader_globals::addVariable("ssaoReconstruction", sizeof(reconstruction), &reconstruction);
+            const math::Vector4 defaults(2.f, 0.2f, 0.f, 0.f);
+            shader_globals::addVariable("ssaoReconstruction", sizeof(defaults), &defaults);
         }
+        matPPResolve->enableAutoSetTextures(false);
         if (m_ambientOcclusion)
         {
             m_ambientOcclusion->configureResolveSampler(*matPPResolve);
         }
-        matPPResolve->enableAutoSetTextures(false);
         matPPTonemap->enableAutoSetTextures(false);
 
         m_environmentRenderer = eastl::make_unique<render::EnvironmentRenderer>(
@@ -136,6 +140,7 @@ namespace nau::render
         m_outlineRenderer = eastl::make_unique<render::PostFxRenderer>(outlineTonemap);
 
         createGBufferNodes();
+        createAmbientOcclusionNode();
 
         m_environmentNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "render_envi", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
@@ -193,6 +198,14 @@ namespace nau::render
         m_postFxNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "post_fx_nodes", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
+            eastl::optional<dabfg::VirtualResourceHandle<const BaseTexture, true, false>> ambientOcclusion;
+            if (m_ambientOcclusion)
+            {
+                ambientOcclusion = registry.readTexture(nau::utils::format("ssao_texture_{}", m_swapchain).c_str())
+                                       .atStage(dabfg::Stage::PS_OR_CS)
+                                       .useAs(dabfg::Usage::SHADER_RESOURCE)
+                                       .handle();
+            }
             auto resolveTexture = registry.readTexture(nau::utils::format("{}_{}", "resolve_texture", m_swapchain).c_str())
                                       .atStage(dabfg::Stage::PS_OR_CS)
                                       .useAs(dabfg::Usage::SHADER_RESOURCE)
@@ -207,7 +220,7 @@ namespace nau::render
                 d3d::clearview(CLEAR_TARGET | CLEAR_ZBUFFER | CLEAR_STENCIL, nau::math::E3DCOLOR(0, 0, 0), 0, 0);
                 if (m_ambientOcclusion && m_ambientOcclusion->isDebugView())
                 {
-                    m_ambientOcclusion->drawDebug(*d3d::get_back_buffer_rt(m_swapchain));
+                    m_ambientOcclusion->drawDebug(d3d::get_back_buffer_rt(m_swapchain), const_cast<BaseTexture*>(ambientOcclusion->get()));
                     return;
                 }
                 d3d::set_srgb_backbuffer_write(true);

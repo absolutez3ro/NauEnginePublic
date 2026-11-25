@@ -4,6 +4,9 @@
 
 #pragma once
 
+#include <chrono>
+#include <mutex>
+
 #include "ambient_occlusion.h"
 #include "graphics_nodes.h"
 #include "graphics_scene.h"
@@ -64,6 +67,11 @@ namespace nau::render
         void setMainCameraIndex(int32_t ind) override;
         AmbientOcclusionMode getAmbientOcclusionMode() const override;
         void setAmbientOcclusionMode(AmbientOcclusionMode mode) override;
+        AmbientOcclusionExecution getAmbientOcclusionExecution() const override;
+        void setAmbientOcclusionExecution(AmbientOcclusionExecution execution) override;
+        AmbientOcclusionAlgorithm getAmbientOcclusionAlgorithm() const override;
+        void setAmbientOcclusionAlgorithm(AmbientOcclusionAlgorithm algorithm) override;
+        bool hasAmbientOcclusion() const { return m_ambientOcclusion != nullptr; }
 
         async::Task<> createRenderGraph();
 
@@ -81,6 +89,7 @@ namespace nau::render
 
     private:
         void createGBufferNodes();
+        void createAmbientOcclusionNode();
         void createOutlineNodes();
 
         // Registers the "mgpu_transfer" node. Without NAU_ENABLE_MGPU it registers nothing.
@@ -171,6 +180,8 @@ namespace nau::render
 
         eastl::unique_ptr<AmbientOcclusion> m_ambientOcclusion;
         std::atomic<AmbientOcclusionMode> m_ambientOcclusionMode = AmbientOcclusionMode::lighting;
+        std::atomic<AmbientOcclusionExecution> m_ambientOcclusionExecution = AmbientOcclusionExecution::singleGpu;
+        std::atomic<AmbientOcclusionAlgorithm> m_ambientOcclusionAlgorithm = AmbientOcclusionAlgorithm::ssao;
         eastl::unique_ptr<render::PostFxRenderer> m_postFXRenderer;
         eastl::unique_ptr<render::EnvironmentRenderer> m_environmentRenderer;
 
