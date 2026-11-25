@@ -70,6 +70,10 @@ namespace nau::render
             co_yield NauMakeError("Failed to load the configured AO post material");
         }
         m_postMaterial->enableAutoSetTextures(false);
+        if (m_postMaterial->getPipelineNames().count("boxBlur") == 0)
+        {
+            NAU_LOG_WARNING("AO: the post material is missing boxBlur. Update the AO material and shader cache to enable filtering.");
+        }
         d3d::SamplerInfo sampler;
         sampler.filter_min_mode = sampler.filter_mag_mode = d3d::FilterMode::Linear;
         sampler.mip_map_mode = d3d::MipMapMode::Point;
@@ -131,7 +135,7 @@ namespace nau::render
         // Release the producer before destroying surfaces that its queues may still use.
         nau::render::ao::destroySecondaryExecutor(m_secondary);
         m_secondary = nullptr;
-        for (BaseTexture** texture : {&m_inputNormals, &m_inputDepth, &m_result})
+        for (BaseTexture** texture : {&m_inputNormals, &m_inputDepth, &m_result, &m_blurredResult})
         {
             if (*texture)
             {
@@ -215,6 +219,7 @@ namespace nau::render
         m_constants.reconstruction[2] = static_cast<float>(AO_DIVISOR);
         m_constants.filter[0] = m_constants.sizes[0];
         m_constants.filter[1] = m_constants.sizes[1];
+        m_constants.filter[2] = DEPTH_THRESHOLD;
 
         downsampleInputs();
         if (m_settings.execution == AmbientOcclusionExecution::multiGpu && prepareSecondary())
@@ -262,6 +267,10 @@ namespace nau::render
         {
             m_measurements.aoFrame = m_frameIndex;
         }
+        if (m_measurements.aoValid && m_blurredResult)
+        {
+            draw(m_blurredResult, *m_postMaterial, "boxBlur", m_result);
+        }
 
         logSettings();
     }
@@ -306,7 +315,12 @@ namespace nau::render
         }
         m_inputDepth = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R32F | TEXCF_RTARGET, 1, u8"ao_input_depth");
         m_result = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_RTARGET | (algorithm().unorderedOutput() ? TEXCF_UNORDERED : 0), 1, u8"ao_result");
-        if (!m_inputDepth || !m_result)
+        const bool blurAvailable = m_postMaterial->getPipelineNames().count("boxBlur") != 0;
+        if (blurAvailable)
+        {
+            m_blurredResult = d3d::create_tex(nullptr, m_secondaryWidth, m_secondaryHeight, TEXFMT_R8 | TEXCF_RTARGET, 1, u8"ao_blurred_result");
+        }
+        if (!m_inputDepth || !m_result || (blurAvailable && !m_blurredResult))
         {
             NAU_LOG_ERROR("AO: could not allocate half-resolution targets");
             resetSecondary();
@@ -429,7 +443,7 @@ namespace nau::render
             clearAoTarget(target);
             return;
         }
-        draw(target, *m_postMaterial, "debugBilinear", m_result);
+        draw(target, *m_postMaterial, "debugBilinear", getResolveTexture(nullptr));
     }
 
     bool AmbientOcclusion::isDebugView() const
@@ -468,23 +482,28 @@ namespace nau::render
         {
             return;
         }
-        NAU_LOG_INFO("AO pipeline: {}, AO={}x{}, inputs={}x{}, algorithm={}, radius={}, normals={}, requestedNormals={}, blur=0, blurGPU=0, upsample=1, RG8=false, R16F=false, weighted=true, reject=false, gatherUp=true, wait=false, mode={}",
+        NAU_LOG_INFO("AO pipeline: {}, AO={}x{}, inputs={}x{}, algorithm={}, radius={}, normals={}, requestedNormals={}, blur={}, blurGPU=0, upsample=1, RG8=false, R16F=false, weighted=true, reject=false, gatherUp=true, wait=false, mode={}",
                      getExecutionLabel(), m_secondaryWidth, m_secondaryHeight, m_secondaryWidth, m_secondaryHeight,
                      static_cast<uint32_t>(m_settings.algorithm), m_constants.parameters[0], algorithm().reconstructNormals() ? 1 : 0,
-                     algorithm().reconstructNormals() ? 1 : 0, static_cast<uint32_t>(m_settings.mode));
+                     algorithm().reconstructNormals() ? 1 : 0, m_settings.mode != AmbientOcclusionMode::off && m_blurredResult ? 2 : 0,
+                     static_cast<uint32_t>(m_settings.mode));
         m_logSettings = false;
     }
 
     BaseTexture* AmbientOcclusion::getResolveTexture(BaseTexture* fallback) const
     {
-        return m_measurements.aoValid ? m_result : fallback;
+        if (!m_measurements.aoValid)
+        {
+            return fallback;
+        }
+        return m_blurredResult ? m_blurredResult : m_result;
     }
 
     void AmbientOcclusion::bindResolveInputs(BaseTexture* fallbackDepth)
     {
         if (m_measurements.aoValid)
         {
-            d3d::resource_barrier({m_result, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+            d3d::resource_barrier({getResolveTexture(nullptr), RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
             d3d::resource_barrier({m_inputDepth, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         }
         d3d::settex(7, m_measurements.aoValid ? m_inputDepth : fallbackDepth);
