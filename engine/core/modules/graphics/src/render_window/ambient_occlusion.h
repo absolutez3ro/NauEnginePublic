@@ -111,6 +111,7 @@ namespace nau::render
         nau::render::ao::SecondaryExecutor* m_secondary = nullptr;
         nau::render::AoConstants m_constants;
         BaseTexture* m_result = nullptr;
+        BaseTexture* m_blurredResult = nullptr;
         BaseTexture* m_inputDepth = nullptr;
         BaseTexture* m_inputNormals = nullptr;
         bool m_measureTimings = false;
