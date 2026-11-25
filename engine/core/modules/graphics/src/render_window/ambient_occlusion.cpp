@@ -49,6 +49,10 @@ namespace nau::render
         settings.execution = readSetting<bool>("render/ssao/useSecondary", false)
                                  ? AmbientOcclusionExecution::multiGpu
                                  : AmbientOcclusionExecution::singleGpu;
+        if (readSetting<uint32_t>("render/ssao/algorithm", 0) == static_cast<uint32_t>(AmbientOcclusionAlgorithm::hbao))
+        {
+            settings.algorithm = AmbientOcclusionAlgorithm::hbao;
+        }
         return settings;
     }
 
@@ -76,10 +80,23 @@ namespace nau::render
         m_linearWrap = d3d::create_sampler(sampler);
         sampler.address_mode_u = sampler.address_mode_v = sampler.address_mode_w = d3d::AddressMode::Clamp;
         m_linearClamp = d3d::create_sampler(sampler);
-        for (const auto id : {AmbientOcclusionAlgorithm::ssao})
+        for (const auto id : {AmbientOcclusionAlgorithm::ssao, AmbientOcclusionAlgorithm::hbao})
         {
             auto algorithm = ao::createAlgorithm(id);
-            co_await algorithm->loadAssets();
+            if (id == AmbientOcclusionAlgorithm::hbao && readSetting<eastl::string>("render/ssao/hbaoMaterial", {}).empty())
+            {
+                continue;
+            }
+            const Result<> loaded = co_await algorithm->loadAssets().doTry();
+            if (!loaded)
+            {
+                if (id == AmbientOcclusionAlgorithm::ssao)
+                {
+                    co_yield loaded.getError();
+                }
+                NAU_LOG_WARNING("HBAO unavailable: {}", loaded.getError()->getMessage());
+                continue;
+            }
             if (auto* material = algorithm->material())
             {
                 material->setSampler("default", "aoLinearClamp", m_linearClamp, 0);
@@ -143,8 +160,14 @@ namespace nau::render
         m_secondaryHeight = 0;
     }
 
-    void AmbientOcclusion::beginFrame(uint32_t width, uint32_t height, const Settings& settings)
+    void AmbientOcclusion::beginFrame(uint32_t width, uint32_t height, const Settings& requested)
     {
+        Settings settings = requested;
+        const size_t index = static_cast<size_t>(settings.algorithm);
+        if (index >= m_algorithms.size() || !m_algorithms[index])
+        {
+            settings.algorithm = AmbientOcclusionAlgorithm::ssao;
+        }
         if (m_settings.algorithm != settings.algorithm || m_settings.execution != settings.execution ||
             (m_settings.mode == AmbientOcclusionMode::off) != (settings.mode == AmbientOcclusionMode::off))
         {
