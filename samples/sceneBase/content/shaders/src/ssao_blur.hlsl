@@ -31,6 +31,36 @@ DownsampleOutput PSDownsampleNormals(float4 position : SV_Position)
     return result;
 }
 
+float PSBoxBlur(float4 position : SV_Position) : SV_Target
+{
+    int2 pixel = int2(position.xy);
+    float2 projection = float2(aoProjection[2][3], aoProjection[2][2]);
+    float centerDepth = ssaoLinearDepth(aoDepth.Load(int3(pixel, 0)), projection);
+    float total = 0.0;
+    float weightSum = 0.0;
+
+    [unroll]
+    for (int y = 0; y < 2; ++y)
+    {
+        [unroll]
+        for (int x = 0; x < 2; ++x)
+        {
+            float2 uv = (pixel + 2 * int2(x, y)) / aoSizes.xy;
+            float4 depths = aoDepth.GatherRed(aoLinearClamp, uv);
+            float4 values = aoInput.GatherRed(aoLinearClamp, uv);
+            [unroll]
+            for (int i = 0; i < 4; ++i)
+            {
+                float distance = abs(ssaoLinearDepth(depths[i], projection) - centerDepth);
+                float weight = saturate(1.0 - distance / aoFilter.z);
+                total += values[i] * weight;
+                weightSum += weight;
+            }
+        }
+    }
+    return weightSum > 1e-6 ? saturate(total / weightSum) : aoInput.Load(int3(pixel, 0));
+}
+
 float4 PSDebugBilinear(float4 position : SV_Position) : SV_Target
 {
     uint width, height;
