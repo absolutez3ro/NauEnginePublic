@@ -41,6 +41,7 @@ namespace nau::render
         BaseTexture* m_fullDepth = nullptr;
         BaseTexture* m_halfDepth = nullptr;
         BaseTexture* m_result = nullptr;
+        BaseTexture* m_blurredResult = nullptr;
         math::Matrix4 m_projection;
         math::Matrix4 m_inverseProjection;
         uint32_t m_width = 0;
