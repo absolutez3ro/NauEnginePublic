@@ -12,8 +12,6 @@
 
 namespace nau::render
 {
-    // GPU time of a stretch of commands on Nau's graphics queue, from the timestamp queries of the driver. The results come
-    // a few frames later: a ring of query pairs, each read back once the driver has it. Render thread only.
     class GpuTimer
     {
     public:
@@ -22,7 +20,6 @@ namespace nau::render
             Pair& pair = m_ring[m_next];
             if (pair.pending && !read(pair))
             {
-                // The oldest pair is still in flight: this stretch is not measured.
                 m_begun = false;
                 return;
             }
@@ -43,7 +40,6 @@ namespace nau::render
             m_next = (m_next + 1) % RING;
         }
 
-        // Adds the measurements finished since the last call: milliseconds and their count.
         void collect(double& milliseconds, uint32_t& count)
         {
             for (Pair& pair : m_ring)
@@ -64,7 +60,7 @@ namespace nau::render
 
         struct Pair
         {
-            void* begin = nullptr; // queries of the driver, created by its first D3V3D_COMMAND_TIMESTAMPISSUE
+            void* begin = nullptr;
             void* end = nullptr;
             bool pending = false;
         };

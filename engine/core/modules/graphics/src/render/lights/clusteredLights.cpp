@@ -1103,9 +1103,6 @@ namespace nau::render
 
         if (omniShadowConstants != nullptr && omniShadowAtlas != nullptr && std::strcmp(pipeline, "Omnilight") == 0)
         {
-            // Shadow maps of the point lights (omni_shadow.hlsli: OmniShadowBuffer b3, t8, s8). Bound after bindPipeline on
-            // purpose: the material sets every sampler of the shader to its own default one (not a comparison sampler).
-            // Lights without a slot are not shadowed, so the binding is harmless when no light casts shadows.
             d3d::set_const_buffer(STAGE_PS, 3, omniShadowConstants);
             d3d::set_tex(STAGE_PS, 8, omniShadowAtlas);
             d3d::set_sampler(STAGE_PS, 8, omniShadowSampler);

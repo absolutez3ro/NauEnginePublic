@@ -45,10 +45,7 @@ namespace nau
                 return info.isCastShadow && csmViewPtr->getFrustum().testSphere(info.worldSphere) != 0;
             });
             csmView->setInstanceFilter(csmFilter);
-            // The far cascades only: the near ones hold the casters next to the camera (grass blades a metre away), their
-            // shadows stay those of the levels that are seen.
             LodSelection lodSelection;
-            // Stage 3 of the MGPU optimisation: their texels cover metres, the details the coarser levels drop are smaller.
             if (i >= FAR_SHADOW_CASCADE)
             {
                 lodSelection.distanceScale = getGraphicsSettings().farCascadeLodScale;
@@ -59,8 +56,6 @@ namespace nau
             m_renderScene->addView(csmView);
         }
 
-        // Faces of the point light shadow maps: omni_shadow::FACES views per light slot. The frustum of a face is updated
-        // every frame from the light (RenderWindowImpl::update); a slot without a light culls nothing.
         for (uint32_t slot = 0; slot < render::omni_shadow::MAX_LIGHTS; ++slot)
         {
             m_omniSlotActive[slot].store(false);

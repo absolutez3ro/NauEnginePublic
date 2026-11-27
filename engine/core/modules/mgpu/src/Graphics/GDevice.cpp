@@ -102,7 +102,7 @@ namespace nau::PEPEngine::Graphics
 
     void GDevice::InitialCommandQueue()
     {
-        auto Device = shared_from_this(); // B: was std::shared_ptr<GDevice>(this), a second owner of *this
+        auto Device = shared_from_this();
         for (UINT i = 0; i != static_cast<UINT>(GQueueType::Count); ++i)
         {
             queues[i] = std::make_shared<GCommandQueue>(Device, GQueueTypeToCommandListType(static_cast<GQueueType>(i)));
@@ -170,7 +170,7 @@ namespace nau::PEPEngine::Graphics
 
     void GDevice::InitialDescriptorAllocator()
     {
-        auto Device = shared_from_this(); // B: was std::shared_ptr<GDevice>(this), a second owner of *this
+        auto Device = shared_from_this();
         for (UINT i = 0; i != D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES; ++i)
         {
             graphicAllocators[i] = std::make_shared<GAllocator>(Device,

@@ -1259,7 +1259,6 @@ void DeviceContext::copyImage(Image *src, Image *dst, const ImageCopy &copy)
 
 void DeviceContext::copyFromExternalResource(ID3D12Resource *src, Image *dst)
 {
-  // ExecutionContext::copyFromExternalResource takes over this reference
   src->AddRef();
   auto cmd = make_command<CmdCopyFromExternalResource>(src, dst);
 
@@ -4182,7 +4181,6 @@ void DeviceContext::ExecutionContext::copyImage(Image *src, Image *dst, const Im
 
 void DeviceContext::ExecutionContext::copyFromExternalResource(ID3D12Resource *src, Image *dst)
 {
-  // keep the reference added by the frontend until the GPU has finished this frame
   ComPtr<ID3D12Resource> srcReference;
   srcReference.Attach(src);
   contextState.getFrameData().usedExternalResources.push_back(eastl::move(srcReference));
@@ -4194,7 +4192,6 @@ void DeviceContext::ExecutionContext::copyFromExternalResource(ID3D12Resource *s
 
   disablePredication();
 
-  // src is not tracked by the driver, it is in the COMMON state outside of this command
   contextState.graphicsCommandListBarrierBatch.transition(src, SubresourceIndex::make(0), D3D12_RESOURCE_STATE_COMMON,
     D3D12_RESOURCE_STATE_COPY_SOURCE);
   contextState.resourceStates.useTextureAsCopyDestinationForWholeCopy(contextState.graphicsCommandListBarrierBatch,
@@ -4207,7 +4204,6 @@ void DeviceContext::ExecutionContext::copyFromExternalResource(ID3D12Resource *s
     D3D12_RESOURCE_STATE_COMMON);
   contextState.resourceStates.finishUseTextureAsCopyDestinationForWholeCopy(contextState.graphicsCommandListBarrierBatch,
     contextState.graphicsCommandListSplitBarrierTracker, dst);
-  // src has to be back in COMMON at the end of this command, the next one may be in a later command list
   contextState.graphicsCommandListBarrierBatch.execute(contextState.cmdBuffer);
 
   dirtyTextureState(dst);

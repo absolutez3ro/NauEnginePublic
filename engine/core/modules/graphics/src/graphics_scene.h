@@ -74,12 +74,8 @@ namespace nau
 
         nau::RenderScene* getRenderScene();
 
-        // Point lights that cast shadows (OmnilightComponent::getCastShadows), up to render::omni_shadow::MAX_LIGHTS. The list is
-        // rebuilt by syncSceneState; the copy is safe to take from any thread.
         eastl::vector<render::OmniShadowCaster> getOmniShadowCasters() const;
 
-        // The point light pass gets the shadow data of the atlas it is going to sample: the lights by slot, the constant
-        // buffer and the atlas (nullptr atlas: no shadows).
         void setOmniShadowBinding(const eastl::array<uint32_t, render::omni_shadow::MAX_LIGHTS>& lightIds,
                                   uint32_t count,
                                   Sbuffer* constants,

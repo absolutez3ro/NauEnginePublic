@@ -31,16 +31,12 @@ namespace nau::render
         shaders::OverrideState state;
         state.set(shaders::OverrideState::Z_BIAS);
         state.set(shaders::OverrideState::Z_FUNC);
-        // The z-prepass material culls the other side than the main pass (z_prepass.nmat_json), so the atlas would hold the far
-        // surface of every caster: receivers next to a contact with the caster (a mesh sunk into the floor) then read as lit.
-        // The faces of a point light are drawn with the cull flipped: the atlas holds the surface nearest to the light.
         state.set(shaders::OverrideState::FLIP_CULL);
         state.zFunc = CMPF_LESSEQUAL;
         state.zBias = omni_shadow::RASTER_Z_BIAS;
         state.slopeZBias = omni_shadow::RASTER_SLOPE_Z_BIAS;
         m_depthBiasOverride.reset(shaders::overrides::create(state));
 
-        // The shader reads the buffer even if no light casts shadows this frame.
         const ShaderConstants empty = {};
         if (m_constantBuffer != nullptr)
         {
@@ -66,7 +62,6 @@ namespace nau::render
         m_atlas->texfilter(TEXFILTER_COMPARE);
         m_atlas->texaddr(TEXADDR_CLAMP);
 
-        // Readable from the start: the point light pass samples the atlas even before the first face is drawn.
         d3d::resource_barrier({m_atlas.get(), RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
         NAU_LOG_DEBUG("omni shadow atlas created: {}x{}", omni_shadow::ATLAS_WIDTH, omni_shadow::ATLAS_HEIGHT);
     }
@@ -118,7 +113,6 @@ namespace nau::render
                 uint32_t x = 0;
                 uint32_t y = 0;
                 omni_shadow::faceOrigin(slot, face, x, y);
-                // uv = ndc.xy * (0.5 * face / atlas, -0.5 * face / atlas) + centre of the face
                 out.faceRect[face] = Vector4(0.5f * faceSize / width, -0.5f * faceSize / height,
                                              (static_cast<float>(x) + 0.5f * faceSize) / width,
                                              (static_cast<float>(y) + 0.5f * faceSize) / height);

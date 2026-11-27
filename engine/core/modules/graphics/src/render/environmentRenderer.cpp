@@ -35,7 +35,6 @@ namespace nau::render
             return groupCount;
         }
 
-        // A UAV view from face zero spans all six faces in the DX12 backend.
         static void initializeCubemap(CubeTexture* texture)
         {
             const float black[4] = {};
@@ -67,7 +66,7 @@ namespace nau::render
 
         m_envCubemapTexture = d3d::create_cubetex(CUBEMAP_ENV_FACE_SIZE, TEXFMT_A32B32G32R32F | TEXCF_RTARGET | TEXCF_UNORDERED, 0, u8"NauEnvironmentCubemap");
 
-        m_irradianceMap = d3d::create_cubetex(IRRADIANCE_MAP_FACE_SIZE, TEXFMT_A32B32G32R32F | TEXCF_RTARGET | TEXCF_UNORDERED, 1, u8"NauIrradianceCubemap");  // no mips
+        m_irradianceMap = d3d::create_cubetex(IRRADIANCE_MAP_FACE_SIZE, TEXFMT_A32B32G32R32F | TEXCF_RTARGET | TEXCF_UNORDERED, 1, u8"NauIrradianceCubemap");
         m_reflectionMap = d3d::create_cubetex(REFLECTION_MAP_FACE_SIZE, TEXFMT_A32B32G32R32F | TEXCF_RTARGET | TEXCF_UNORDERED, 0, u8"NauReflectionCubemap");
 
 
@@ -158,7 +157,6 @@ namespace nau::render
         math::ivec3 csPanoramaToCubeMapGroupCount = details::calculateWorkGroupCount(CUBEMAP_ENV_FACE_SIZE, workgroupSize);
 
         d3d::set_program(m_panoramaToCubemapCSProgram);
-        // Raw constant registers are ignored while an explicit b0 buffer is bound.
         d3d::set_const_buffer(STAGE_CS, 0, nullptr);
         d3d::set_cs_constbuffer_size(1);
 
@@ -187,7 +185,6 @@ namespace nau::render
         math::ivec3 genIrradianceGroupCount = details::calculateWorkGroupCount(IRRADIANCE_MAP_FACE_SIZE, workgroupSize);
 
         d3d::set_program(m_genIrradianceMapCSProgram);
-        // Raw constant registers are ignored while an explicit b0 buffer is bound.
         d3d::set_const_buffer(STAGE_CS, 0, nullptr);
         d3d::set_cs_constbuffer_size(1);
 
@@ -208,7 +205,6 @@ namespace nau::render
     void EnvironmentRenderer::generateReflectionMap()
     {
         d3d::set_program(m_genReflectionMapCSProgram);
-        // Raw constant registers are ignored while an explicit b0 buffer is bound.
         d3d::set_const_buffer(STAGE_CS, 0, nullptr);
         d3d::set_cs_constbuffer_size(1);
 

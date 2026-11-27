@@ -3,7 +3,6 @@
 
 #include "clustered/point_light.hlsli"
 
-// Shadow maps of point lights (omni_shadow.hlsli); the slot of a light is written by ClusteredLights into direction__tex_scale.w.
 #define OMNI_SHADOWS 1
 #include "clustered/omni_shadow.hlsli"
 

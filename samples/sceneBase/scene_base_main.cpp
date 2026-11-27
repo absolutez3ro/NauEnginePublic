@@ -241,7 +241,6 @@ namespace nau::sample
         builder.writeAssetToStream(stream, asset).ignore();
     }
 
-    // The scenes of key 1 of SceneSwitcher.
     async::Task<SceneSwitcher::ActiveScenes> activateDefaultScenes()
     {
         using namespace nau::scene;
@@ -260,7 +259,6 @@ namespace nau::sample
         active.push_back(co_await sceneManager.activateScene(std::move(mainScene)));
         active.push_back(co_await sceneManager.activateScene(std::move(shadowScene)));
         active.push_back(co_await sceneManager.activateScene(std::move(helmetScene)));
-        // todo: NAU-1295 add scene to scene when API is present
         active.push_back(co_await sceneManager.activateScene(std::move(skeletalAnimScene)));
 
         active.push_back(co_await sceneManager.activateScene(sample::makeTransformDemoScene({30.f, 0, 0}, false)));
@@ -271,8 +269,6 @@ namespace nau::sample
         co_return active;
     }
 
-    // The scene of key 2 of SceneSwitcher, made by tools/convert_jungle_ruins.py. The glTF import does not read materials:
-    // the converter names every node after its material.
     async::Task<SceneSwitcher::ActiveScenes> activateJungleRuinsScene()
     {
         using namespace nau::scene;
@@ -304,7 +300,6 @@ namespace nau::sample
         auto& sceneManager = getServiceProvider().get<scene::ISceneManager>();
         auto& sceneFactory = getServiceProvider().get<scene::ISceneFactory>();
 
-        // choose camera control kind: from scene object or standalone detached camera (from cam. manager):
         constexpr CamControlKind CameraControlKind = CamControlKind::UseCameraManager;
 
         auto scene_00 = sceneFactory.createEmptyScene();
@@ -330,12 +325,6 @@ namespace nau::sample
         auto& sceneSwitcher = scene_00->getRoot().addComponent<SceneSwitcher>();
         sceneSwitcher.setFactories(&activateDefaultScenes, &activateJungleRuinsScene);
 
-        // Shadows on, so that the cascades (drawn by the second GPU in an Mgpu build, see MgpuToggle) are visible.
-        // Direction: the default of the DirectionalLightControl window of WindowMaker, (0.5, -0.5, 0): the light
-        // travels down. DirectionalLightComponent::getDirection() is the rotation applied to (1, 0, 0), so the
-        // rotation turns (1, 0, 0) into that direction.
-        // Do not build it with Matrix4::lookAtRH(Point3(), ...): Point3() does not initialize its value, the
-        // random eye turned the light direction into garbage (even NaN) at every start and the cascades broke.
         auto& light = scene_00->getRoot().addComponent<DirectionalLightComponent>();
         light.setCastShadows(true);
         {
@@ -348,10 +337,6 @@ namespace nau::sample
         env.setIntensity(0.5f);
         TextureAssetRef panoramaTex = TextureAssetRef("file:/content/textures/environment/SunnyHills_2k.hdr");
         env.setTextureAsset(panoramaTex);
-
-
-        // Uncomment to add ability to create new system windows (from the UI)
-        // scene_00->getRoot().addComponent<WindowMaker>();
 
         co_await sceneManager.activateScene(std::move(scene_00));
 

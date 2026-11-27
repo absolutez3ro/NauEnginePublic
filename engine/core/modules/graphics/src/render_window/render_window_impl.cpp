@@ -129,7 +129,6 @@ namespace nau::render
                 nau::math::Matrix4 vp = m_graphicsScene->getMainCamera().getProjMatrix() * m_graphicsScene->getMainCamera().getViewMatrix();
                 const eastl::vector<render::OmniShadowCaster> omniCasters = m_graphicsScene->getOmniShadowCasters();
 
-                // Views without anything to do build no lists (renderOptimizationsEnabled; otherwise every view is active).
                 const bool optimized = renderOptimizationsEnabled();
                 const int cascadesInUse = m_csm->getNumCascadesToRender();
 #if defined(NAU_ENABLE_MGPU)
@@ -141,8 +140,6 @@ namespace nau::render
                 {
                     ++m_mgpuShadows.skippedListFrames;
                 }
-                // Nau draws the near cascades every frame (stage 4): their lists are always built. The count of the last
-                // frame, like cascadesInUse; a change of the count makes Nau draw all cascades (renderMgpuShadows).
                 const int nearCascades = m_mgpuShadows.nearCascades;
 #else
                 const bool skipCascades = false;
@@ -155,15 +152,12 @@ namespace nau::render
                         int cascade = (int)view->getUserData();
                         NAU_ASSERT(cascade < nau::csm::CascadeShadows::MAX_CASCADES);
                         view->updateFrustum(m_csm->getWorldRenderMatrix(cascade));
-                        // Before the first frame of the cascades their count is not known yet: all are kept. The far cascades
-                        // of the sparse update get their lists in the CSM node, if they are drawn (buildCascadeLists).
                         const bool onDemand = sparseShadowFrames() > 0 && cascade >= FAR_SHADOW_CASCADE;
                         view->setActive(!onDemand && (!optimized || ((!skipCascades || cascade < nearCascades) &&
                                                                      (cascadesInUse <= 0 || cascade < cascadesInUse))));
                     }
                     else if (view->containsTag(nau::RenderScene::Tags::shadowOmniTag))
                     {
-                        // A face of the shadow map of a point light; a slot without a light stays idle (instance filter).
                         const uint32_t index = static_cast<uint32_t>(reinterpret_cast<intptr_t>(view->getUserData()));
                         const uint32_t slot = index / render::omni_shadow::FACES;
                         if (slot < omniCasters.size())
@@ -387,8 +381,6 @@ namespace nau::render
 
     void RenderWindowImpl::getCascadeShadowSparseUpdateParams(int cascade_no, const nau::math::NauFrustum& cascade_frustum, float& out_min_sparse_dist, int& out_min_sparse_frame)
     {
-        // CascadeShadowsPrivate::prepareShadowCascades draws a cascade anew if it starts nearer than the distance or was kept
-        // for the frames plus its number; otherwise only if the view has left it.
         if (const int frames = sparseShadowFrames(); frames > 0 && cascade_no >= FAR_SHADOW_CASCADE)
         {
             out_min_sparse_dist = 0.0f;
@@ -426,7 +418,6 @@ namespace nau::render
             scene.updateView(*view, m_viewerPosition);
         }
 #if defined(NAU_ENABLE_MGPU)
-        // Into the sums of this frame (render() has taken those of updateViews already).
         const nau::RenderScene::ViewsStats& after = scene.getViewsStats();
         auto& timings = m_mgpuShadows.timings;
         for (int kind = 0; kind < nau::RenderScene::ViewsStats::KindCount; ++kind)

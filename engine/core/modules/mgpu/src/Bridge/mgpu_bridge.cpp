@@ -1,6 +1,3 @@
-// Mgpu <-> Nau transfer bridge, see include/nau/mgpu/bridge/mgpu_bridge.h.
-// No Nau headers here: the Mgpu headers below leak global `using namespace` directives and macros.
-
 #include "nau/mgpu/bridge/mgpu_bridge.h"
 
 #include <algorithm>
@@ -12,6 +9,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <d3dcompiler.h>
@@ -47,23 +45,26 @@ namespace nau::mgpu::bridge
         std::atomic<uint64_t> g_meshGeneration{0};
 
         std::mutex g_statusMutex;
-        Status g_status; // guarded by g_statusMutex
+        Status g_status;
 
-        constexpr uint32_t kWidth = 640;
-        constexpr uint32_t kHeight = 360;
-        constexpr uint32_t kBytesPerPixel = 4;
-        constexpr DXGI_FORMAT kFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        using FrameTimingClock = std::chrono::steady_clock;
+        constexpr size_t FrameTimingCapacity = 65536;
+        std::atomic<bool> g_capturingFrameTimings{false};
+        std::mutex g_frameTimingMutex;
+        FrameTimingCapture g_frameTimingCapture;
+        FrameTimingClock::time_point g_lastFrameTime;
 
-        // Images in flight: GPU2 draws one, GPU1 copies another, the CPU reads a third.
-        constexpr uint32_t kSlotCount = 3;
+        constexpr uint32_t WIDTH = 640;
+        constexpr uint32_t HEIGHT = 360;
+        constexpr uint32_t BYTES_PER_PIXEL = 4;
+        constexpr DXGI_FORMAT FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
 
-        // Workload of GPU2: sine waves summed per pixel. The cost grows linearly with it.
-        constexpr uint32_t kPlasmaWaves = 64;
-        constexpr uint32_t kGroupSize = 8;
+        constexpr uint32_t SLOT_COUNT = 3;
 
-        // The image is produced on GPU2 by this compute shader: an animated plasma made of kPlasmaWaves independent
-        // sine waves (one animation cycle per 120 frames). The CPU does not take part in producing it.
-        constexpr const char* kPlasmaShaderSource = R"(
+        constexpr uint32_t PLASMA_WAVES = 64;
+        constexpr uint32_t GROUP_SIZE = 8;
+
+        constexpr const char* PLASMA_SHADER_SOURCE = R"(
 cbuffer PlasmaParams : register(b0)
 {
     uint phase;
@@ -100,7 +101,7 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
 }
 )";
 
-        uint64_t Fnv1a(const uint8_t* data, const size_t size)
+        uint64_t fnv1a(const uint8_t* data, const size_t size)
         {
             uint64_t hash = 1469598103934665603ull;
             for (size_t i = 0; i < size; ++i)
@@ -111,12 +112,11 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
             return hash;
         }
 
-        // A real plasma image is opaque and not flat; zeros or a constant colour mean GPU2 did not draw it.
-        bool LooksLikePlasma(const std::vector<uint8_t>& image)
+        bool looksLikePlasma(const std::vector<uint8_t>& image)
         {
             uint8_t lo[3] = {255, 255, 255};
             uint8_t hi[3] = {0, 0, 0};
-            for (size_t i = 0; i < image.size(); i += kBytesPerPixel * 97)
+            for (size_t i = 0; i < image.size(); i += BYTES_PER_PIXEL * 97)
             {
                 if (image[i + 3] != 255)
                 {
@@ -130,7 +130,7 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
             }
             return hi[0] - lo[0] > 32 || hi[1] - lo[1] > 32 || hi[2] - lo[2] > 32;
         }
-    }
+    }  // namespace
 
     void setEnabled(const bool enabled)
     {
@@ -207,19 +207,67 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
         return status;
     }
 
+    void startFrameTimingCapture()
+    {
+        FrameTimingCapture capture;
+        capture.frames.reserve(FrameTimingCapacity);
+
+        const std::lock_guard lock(g_frameTimingMutex);
+        g_frameTimingCapture = std::move(capture);
+        g_lastFrameTime = {};
+        g_capturingFrameTimings.store(true, std::memory_order_relaxed);
+    }
+
+    FrameTimingCapture stopFrameTimingCapture()
+    {
+        const std::lock_guard lock(g_frameTimingMutex);
+        g_capturingFrameTimings.store(false, std::memory_order_relaxed);
+        return std::exchange(g_frameTimingCapture, {});
+    }
+
+    void recordFrameTiming(const bool cascadesFromSecondGpu, const bool omniShadowsFromSecondGpu, const uint32_t cascadeAtlasAgeFrames)
+    {
+        if (!g_capturingFrameTimings.load(std::memory_order_relaxed))
+        {
+            return;
+        }
+
+        const auto now = FrameTimingClock::now();
+        const std::lock_guard lock(g_frameTimingMutex);
+        if (!g_capturingFrameTimings.load(std::memory_order_relaxed))
+        {
+            return;
+        }
+
+        const auto previousFrameTime = std::exchange(g_lastFrameTime, now);
+        if (previousFrameTime == FrameTimingClock::time_point{})
+        {
+            return;
+        }
+
+        auto& frames = g_frameTimingCapture.frames;
+        if (frames.size() == frames.capacity())
+        {
+            g_frameTimingCapture.overflowed = true;
+            return;
+        }
+
+        const double frameTimeMs = std::chrono::duration<double, std::milli>(now - previousFrameTime).count();
+        frames.push_back({frameTimeMs, cascadesFromSecondGpu, omniShadowsFromSecondGpu, cascadeAtlasAgeFrames});
+    }
+
     struct TransferBridge::Impl
     {
         using Clock = std::chrono::steady_clock;
 
-        // One image in flight: GPU2 -> shared heap -> GPU1 -> read-back.
         struct Slot
         {
-            std::shared_ptr<GCrossAdapterResource> shared; // shared heap, placed resource on each GPU
-            std::shared_ptr<gfx::GResource> receivedReadback; // GPU1 copy of the shared texture
-            std::shared_ptr<gfx::GResource> producedReadback; // GPU2 copy of what it drew (bit-exact check)
-            uint64_t secondaryQueueValue = 0; // GPU2 compute queue fence value of the slot's work
-            uint64_t primaryQueueValue = 0; // GPU1 copy queue fence value of the slot's copy
-            uint64_t sequence = 0; // submission order
+            std::shared_ptr<GCrossAdapterResource> shared;
+            std::shared_ptr<gfx::GResource> receivedReadback;
+            std::shared_ptr<gfx::GResource> producedReadback;
+            uint64_t secondaryQueueValue = 0;
+            uint64_t primaryQueueValue = 0;
+            uint64_t sequence = 0;
             Clock::time_point started;
             bool inFlight = false;
         };
@@ -232,54 +280,48 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
         std::shared_ptr<gfx::GDevice> primaryDevice;
         std::shared_ptr<gfx::GDevice> secondaryDevice;
 
-        // GPU2 side: compute shader -> source texture (UAV) -> shared heap. All GPU2 work runs on its compute queue:
-        // GCommandList picks the compute root-signature calls by the command list type. One source texture is
-        // enough: the work of all slots is ordered on that queue.
         std::shared_ptr<gfx::GTexture> sourceTexture;
         std::shared_ptr<gfx::GRootSignature> plasmaSignature;
         std::shared_ptr<SourceShader> plasmaShader;
         std::shared_ptr<gfx::ComputePSO> plasmaPSO;
         gfx::GDescriptor plasmaUav;
 
-        std::array<Slot, kSlotCount> slots;
+        std::array<Slot, SLOT_COUNT> slots;
         uint64_t nextSequence = 0;
-        D3D12_PLACED_SUBRESOURCE_FOOTPRINT receivedFootprint = {}; // row-major shared texture
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT receivedFootprint = {};
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT producedFootprint = {};
 
-        // GPU2 -> GPU1 ordering on the GPU: Signal on the second device, Wait on the primary one.
         ComPtr<ID3D12Fence> primaryFence;
         ComPtr<ID3D12Fence> secondaryFence;
         UINT64 fenceValue = 0;
 
-        std::vector<uint8_t> pixels; // last verified image
+        std::vector<uint8_t> pixels;
         std::vector<uint8_t> receivedPixels;
         std::vector<uint8_t> producedPixels;
         TransferInfo info;
         TransferStats stats;
 
-        bool Initialize(const char* nauAdapterName)
+        bool initialize(const char* nauAdapterName)
         {
             try
             {
-                if (!detail::SelectDevices(nauAdapterName, primaryDevice, secondaryDevice, error))
+                if (!detail::selectDevices(nauAdapterName, primaryDevice, secondaryDevice, error))
                 {
                     return false;
                 }
-                primaryName = detail::ToUtf8(primaryDevice->GetName());
-                secondaryName = detail::ToUtf8(secondaryDevice->GetName());
+                primaryName = detail::toUtf8(primaryDevice->GetName());
+                secondaryName = detail::toUtf8(secondaryDevice->GetName());
 
-                // Source texture on GPU2, written by the plasma compute shader through a UAV.
                 const D3D12_RESOURCE_DESC textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-                    kFormat, kWidth, kHeight, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                    FORMAT, WIDTH, HEIGHT, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
                 sourceTexture = std::make_shared<gfx::GTexture>(secondaryDevice, textureDesc, L"MgpuBridge Source");
 
                 plasmaUav = secondaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
                 D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-                uavDesc.Format = kFormat;
+                uavDesc.Format = FORMAT;
                 uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
                 sourceTexture->CreateUnorderedAccessView(&uavDesc, &plasmaUav);
 
-                // Root signature: b0 = 4 root constants (PlasmaParams), table with u0.
                 CD3DX12_DESCRIPTOR_RANGE uavRange;
                 uavRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0);
                 plasmaSignature = std::make_shared<gfx::GRootSignature>();
@@ -287,7 +329,7 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
                 plasmaSignature->AddDescriptorParameter(&uavRange, 1);
                 plasmaSignature->Initialize(secondaryDevice, false, D3D12_ROOT_SIGNATURE_FLAG_NONE);
 
-                plasmaShader = std::make_shared<SourceShader>(kPlasmaShaderSource, gfx::ComputeShader, "GeneratePlasma",
+                plasmaShader = std::make_shared<SourceShader>(PLASMA_SHADER_SOURCE, gfx::ComputeShader, "GeneratePlasma",
                                                               "cs_5_1");
                 plasmaShader->LoadAndCompile();
 
@@ -295,23 +337,20 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
                 plasmaPSO->SetShader(plasmaShader.get());
                 plasmaPSO->Initialize(secondaryDevice);
 
-                const D3D12_RESOURCE_DESC plainDesc = CD3DX12_RESOURCE_DESC::Tex2D(kFormat, kWidth, kHeight, 1, 1);
+                const D3D12_RESOURCE_DESC plainDesc = CD3DX12_RESOURCE_DESC::Tex2D(FORMAT, WIDTH, HEIGHT, 1, 1);
                 UINT64 producedSize = 0;
                 secondaryDevice->GetDXDevice()->GetCopyableFootprints(&plainDesc, 0, 1, 0, &producedFootprint,
                                                                       nullptr, nullptr, &producedSize);
 
-                for (uint32_t i = 0; i < kSlotCount; ++i)
+                for (uint32_t i = 0; i < SLOT_COUNT; ++i)
                 {
                     Slot& slot = slots[i];
                     const std::wstring suffix = L" " + std::to_wstring(i);
 
-                    // Shared heap: placed resource on GPU1 (prime) and on GPU2 (shared). GCrossAdapterResource
-                    // replaces the flags with ALLOW_CROSS_ADAPTER and the layout with ROW_MAJOR.
                     D3D12_RESOURCE_DESC sharedDesc = plainDesc;
                     slot.shared = std::make_shared<GCrossAdapterResource>(sharedDesc, primaryDevice, secondaryDevice,
                                                                           L"MgpuBridge Shared" + suffix);
 
-                    // Read-back buffer on GPU1 sized for the row-major (256-byte aligned pitch) shared texture.
                     UINT64 receivedSize = 0;
                     primaryDevice->GetDXDevice()->GetCopyableFootprints(&sharedDesc, 0, 1, 0, &receivedFootprint,
                                                                         nullptr, nullptr, &receivedSize);
@@ -325,18 +364,16 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
                         CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK));
                 }
 
-                // GPU-side ordering between the two devices. If a shared fence cannot be created, Start() falls
-                // back to waiting for GPU2 on the CPU.
                 primaryDevice->TrySharedFence(primaryFence, secondaryDevice, secondaryFence, 0);
 
-                const size_t imageSize = static_cast<size_t>(kWidth) * kHeight * kBytesPerPixel;
+                const size_t imageSize = static_cast<size_t>(WIDTH) * HEIGHT * BYTES_PER_PIXEL;
                 pixels.assign(imageSize, 0);
                 receivedPixels.assign(imageSize, 0);
                 producedPixels.assign(imageSize, 0);
                 info = {};
-                info.width = kWidth;
-                info.height = kHeight;
-                info.rowPitch = kWidth * kBytesPerPixel;
+                info.width = WIDTH;
+                info.height = HEIGHT;
+                info.rowPitch = WIDTH * BYTES_PER_PIXEL;
                 stats = {};
 
                 ready = true;
@@ -352,27 +389,25 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
                 error = "unknown exception during initialize (see the D3D12 debug output)";
             }
 
-            Release();
+            release();
             return false;
         }
 
-        // Records and submits the work of one image; does not wait unless there is no shared fence.
-        void Start(Slot& slot, const uint32_t phase)
+        void start(Slot& slot, const uint32_t phase)
         {
-            // GPU2 (compute queue): plasma -> source texture -> GPU2 read-back + shared heap.
             auto secondaryQueue = secondaryDevice->GetCommandQueue(gfx::GQueueType::Compute);
             {
                 auto cmdList = secondaryQueue->GetCommandList();
 
                 cmdList->SetPipelineState(*plasmaPSO);
                 cmdList->SetDescriptorsHeap(&plasmaUav);
-                const uint32_t params[4] = {phase, kWidth, kHeight, kPlasmaWaves};
+                const uint32_t params[4] = {phase, WIDTH, HEIGHT, PLASMA_WAVES};
                 cmdList->SetRoot32BitConstants(0, 4, params, 0);
                 cmdList->SetRootDescriptorTable(1, &plasmaUav);
 
                 cmdList->TransitionBarrier(*sourceTexture, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 cmdList->FlushResourceBarriers();
-                cmdList->Dispatch((kWidth + kGroupSize - 1) / kGroupSize, (kHeight + kGroupSize - 1) / kGroupSize, 1);
+                cmdList->Dispatch((WIDTH + GROUP_SIZE - 1) / GROUP_SIZE, (HEIGHT + GROUP_SIZE - 1) / GROUP_SIZE, 1);
                 cmdList->UAVBarrier(*sourceTexture, true);
 
                 cmdList->TransitionBarrier(*sourceTexture, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -390,7 +425,6 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
                 slot.secondaryQueueValue = secondaryQueue->ExecuteCommandList(cmdList);
             }
 
-            // Order GPU1 after GPU2.
             auto primaryQueue = primaryDevice->GetCommandQueue(gfx::GQueueType::Copy);
             if (primaryFence && secondaryFence)
             {
@@ -403,7 +437,6 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
                 secondaryQueue->WaitForFenceValue(slot.secondaryQueueValue);
             }
 
-            // GPU1 (copy queue): shared heap -> read-back buffer.
             {
                 auto cmdList = primaryQueue->GetCommandList();
 
@@ -426,44 +459,41 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
             slot.inFlight = true;
         }
 
-        bool IsArrived(const Slot& slot) const
+        bool isArrived(const Slot& slot) const
         {
             return slot.inFlight &&
                    primaryDevice->GetCommandQueue(gfx::GQueueType::Copy)->IsFinish(slot.primaryQueueValue);
         }
 
-        static void ReadBack(gfx::GResource& buffer, const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint,
-                             std::vector<uint8_t>& destination)
+        static void readBack(gfx::GResource& buffer, const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint, std::vector<uint8_t>& destination)
         {
-            const D3D12_RANGE readRange = {0, static_cast<SIZE_T>(footprint.Footprint.RowPitch) * kHeight +
+            const D3D12_RANGE readRange = {0, static_cast<SIZE_T>(footprint.Footprint.RowPitch) * HEIGHT +
                                                   static_cast<SIZE_T>(footprint.Offset)};
             const uint8_t* mapped = nullptr;
             ThrowIfFailed(buffer.GetD3D12Resource()->Map(0, &readRange,
-                                                          reinterpret_cast<void**>(const_cast<uint8_t**>(&mapped))));
-            for (uint32_t y = 0; y < kHeight; ++y)
+                                                         reinterpret_cast<void**>(const_cast<uint8_t**>(&mapped))));
+            for (uint32_t y = 0; y < HEIGHT; ++y)
             {
-                std::memcpy(destination.data() + static_cast<size_t>(y) * kWidth * kBytesPerPixel,
+                std::memcpy(destination.data() + static_cast<size_t>(y) * WIDTH * BYTES_PER_PIXEL,
                             mapped + footprint.Offset + static_cast<size_t>(y) * footprint.Footprint.RowPitch,
-                            static_cast<size_t>(kWidth) * kBytesPerPixel);
+                            static_cast<size_t>(WIDTH) * BYTES_PER_PIXEL);
             }
             const D3D12_RANGE noWrite = {0, 0};
             buffer.GetD3D12Resource()->Unmap(0, &noWrite);
         }
 
-        // The slot's copy on GPU1 has finished: read both sides back and check them. Frees the slot.
-        bool Collect(Slot& slot)
+        bool collect(Slot& slot)
         {
-            // GPU1 waited for GPU2's signal, so GPU2 is normally done already; this matters on the CPU-ordered path.
             secondaryDevice->GetCommandQueue(gfx::GQueueType::Compute)->WaitForFenceValue(slot.secondaryQueueValue);
             slot.inFlight = false;
 
-            ReadBack(*slot.receivedReadback, receivedFootprint, receivedPixels);
-            ReadBack(*slot.producedReadback, producedFootprint, producedPixels);
+            readBack(*slot.receivedReadback, receivedFootprint, receivedPixels);
+            readBack(*slot.producedReadback, producedFootprint, producedPixels);
 
-            info.checksum = Fnv1a(receivedPixels.data(), receivedPixels.size());
-            info.expectedChecksum = Fnv1a(producedPixels.data(), producedPixels.size());
+            info.checksum = fnv1a(receivedPixels.data(), receivedPixels.size());
+            info.expectedChecksum = fnv1a(producedPixels.data(), producedPixels.size());
             const bool transported = receivedPixels == producedPixels;
-            const bool drawn = LooksLikePlasma(producedPixels);
+            const bool drawn = looksLikePlasma(producedPixels);
             info.checksumMatches = transported && drawn;
 
             stats.lastLatencyMs =
@@ -483,7 +513,7 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
             return true;
         }
 
-        Slot* FreeSlot()
+        Slot* freeSlot()
         {
             for (Slot& slot : slots)
             {
@@ -495,7 +525,7 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
             return nullptr;
         }
 
-        bool Pump(const uint32_t frameIndex)
+        bool pump(const uint32_t frameIndex)
         {
             if (!ready)
             {
@@ -504,14 +534,13 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
 
             try
             {
-                // 1. Collect the arrived images in submission order; the newest verified one stays in pixels.
                 bool newImage = false;
                 for (;;)
                 {
                     Slot* oldest = nullptr;
                     for (Slot& slot : slots)
                     {
-                        if (IsArrived(slot) && (oldest == nullptr || slot.sequence < oldest->sequence))
+                        if (isArrived(slot) && (oldest == nullptr || slot.sequence < oldest->sequence))
                         {
                             oldest = &slot;
                         }
@@ -520,13 +549,12 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
                     {
                         break;
                     }
-                    newImage = Collect(*oldest) || newImage;
+                    newImage = collect(*oldest) || newImage;
                 }
 
-                // 2. Keep GPU2 busy: start the next image if a slot is free.
-                if (Slot* slot = FreeSlot())
+                if (Slot* slot = freeSlot())
                 {
-                    Start(*slot, frameIndex);
+                    start(*slot, frameIndex);
                 }
 
                 return newImage;
@@ -544,7 +572,7 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
             return false;
         }
 
-        bool Update(const uint32_t frameIndex)
+        bool update(const uint32_t frameIndex)
         {
             if (!ready)
             {
@@ -553,7 +581,6 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
 
             try
             {
-                // Drain whatever pump() left in flight, then run one image start to end.
                 auto primaryQueue = primaryDevice->GetCommandQueue(gfx::GQueueType::Copy);
                 for (Slot& slot : slots)
                 {
@@ -565,9 +592,9 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
                 }
 
                 Slot& slot = slots[0];
-                Start(slot, frameIndex);
+                start(slot, frameIndex);
                 primaryQueue->WaitForFenceValue(slot.primaryQueueValue);
-                return Collect(slot);
+                return collect(slot);
             }
             catch (const std::exception& e)
             {
@@ -583,11 +610,10 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
             return false;
         }
 
-        void Release()
+        void release()
         {
             ready = false;
 
-            // Waits for all work in flight on both GPUs.
             if (primaryDevice)
             {
                 primaryDevice->Flush();
@@ -613,7 +639,8 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
         }
     };
 
-    TransferBridge::TransferBridge() : m_impl(std::make_unique<Impl>())
+    TransferBridge::TransferBridge() :
+        m_impl(std::make_unique<Impl>())
     {
     }
 
@@ -628,17 +655,17 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
         {
             return true;
         }
-        return m_impl->Initialize(nauAdapterName);
+        return m_impl->initialize(nauAdapterName);
     }
 
     bool TransferBridge::pump(const uint32_t frameIndex)
     {
-        return m_impl->Pump(frameIndex);
+        return m_impl->pump(frameIndex);
     }
 
     bool TransferBridge::update(const uint32_t frameIndex)
     {
-        return m_impl->Update(frameIndex);
+        return m_impl->update(frameIndex);
     }
 
     bool TransferBridge::isReady() const
@@ -650,7 +677,7 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
     {
         if (m_impl)
         {
-            m_impl->Release();
+            m_impl->release();
         }
     }
 
@@ -683,4 +710,4 @@ void GeneratePlasma(uint3 id : SV_DispatchThreadID)
     {
         return m_impl->stats;
     }
-}
+}  // namespace nau::mgpu::bridge

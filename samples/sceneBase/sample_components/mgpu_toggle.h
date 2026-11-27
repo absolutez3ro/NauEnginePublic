@@ -7,9 +7,6 @@
 
 namespace nau::sample
 {
-    // Key M switches the Mgpu path (nau::mgpu::bridge) on and off at run time; the "MGPU" window shows what it is
-    // doing. With Mgpu on and two GPUs the second GPU draws the shadow cascades; with one GPU or Mgpu off Nau draws
-    // them itself.
     class MgpuToggle final : public scene::Component,
                              public scene::IComponentUpdate
     {
@@ -20,6 +17,6 @@ namespace nau::sample
     private:
         void updateComponent(float dt) override;
 
-        bool m_startApplied = false; // NAU_SAMPLE_VSYNC is applied on the first update
+        bool m_startApplied = false;
     };
 }  // namespace nau::sample

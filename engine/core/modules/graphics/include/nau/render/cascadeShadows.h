@@ -73,7 +73,6 @@ namespace nau::csm
             float overrideZNearForCascadeDistribution; /** < If positive, overrides near plane z-value for the nearest cascade. */
         };
 
-        /** Cascade rectangle in the shadow atlas, in pixels: the d3d::setview arguments used by renderShadowCascadeDepth. */
         struct CascadeViewport
         {
             int x = 0;
@@ -84,15 +83,13 @@ namespace nau::csm
             float maxZ = 1.f;
         };
 
-        /** Shadow atlas texture (getShadowsCascade()). */
         struct AtlasInfo
         {
             int width = 0;
             int height = 0;
-            uint32_t format = 0; /** < TEXFMT_DEPTH16 or TEXFMT_DEPTH32. */
+            uint32_t format = 0;
         };
 
-        /** Contents of the SB_CSMBuffer constant buffer (CSMBuffer in csm.hlsli), in its layout. */
         struct ShaderConstants
         {
             nau::math::Vector4 pcfLerp;
@@ -100,12 +97,11 @@ namespace nau::csm
             eastl::array<nau::math::Color4, MAX_CASCADES> shadowCascadeTcMulOffset;
         };
 
-        /** Shader constants of one frame, to be bound later together with the atlas rendered for that frame. */
         struct ShaderSnapshot
         {
             ShaderConstants constants = {};
-            int numCascades = 0; /** < getNumCascadesToRender() of that frame. */
-            AtlasInfo atlas;     /** < Atlas the constants were computed for. */
+            int numCascades = 0;
+            AtlasInfo atlas;
         };
 
 
@@ -125,21 +121,15 @@ namespace nau::csm
         void renderShadowsCascades();
         void renderShadowsCascadesCb(csm_render_cascades_cb_t cb);
         void renderShadowCascadeDepth(int cascadeNo, bool clearPerView);
-        // Draws only the cascades [0, count) and clears only their rectangles: the other cascades keep what the atlas holds
-        // (MGPU: the far cascades drawn by the second GPU and copied into the atlas this frame or earlier).
         void renderNearShadowCascades(int count);
 
         void setCascadesToShader(MaterialAssetView::Ptr resolveMaterial);
 
-        // Rendering the cascades outside of Nau. Valid after prepareShadowCascades of the frame; use together with
-        // getWorldRenderMatrix() and shouldUpdateCascade().
         CascadeViewport getCascadeViewport(int cascade_no) const;
-        void getCascadeDepthBias(int cascade_no, float& const_bias, float& slope_bias) const; // zBias and slopeZBias of the cascade override state
+        void getCascadeDepthBias(int cascade_no, float& const_bias, float& slope_bias) const;
         AtlasInfo getAtlasInfo() const;
 
-        // Constants setCascadesToShader(resolveMaterial) would upload now (call after prepareShadowCascades).
         ShaderSnapshot snapshotShaderConstants();
-        // Same as setCascadesToShader(resolveMaterial), but uploads the constants of the snapshot.
         void setCascadesToShader(MaterialAssetView::Ptr resolveMaterial, const ShaderSnapshot& snapshot);
 
         void disable();

@@ -25,8 +25,6 @@ namespace nau
     };
 
 
-    // Stage 1 of the MGPU optimisation (the CPU cost of the render lists): on by default; GraphicsSettings::
-    // renderOptimizations off restores the original behaviour, to compare in the same build.
     inline bool renderOptimizationsEnabled()
     {
         return getGraphicsSettings().renderOptimizations;
@@ -36,7 +34,6 @@ namespace nau
     {
         InstanceID id;
 
-        // Set through setWorldMatrix: the normal matrix follows it.
         nau::math::Matrix4 worldMatrix;
         nau::math::Matrix4 normalMatrix = nau::math::Matrix4::identity();
         nau::math::BSphere3 worldSphere;
@@ -53,7 +50,6 @@ namespace nau
 
         nau::Uid uid;
 
-        // The normal matrix is kept here instead of being computed for every instance in every view of every frame.
         void setWorldMatrix(const nau::math::Matrix4& matrix)
         {
             worldMatrix = matrix;
@@ -62,8 +58,6 @@ namespace nau
     };
 
 
-    // How a view chooses the levels of detail (RenderView::setLodSelection): the distance from the viewer is multiplied by
-    // distanceScale (more than 1 for the far shadow cascades), and the shadow-only levels are taken by the shadow cascades.
     struct LodSelection
     {
         float distanceScale = 1.0f;

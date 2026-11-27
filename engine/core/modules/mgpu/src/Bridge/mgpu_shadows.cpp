@@ -1,5 +1,3 @@
-// Second-GPU renderer of Nau's cascaded shadow atlas, see include/nau/mgpu/bridge/mgpu_shadows.h.
-// No Nau headers here: the Mgpu headers below leak global `using namespace` directives and macros.
 
 #include "nau/mgpu/bridge/mgpu_shadows.h"
 
@@ -36,23 +34,15 @@ namespace nau::mgpu::shadows
 
     namespace
     {
-        // Atlases in flight: the second GPU draws one, the copy queue of the first GPU moves another into local memory,
-        // one is ready for the next frame, Nau copies the last one.
-        constexpr uint32_t kSlotCount = SLOT_COUNT;
 
-        // Root signature: b0 = 18 root constants (DrawParams), t0 = root SRV with the matrices of the frame, t1 = the mask
-        // of a masked caster (a table in the shader-visible heap of the masks), s0 = its sampler.
-        constexpr uint32_t kViewProjConstants = 16;
-        constexpr uint32_t kDrawConstants = 2;
-        constexpr UINT kConstantsParameter = 0;
-        constexpr UINT kMatricesParameter = 1;
-        constexpr UINT kMaskParameter = 2;
-        constexpr UINT kMaxMasks = 1024;
+        constexpr uint32_t VIEW_PROJ_CONSTANTS = 16;
+        constexpr uint32_t DRAW_CONSTANTS = 2;
+        constexpr UINT CONSTANTS_PARAMETER = 0;
+        constexpr UINT MATRICES_PARAMETER = 1;
+        constexpr UINT MASK_PARAMETER = 2;
+        constexpr UINT MAX_MASKS = 1024;
 
-        // The vertex shaders repeat Nau's z-prepass (texturedInstanced.hlsl: zprepassInstancedVSMain and
-        // zprepassSkinnedVSMain) that Nau uses for its cascades. Matrices keep Nau's memory layout (column-major
-        // packing, mul(matrix, vector)). Skinned bones are already in world space, as in Nau.
-        constexpr const char* kShadowShaderSource = R"(
+        constexpr const char* SHADOW_SHADER_SOURCE = R"(
 cbuffer DrawParams : register(b0)
 {
     float4x4 vp;
@@ -83,7 +73,6 @@ float4 ShadowSkinnedVS(float3 position : POSITION, float4 boneWeights : BLENDWEI
     return mul(vp, skinned);
 }
 
-// Masked casters repeat zprepassMaskedVSMain and zprepassMaskedPSMain of texturedInstanced.hlsl.
 struct MaskedVertex
 {
     float4 position : SV_Position;
@@ -107,30 +96,29 @@ void ShadowMaskedPS(MaskedVertex input)
 }
 )";
 
-        DXGI_FORMAT TypelessFormat(const AtlasFormat format)
+        DXGI_FORMAT typelessFormat(const AtlasFormat format)
         {
             return format == AtlasFormat::Depth16 ? DXGI_FORMAT_R16_TYPELESS : DXGI_FORMAT_R32_TYPELESS;
         }
 
-        DXGI_FORMAT DepthFormat(const AtlasFormat format)
+        DXGI_FORMAT depthFormat(const AtlasFormat format)
         {
             return format == AtlasFormat::Depth16 ? DXGI_FORMAT_D16_UNORM : DXGI_FORMAT_D32_FLOAT;
         }
 
-        uint32_t BytesPerTexel(const AtlasFormat format)
+        uint32_t bytesPerTexel(const AtlasFormat format)
         {
             return format == AtlasFormat::Depth16 ? 2u : 4u;
         }
 
-        std::shared_ptr<gfx::GResource> CreateUploadBuffer(const std::shared_ptr<gfx::GDevice>& device, const size_t size,
-                                                           const std::wstring& name)
+        std::shared_ptr<gfx::GResource> createUploadBuffer(const std::shared_ptr<gfx::GDevice>& device, const size_t size, const std::wstring& name)
         {
             return std::make_shared<gfx::GResource>(device, CD3DX12_RESOURCE_DESC::Buffer(std::max<size_t>(size, 256)),
                                                     name, nullptr, D3D12_RESOURCE_STATE_GENERIC_READ,
                                                     CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD));
         }
 
-        void Upload(gfx::GResource& buffer, const void* data, const size_t size)
+        void writeUploadBuffer(gfx::GResource& buffer, const void* data, const size_t size)
         {
             void* mapped = nullptr;
             const D3D12_RANGE noRead = {0, 0};
@@ -138,14 +126,12 @@ void ShadowMaskedPS(MaskedVertex input)
             std::memcpy(mapped, data, size);
             buffer.GetD3D12Resource()->Unmap(0, nullptr);
         }
-    }
+    }  // namespace
 
     struct CascadeRenderer::Impl
     {
         using Clock = std::chrono::steady_clock;
 
-        // Shadow-caster geometry on the second GPU (CreateGeometryBuffer): in the upload heap on an integrated GPU, in its
-        // video memory on a discrete one.
         struct Mesh
         {
             std::shared_ptr<gfx::GResource> positions;
@@ -154,7 +140,7 @@ void ShadowMaskedPS(MaskedVertex input)
             std::shared_ptr<gfx::GResource> indices;
             std::shared_ptr<gfx::GResource> texCoords;
             std::array<D3D12_VERTEX_BUFFER_VIEW, 3> vertexViews = {};
-            std::array<D3D12_VERTEX_BUFFER_VIEW, 2> maskedViews = {}; // positions, texture coordinates
+            std::array<D3D12_VERTEX_BUFFER_VIEW, 2> maskedViews = {};
             D3D12_INDEX_BUFFER_VIEW indexView = {};
             bool skinned = false;
         };
@@ -162,25 +148,25 @@ void ShadowMaskedPS(MaskedVertex input)
         enum class SlotState
         {
             Free,
-            Rendering, // submitted to the second GPU
-            Drawn, // finished on the second GPU, in the shared heap
-            Transferring, // shared heap -> local memory of the first GPU, on its copy queue
-            Ready, // in local memory of the first GPU, not handed out yet
-            Handed // given to Nau, waits for release()
+            Rendering,
+            Drawn,
+            Transferring,
+            Ready,
+            Handed
         };
 
         struct Slot
         {
             SlotState state = SlotState::Free;
-            std::shared_ptr<GCrossAdapterResource> shared; // shared heap, placed resource on each GPU
-            std::shared_ptr<gfx::GResource> local; // copy in local memory of the first GPU, handed to Nau
+            std::shared_ptr<GCrossAdapterResource> shared;
+            std::shared_ptr<gfx::GResource> local;
             uint32_t width = 0;
             uint32_t height = 0;
             AtlasFormat format = AtlasFormat::Depth16;
-            std::shared_ptr<gfx::GResource> matrices; // upload heap, read by the second GPU while it draws the slot
+            std::shared_ptr<gfx::GResource> matrices;
             size_t matricesCapacity = 0;
-            uint64_t fenceValue = 0; // graphics queue of the second GPU
-            uint64_t transferFenceValue = 0; // copy queue of the first GPU
+            uint64_t fenceValue = 0;
+            uint64_t transferFenceValue = 0;
             uint64_t sequence = 0;
             uint64_t userToken = 0;
             Clock::time_point submitted;
@@ -188,14 +174,13 @@ void ShadowMaskedPS(MaskedVertex input)
             float latencyMs = 0;
         };
 
-        // Mask texture on the second GPU and its place in the shader-visible heap.
         struct Mask
         {
             ComPtr<ID3D12Resource> texture;
             D3D12_GPU_DESCRIPTOR_HANDLE descriptor = {};
         };
 
-        using PsoKey = std::tuple<bool, bool, AtlasFormat, int32_t, float, bool>; // skinned, masked, format, depth bias, slope bias, depth clip
+        using PsoKey = std::tuple<bool, bool, AtlasFormat, int32_t, float, bool, bool>;
 
         bool ready = false;
         std::string error;
@@ -205,7 +190,6 @@ void ShadowMaskedPS(MaskedVertex input)
         std::shared_ptr<gfx::GDevice> primaryDevice;
         std::shared_ptr<gfx::GDevice> secondaryDevice;
 
-        // Depth atlas on the second GPU. One is enough: the work of all slots is ordered on one queue.
         std::shared_ptr<gfx::GTexture> atlas;
         gfx::GDescriptor atlasDsv;
         uint32_t atlasWidth = 0;
@@ -224,31 +208,24 @@ void ShadowMaskedPS(MaskedVertex input)
         std::map<PsoKey, std::shared_ptr<gfx::GraphicPSO>> psos;
 
         std::unordered_map<uint64_t, Mesh> meshes;
-        std::array<Slot, kSlotCount> slots;
+        std::array<Slot, SLOT_COUNT> slots;
 
-        // An integrated second GPU reads the upload heap from its own memory: the geometry stays there. A discrete one would
-        // fetch every vertex of every draw over the bus: its geometry is copied into its video memory once, by a command
-        // list that runs on its graphics queue ahead of the next atlas (FlushUploads). The buffers of the copies live until
-        // the second GPU has done them. NAU_MGPU_GEOMETRY_IN_VIDEO_MEMORY=1 takes the copy path on an integrated GPU too.
         bool geometryInVideoMemory = false;
         std::shared_ptr<gfx::GCommandList> uploadList;
-        std::vector<std::shared_ptr<gfx::GResource>> uploadBuffers; // the sources and the targets of uploadList
+        std::vector<std::shared_ptr<gfx::GResource>> uploadBuffers;
         struct UploadBatch
         {
             uint64_t fenceValue = 0;
             std::vector<std::shared_ptr<gfx::GResource>> buffers;
         };
         std::vector<UploadBatch> uploadsInFlight;
-        std::vector<uint32_t> drawOrder; // Submit: indices of the draws, sorted (kept to reuse the memory)
-        std::vector<D3D12_RECT> clearRects; // Submit: the cascades drawn anew when others are kept
+        std::vector<uint32_t> drawOrder;
+        std::vector<D3D12_RECT> clearRects;
         uint64_t nextSequence = 0;
         RendererStats stats;
 
-        // GPU timings: three timestamps per slot on the second GPU (start, cascades drawn, atlas in the shared heap) and
-        // two on the copy queue of the first GPU (around the transfer). The readback buffers stay mapped. Optional: a
-        // queue without timestamps leaves its heap null and the renderer works as without them.
-        static constexpr UINT kDrawStamps = 3;
-        static constexpr UINT kTransferStamps = 2;
+        static constexpr UINT DRAW_STAMPS = 3;
+        static constexpr UINT TRANSFER_STAMPS = 2;
         ComPtr<ID3D12QueryHeap> drawQueries;
         ComPtr<ID3D12Resource> drawReadback;
         UINT64* drawStamps = nullptr;
@@ -258,60 +235,60 @@ void ShadowMaskedPS(MaskedVertex input)
         UINT64* transferStamps = nullptr;
         double transferTicksPerMs = 0;
 
-        std::shared_ptr<gfx::GCommandQueue>& GraphicsQueue2() const
+        std::shared_ptr<gfx::GCommandQueue>& graphicsQueue2() const
         {
             return secondaryDevice->GetCommandQueue(gfx::GQueueType::Graphics);
         }
 
-        std::shared_ptr<gfx::GCommandQueue>& CopyQueue1() const
+        std::shared_ptr<gfx::GCommandQueue>& copyQueue1() const
         {
             return primaryDevice->GetCommandQueue(gfx::GQueueType::Copy);
         }
 
-        bool Initialize(const char* nauAdapterName)
+        bool initialize(const char* nauAdapterName)
         {
             try
             {
-                if (!bridge::detail::SelectDevices(nauAdapterName, primaryDevice, secondaryDevice, error))
+                if (!bridge::detail::selectDevices(nauAdapterName, primaryDevice, secondaryDevice, error))
                 {
                     return false;
                 }
-                primaryName = bridge::detail::ToUtf8(primaryDevice->GetName());
-                secondaryName = bridge::detail::ToUtf8(secondaryDevice->GetName());
+                primaryName = bridge::detail::toUtf8(primaryDevice->GetName());
+                secondaryName = bridge::detail::toUtf8(secondaryDevice->GetName());
 
                 D3D12_FEATURE_DATA_ARCHITECTURE architecture = {};
                 const bool uma = FAILED(secondaryDevice->GetDXDevice()->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture,
-                                                                                           sizeof(architecture))) ||
+                                                                                            sizeof(architecture))) ||
                                  architecture.UMA != FALSE;
                 const char* const forceVideoMemory = std::getenv("NAU_MGPU_GEOMETRY_IN_VIDEO_MEMORY");
                 geometryInVideoMemory = !uma || (forceVideoMemory != nullptr && std::strcmp(forceVideoMemory, "1") == 0);
 
                 signature = std::make_shared<gfx::GRootSignature>();
-                signature->AddConstantParameter(kViewProjConstants + kDrawConstants, 0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+                signature->AddConstantParameter(VIEW_PROJ_CONSTANTS + DRAW_CONSTANTS, 0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
                 signature->AddShaderResourceView(0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
                 const CD3DX12_DESCRIPTOR_RANGE maskRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1);
                 signature->AddDescriptorParameter(&maskRange, 1, D3D12_SHADER_VISIBILITY_PIXEL);
                 signature->AddStaticSampler(CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR));
                 signature->Initialize(secondaryDevice);
 
-                staticVS = std::make_shared<SourceShader>(kShadowShaderSource, gfx::VertexShader, "ShadowStaticVS", "vs_5_1");
+                staticVS = std::make_shared<SourceShader>(SHADOW_SHADER_SOURCE, gfx::VertexShader, "ShadowStaticVS", "vs_5_1");
                 staticVS->LoadAndCompile();
-                skinnedVS = std::make_shared<SourceShader>(kShadowShaderSource, gfx::VertexShader, "ShadowSkinnedVS", "vs_5_1");
+                skinnedVS = std::make_shared<SourceShader>(SHADOW_SHADER_SOURCE, gfx::VertexShader, "ShadowSkinnedVS", "vs_5_1");
                 skinnedVS->LoadAndCompile();
-                maskedVS = std::make_shared<SourceShader>(kShadowShaderSource, gfx::VertexShader, "ShadowMaskedVS", "vs_5_1");
+                maskedVS = std::make_shared<SourceShader>(SHADOW_SHADER_SOURCE, gfx::VertexShader, "ShadowMaskedVS", "vs_5_1");
                 maskedVS->LoadAndCompile();
-                maskedPS = std::make_shared<SourceShader>(kShadowShaderSource, gfx::PixelShader, "ShadowMaskedPS", "ps_5_1");
+                maskedPS = std::make_shared<SourceShader>(SHADOW_SHADER_SOURCE, gfx::PixelShader, "ShadowMaskedPS", "ps_5_1");
                 maskedPS->LoadAndCompile();
 
                 D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
                 heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-                heapDesc.NumDescriptors = kMaxMasks;
+                heapDesc.NumDescriptors = MAX_MASKS;
                 heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
                 ThrowIfFailed(secondaryDevice->GetDXDevice()->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&maskHeap)));
                 maskDescriptorSize = secondaryDevice->GetDXDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
                 stats = {};
-                InitializeTimings();
+                initializeTimings();
                 ready = true;
                 error.clear();
                 return true;
@@ -325,11 +302,11 @@ void ShadowMaskedPS(MaskedVertex input)
                 error = "unknown exception during initialize (see the D3D12 debug output)";
             }
 
-            Release();
+            release();
             return false;
         }
 
-        static ComPtr<ID3D12Resource> CreateReadback(ID3D12Device* device, const UINT64 size)
+        static ComPtr<ID3D12Resource> createReadback(ID3D12Device* device, const UINT64 size)
         {
             const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_READBACK);
             const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(size);
@@ -339,7 +316,7 @@ void ShadowMaskedPS(MaskedVertex input)
             return buffer;
         }
 
-        void ReleaseTimings()
+        void releaseTimings()
         {
             if (drawReadback && drawStamps)
             {
@@ -359,19 +336,19 @@ void ShadowMaskedPS(MaskedVertex input)
             transferTicksPerMs = 0;
         }
 
-        void InitializeTimings()
+        void initializeTimings()
         {
             try
             {
                 ID3D12Device* const device = secondaryDevice->GetDXDevice().Get();
                 D3D12_QUERY_HEAP_DESC desc = {};
                 desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-                desc.Count = kDrawStamps * kSlotCount;
+                desc.Count = DRAW_STAMPS * SLOT_COUNT;
                 ThrowIfFailed(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&drawQueries)));
-                drawReadback = CreateReadback(device, desc.Count * sizeof(UINT64));
+                drawReadback = createReadback(device, desc.Count * sizeof(UINT64));
                 ThrowIfFailed(drawReadback->Map(0, nullptr, reinterpret_cast<void**>(&drawStamps)));
                 UINT64 frequency = 0;
-                ThrowIfFailed(GraphicsQueue2()->GetD3D12CommandQueue()->GetTimestampFrequency(&frequency));
+                ThrowIfFailed(graphicsQueue2()->GetD3D12CommandQueue()->GetTimestampFrequency(&frequency));
                 drawTicksPerMs = static_cast<double>(frequency) / 1000.0;
             }
             catch (...)
@@ -391,12 +368,12 @@ void ShadowMaskedPS(MaskedVertex input)
                 {
                     D3D12_QUERY_HEAP_DESC desc = {};
                     desc.Type = D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP;
-                    desc.Count = kTransferStamps * kSlotCount;
+                    desc.Count = TRANSFER_STAMPS * SLOT_COUNT;
                     ThrowIfFailed(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&transferQueries)));
-                    transferReadback = CreateReadback(device, desc.Count * sizeof(UINT64));
+                    transferReadback = createReadback(device, desc.Count * sizeof(UINT64));
                     ThrowIfFailed(transferReadback->Map(0, nullptr, reinterpret_cast<void**>(&transferStamps)));
                     UINT64 frequency = 0;
-                    ThrowIfFailed(CopyQueue1()->GetD3D12CommandQueue()->GetTimestampFrequency(&frequency));
+                    ThrowIfFailed(copyQueue1()->GetD3D12CommandQueue()->GetTimestampFrequency(&frequency));
                     transferTicksPerMs = static_cast<double>(frequency) / 1000.0;
                 }
             }
@@ -409,18 +386,18 @@ void ShadowMaskedPS(MaskedVertex input)
             }
         }
 
-        UINT SlotIndex(const Slot& slot) const
+        UINT slotIndex(const Slot& slot) const
         {
             return static_cast<UINT>(&slot - slots.data());
         }
 
-        void ReadDrawTimings(const Slot& slot)
+        void readDrawTimings(const Slot& slot)
         {
             if (drawStamps == nullptr || drawTicksPerMs <= 0)
             {
                 return;
             }
-            const UINT64* const stamps = drawStamps + SlotIndex(slot) * kDrawStamps;
+            const UINT64* const stamps = drawStamps + slotIndex(slot) * DRAW_STAMPS;
             if (stamps[1] < stamps[0] || stamps[2] < stamps[1])
             {
                 return;
@@ -430,13 +407,13 @@ void ShadowMaskedPS(MaskedVertex input)
             ++stats.drawGpuSamples;
         }
 
-        void ReadTransferTimings(const Slot& slot)
+        void readTransferTimings(const Slot& slot)
         {
             if (transferStamps == nullptr || transferTicksPerMs <= 0)
             {
                 return;
             }
-            const UINT64* const stamps = transferStamps + SlotIndex(slot) * kTransferStamps;
+            const UINT64* const stamps = transferStamps + slotIndex(slot) * TRANSFER_STAMPS;
             if (stamps[1] < stamps[0])
             {
                 return;
@@ -445,12 +422,9 @@ void ShadowMaskedPS(MaskedVertex input)
             ++stats.transferGpuSamples;
         }
 
-        // Depth-only pipeline with the render state Nau uses for its cascades: the cull mode of the z-prepass material
-        // (static "Clockwise" -> D3D12 FRONT, skinned "CounterClockwise" -> BACK, FrontCounterClockwise = TRUE in
-        // drv3d_DX12) and the cascade override (depth bias, Z_CLAMP_ENABLED -> no depth clip, LESS_EQUAL).
-        gfx::GraphicPSO& GetPso(const bool skinned, const bool masked, const AtlasFormat format, const int32_t depthBias, const float slopeBias, const bool depthClip)
+        gfx::GraphicPSO& getPso(const bool skinned, const bool masked, const AtlasFormat format, const int32_t depthBias, const float slopeBias, const bool depthClip, const bool flipCull)
         {
-            const PsoKey key{skinned, masked, format, depthBias, slopeBias, depthClip};
+            const PsoKey key{skinned, masked, format, depthBias, slopeBias, depthClip, flipCull};
             if (auto found = psos.find(key); found != psos.end())
             {
                 return *found->second;
@@ -460,23 +434,27 @@ void ShadowMaskedPS(MaskedVertex input)
                 {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
             };
             static const D3D12_INPUT_ELEMENT_DESC skinnedLayout[] = {
-                {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-                {"BLENDWEIGHT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-                {"BLENDINDICES", 0, DXGI_FORMAT_R32G32B32A32_UINT, 2, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+                {    "POSITION", 0,    DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+                { "BLENDWEIGHT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+                {"BLENDINDICES", 0,  DXGI_FORMAT_R32G32B32A32_UINT, 2, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
             };
 
             D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
             desc.pRootSignature = signature->GetNativeSignature().Get();
             static const D3D12_INPUT_ELEMENT_DESC maskedLayout[] = {
                 {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-                {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+                {"TEXCOORD", 0,    DXGI_FORMAT_R32G32_FLOAT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
             };
             desc.InputLayout = masked    ? D3D12_INPUT_LAYOUT_DESC{maskedLayout, _countof(maskedLayout)}
                                : skinned ? D3D12_INPUT_LAYOUT_DESC{skinnedLayout, _countof(skinnedLayout)}
                                          : D3D12_INPUT_LAYOUT_DESC{staticLayout, _countof(staticLayout)};
             desc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-            // Masked materials are two-sided, as the "masked" pipeline of the z-prepass material.
-            desc.RasterizerState.CullMode = masked ? D3D12_CULL_MODE_NONE : skinned ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_FRONT;
+            desc.RasterizerState.CullMode = masked ? D3D12_CULL_MODE_NONE : skinned ? D3D12_CULL_MODE_BACK
+                                                                                    : D3D12_CULL_MODE_FRONT;
+            if (flipCull && !masked)
+            {
+                desc.RasterizerState.CullMode = skinned ? D3D12_CULL_MODE_FRONT : D3D12_CULL_MODE_BACK;
+            }
             desc.RasterizerState.FrontCounterClockwise = TRUE;
             desc.RasterizerState.DepthBias = depthBias;
             desc.RasterizerState.DepthBiasClamp = 0.0f;
@@ -488,13 +466,14 @@ void ShadowMaskedPS(MaskedVertex input)
             desc.SampleMask = UINT_MAX;
             desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
             desc.NumRenderTargets = 0;
-            desc.DSVFormat = DepthFormat(format);
+            desc.DSVFormat = depthFormat(format);
             desc.SampleDesc.Count = 1;
             desc.SampleDesc.Quality = 0;
 
             auto pso = std::make_shared<gfx::GraphicPSO>(*signature);
             pso->SetPsoDesc(desc);
-            pso->SetShader(masked ? maskedVS.get() : skinned ? skinnedVS.get() : staticVS.get());
+            pso->SetShader(masked ? maskedVS.get() : skinned ? skinnedVS.get()
+                                                             : staticVS.get());
             if (masked)
             {
                 pso->SetShader(maskedPS.get());
@@ -503,11 +482,10 @@ void ShadowMaskedPS(MaskedVertex input)
             return *psos.emplace(key, std::move(pso)).first->second;
         }
 
-        // A buffer of geometry the draws of the second GPU read (vertex or index data): see geometryInVideoMemory.
-        std::shared_ptr<gfx::GResource> CreateGeometryBuffer(const void* data, const size_t size, const std::wstring& name)
+        std::shared_ptr<gfx::GResource> createGeometryBuffer(const void* data, const size_t size, const std::wstring& name)
         {
-            std::shared_ptr<gfx::GResource> upload = CreateUploadBuffer(secondaryDevice, size, geometryInVideoMemory ? name + L" Upload" : name);
-            Upload(*upload, data, size);
+            std::shared_ptr<gfx::GResource> upload = createUploadBuffer(secondaryDevice, size, geometryInVideoMemory ? name + L" Upload" : name);
+            writeUploadBuffer(*upload, data, size);
             if (!geometryInVideoMemory)
             {
                 return upload;
@@ -517,10 +495,8 @@ void ShadowMaskedPS(MaskedVertex input)
                                                            name, nullptr, D3D12_RESOURCE_STATE_COPY_DEST);
             if (!uploadList)
             {
-                uploadList = GraphicsQueue2()->GetCommandList();
+                uploadList = graphicsQueue2()->GetCommandList();
             }
-            // Directly on the D3D12 list: the wrapper resolves the barriers of a list ahead of the whole list, the transition
-            // would come before the copy.
             auto* const raw = uploadList->GetGraphicsCommandList().Get();
             raw->CopyBufferRegion(buffer->GetD3D12Resource().Get(), 0, upload->GetD3D12Resource().Get(), 0, size);
             const auto toGeometry = CD3DX12_RESOURCE_BARRIER::Transition(buffer->GetD3D12Resource().Get(), D3D12_RESOURCE_STATE_COPY_DEST,
@@ -528,34 +504,34 @@ void ShadowMaskedPS(MaskedVertex input)
                                                                              D3D12_RESOURCE_STATE_INDEX_BUFFER);
             raw->ResourceBarrier(1, &toGeometry);
             uploadBuffers.push_back(upload);
-            uploadBuffers.push_back(buffer); // also the target: a mesh that fails half way drops its buffers
+            uploadBuffers.push_back(buffer);
             return buffer;
         }
 
-        // The copies recorded since the last call go to the queue of the second GPU, ahead of what comes next on it.
-        void FlushUploads()
+        void flushUploads()
         {
             if (!uploadList)
             {
                 return;
             }
             UploadBatch& batch = uploadsInFlight.emplace_back();
-            batch.fenceValue = GraphicsQueue2()->ExecuteCommandList(uploadList);
+            batch.fenceValue = graphicsQueue2()->ExecuteCommandList(uploadList);
             batch.buffers = std::move(uploadBuffers);
             uploadBuffers.clear();
             uploadList.reset();
         }
 
-        void ReleaseFinishedUploads()
+        void releaseFinishedUploads()
         {
-            const auto& queue = GraphicsQueue2();
+            const auto& queue = graphicsQueue2();
             uploadsInFlight.erase(std::remove_if(uploadsInFlight.begin(), uploadsInFlight.end(), [&queue](const UploadBatch& batch)
             {
                 return queue->IsFinish(batch.fenceValue);
-            }), uploadsInFlight.end());
+            }),
+                                  uploadsInFlight.end());
         }
 
-        bool RegisterMesh(const uint64_t key, const MeshDesc& desc)
+        bool registerMesh(const uint64_t key, const MeshDesc& desc)
         {
             if (!ready || desc.positions == nullptr || desc.indices == nullptr || desc.vertexCount == 0 ||
                 desc.indexCount == 0)
@@ -570,19 +546,19 @@ void ShadowMaskedPS(MaskedVertex input)
                 mesh.skinned = desc.boneWeights != nullptr && desc.boneIndices != nullptr;
 
                 const size_t positionsSize = static_cast<size_t>(desc.vertexCount) * 3 * sizeof(float);
-                mesh.positions = CreateGeometryBuffer(desc.positions, positionsSize, name + L" Positions");
+                mesh.positions = createGeometryBuffer(desc.positions, positionsSize, name + L" Positions");
                 mesh.vertexViews[0] = {mesh.positions->GetD3D12Resource()->GetGPUVirtualAddress(),
                                        static_cast<UINT>(positionsSize), 3 * sizeof(float)};
 
                 if (mesh.skinned)
                 {
                     const size_t weightsSize = static_cast<size_t>(desc.vertexCount) * 4 * sizeof(float);
-                    mesh.boneWeights = CreateGeometryBuffer(desc.boneWeights, weightsSize, name + L" Bone Weights");
+                    mesh.boneWeights = createGeometryBuffer(desc.boneWeights, weightsSize, name + L" Bone Weights");
                     mesh.vertexViews[1] = {mesh.boneWeights->GetD3D12Resource()->GetGPUVirtualAddress(),
                                            static_cast<UINT>(weightsSize), 4 * sizeof(float)};
 
                     const size_t indicesSize = static_cast<size_t>(desc.vertexCount) * 4 * sizeof(uint32_t);
-                    mesh.boneIndices = CreateGeometryBuffer(desc.boneIndices, indicesSize, name + L" Bone Indices");
+                    mesh.boneIndices = createGeometryBuffer(desc.boneIndices, indicesSize, name + L" Bone Indices");
                     mesh.vertexViews[2] = {mesh.boneIndices->GetD3D12Resource()->GetGPUVirtualAddress(),
                                            static_cast<UINT>(indicesSize), 4 * sizeof(uint32_t)};
                 }
@@ -591,22 +567,20 @@ void ShadowMaskedPS(MaskedVertex input)
                 if (desc.texCoords != nullptr)
                 {
                     const size_t texCoordsSize = static_cast<size_t>(desc.vertexCount) * 2 * sizeof(float);
-                    mesh.texCoords = CreateGeometryBuffer(desc.texCoords, texCoordsSize, name + L" Texture Coordinates");
+                    mesh.texCoords = createGeometryBuffer(desc.texCoords, texCoordsSize, name + L" Texture Coordinates");
                     mesh.maskedViews[1] = {mesh.texCoords->GetD3D12Resource()->GetGPUVirtualAddress(),
                                            static_cast<UINT>(texCoordsSize), 2 * sizeof(float)};
                 }
 
                 const size_t indexSize = desc.indices32 ? sizeof(uint32_t) : sizeof(uint16_t);
                 const size_t indicesSize = static_cast<size_t>(desc.indexCount) * indexSize;
-                mesh.indices = CreateGeometryBuffer(desc.indices, indicesSize, name + L" Indices");
+                mesh.indices = createGeometryBuffer(desc.indices, indicesSize, name + L" Indices");
                 mesh.indexView = {mesh.indices->GetD3D12Resource()->GetGPUVirtualAddress(), static_cast<UINT>(indicesSize),
                                   desc.indices32 ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT};
 
-                // A key can be re-registered (Nau reloaded the mesh): the old buffers may still be read by work in
-                // flight, so wait for the second GPU first.
                 if (meshes.count(key) != 0)
                 {
-                    GraphicsQueue2()->Flush();
+                    graphicsQueue2()->Flush();
                 }
                 meshes[key] = std::move(mesh);
                 stats.meshCount = static_cast<uint32_t>(meshes.size());
@@ -623,9 +597,9 @@ void ShadowMaskedPS(MaskedVertex input)
             return false;
         }
 
-        bool RegisterMask(const uint64_t key, const MaskDesc& desc)
+        bool registerMask(const uint64_t key, const MaskDesc& desc)
         {
-            if (!ready || desc.mips == nullptr || desc.mipCount == 0 || maskCount >= kMaxMasks)
+            if (!ready || desc.mips == nullptr || desc.mipCount == 0 || maskCount >= MAX_MASKS)
             {
                 return false;
             }
@@ -645,7 +619,7 @@ void ShadowMaskedPS(MaskedVertex input)
                 UINT64 uploadSize = 0;
                 device->GetCopyableFootprints(&textureDesc, 0, desc.mipCount, 0, footprints.data(), nullptr, nullptr, &uploadSize);
 
-                const auto upload = CreateUploadBuffer(secondaryDevice, static_cast<size_t>(uploadSize), L"MgpuShadows Mask Upload");
+                const auto upload = createUploadBuffer(secondaryDevice, static_cast<size_t>(uploadSize), L"MgpuShadows Mask Upload");
                 uint8_t* mapped = nullptr;
                 const D3D12_RANGE noRead = {0, 0};
                 ThrowIfFailed(upload->GetD3D12Resource()->Map(0, &noRead, reinterpret_cast<void**>(&mapped)));
@@ -661,7 +635,7 @@ void ShadowMaskedPS(MaskedVertex input)
                 }
                 upload->GetD3D12Resource()->Unmap(0, nullptr);
 
-                auto queue = GraphicsQueue2();
+                auto queue = graphicsQueue2();
                 auto cmdList = queue->GetCommandList();
                 auto* raw = cmdList->GetGraphicsCommandList().Get();
                 for (uint32_t mip = 0; mip < desc.mipCount; ++mip)
@@ -699,12 +673,12 @@ void ShadowMaskedPS(MaskedVertex input)
             return false;
         }
 
-        void ForgetMeshes()
+        void forgetMeshes()
         {
             if (ready)
             {
-                FlushUploads();
-                GraphicsQueue2()->Flush();
+                flushUploads();
+                graphicsQueue2()->Flush();
                 uploadsInFlight.clear();
             }
             meshes.clear();
@@ -713,9 +687,7 @@ void ShadowMaskedPS(MaskedVertex input)
             stats.meshCount = 0;
         }
 
-        // The depth atlas of the second GPU; recreated when Nau changes the atlas size or format (rare: waits for the
-        // second GPU, because the previous atlas may still be in use). Returns true when it was (re)created.
-        bool EnsureAtlas(const uint32_t width, const uint32_t height, const AtlasFormat format)
+        bool ensureAtlas(const uint32_t width, const uint32_t height, const AtlasFormat format)
         {
             if (atlas && atlasWidth == width && atlasHeight == height && atlasFormat == format)
             {
@@ -724,13 +696,13 @@ void ShadowMaskedPS(MaskedVertex input)
 
             if (atlas)
             {
-                GraphicsQueue2()->Flush();
+                graphicsQueue2()->Flush();
             }
 
-            const D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Tex2D(TypelessFormat(format), width, height, 1, 1, 1, 0,
+            const D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Tex2D(typelessFormat(format), width, height, 1, 1, 1, 0,
                                                                           D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
             D3D12_CLEAR_VALUE clear = {};
-            clear.Format = DepthFormat(format);
+            clear.Format = depthFormat(format);
             clear.DepthStencil.Depth = 1.0f;
             atlas = std::make_shared<gfx::GTexture>(secondaryDevice, desc, L"MgpuShadows Atlas", gfx::TextureUsage::Depth,
                                                     &clear);
@@ -740,7 +712,7 @@ void ShadowMaskedPS(MaskedVertex input)
                 atlasDsv = secondaryDevice->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
             }
             D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
-            dsvDesc.Format = DepthFormat(format);
+            dsvDesc.Format = depthFormat(format);
             dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
             atlas->CreateDepthStencilView(&dsvDesc, &atlasDsv);
 
@@ -750,22 +722,17 @@ void ShadowMaskedPS(MaskedVertex input)
             return true;
         }
 
-        void EnsureSlot(Slot& slot, const FrameDesc& frame)
+        void ensureSlot(Slot& slot, const FrameDesc& frame)
         {
             if (!slot.shared || slot.width != frame.atlasWidth || slot.height != frame.atlasHeight ||
                 slot.format != frame.format)
             {
-                // Same description as the atlas; GCrossAdapterResource replaces the flags with ALLOW_CROSS_ADAPTER and
-                // the layout with ROW_MAJOR (as for the shadow map of HybridShadowApp).
-                D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Tex2D(TypelessFormat(frame.format), frame.atlasWidth,
+                D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Tex2D(typelessFormat(frame.format), frame.atlasWidth,
                                                                         frame.atlasHeight, 1, 1);
                 const auto index = static_cast<size_t>(&slot - slots.data());
                 slot.shared = std::make_shared<GCrossAdapterResource>(desc, primaryDevice, secondaryDevice,
                                                                       L"MgpuShadows Shared " + std::to_wstring(index));
-                // Nau copies from local memory: reading the shared heap (system memory, over PCIe or Thunderbolt for an
-                // external GPU) is left to the copy queue, so it does not take time from Nau's graphics queue.
-                // A new description: GCrossAdapterResource has changed `desc`.
-                const D3D12_RESOURCE_DESC localDesc = CD3DX12_RESOURCE_DESC::Tex2D(TypelessFormat(frame.format), frame.atlasWidth,
+                const D3D12_RESOURCE_DESC localDesc = CD3DX12_RESOURCE_DESC::Tex2D(typelessFormat(frame.format), frame.atlasWidth,
                                                                                    frame.atlasHeight, 1, 1);
                 slot.local = std::make_shared<gfx::GResource>(primaryDevice, localDesc, L"MgpuShadows Local " + std::to_wstring(index));
                 slot.width = frame.atlasWidth;
@@ -777,15 +744,15 @@ void ShadowMaskedPS(MaskedVertex input)
             if (!slot.matrices || slot.matricesCapacity < matricesSize)
             {
                 slot.matricesCapacity = std::max<size_t>(matricesSize * 2, 64 * 16 * sizeof(float));
-                slot.matrices = CreateUploadBuffer(secondaryDevice, slot.matricesCapacity, L"MgpuShadows Matrices");
+                slot.matrices = createUploadBuffer(secondaryDevice, slot.matricesCapacity, L"MgpuShadows Matrices");
             }
             if (matricesSize != 0)
             {
-                Upload(*slot.matrices, frame.matrices, matricesSize);
+                writeUploadBuffer(*slot.matrices, frame.matrices, matricesSize);
             }
         }
 
-        Slot* FreeSlot()
+        Slot* freeSlot()
         {
             for (Slot& slot : slots)
             {
@@ -797,39 +764,35 @@ void ShadowMaskedPS(MaskedVertex input)
             return nullptr;
         }
 
-        bool CanSubmit()
+        bool canSubmit()
         {
             if (!ready)
             {
                 return false;
             }
-            CollectFinished();
+            collectFinished();
             const bool rendering = std::any_of(slots.begin(), slots.end(), [](const Slot& item)
             {
                 return item.state == SlotState::Rendering;
             });
-            return !rendering && FreeSlot() != nullptr;
+            return !rendering && freeSlot() != nullptr;
         }
 
-        bool Submit(const FrameDesc& frame)
+        bool submit(const FrameDesc& frame)
         {
             if (!ready || frame.atlasWidth == 0 || frame.atlasHeight == 0)
             {
                 return false;
             }
 
-            // The geometry registered since the last atlas: its copies run first on the same queue.
-            FlushUploads();
+            flushUploads();
 
-            // Like HybridShadowApp, the second GPU starts a new atlas only when it has finished the previous one: a deeper
-            // queue would only add latency, and the second GPU may also have to present (an integrated GPU driving the
-            // display of a laptop with an external GPU).
-            CollectFinished();
+            collectFinished();
             const bool rendering = std::any_of(slots.begin(), slots.end(), [](const Slot& item)
             {
                 return item.state == SlotState::Rendering;
             });
-            Slot* slot = rendering ? nullptr : FreeSlot();
+            Slot* slot = rendering ? nullptr : freeSlot();
             if (slot == nullptr)
             {
                 ++stats.skippedBusy;
@@ -838,18 +801,18 @@ void ShadowMaskedPS(MaskedVertex input)
 
             try
             {
-                const bool newAtlas = EnsureAtlas(frame.atlasWidth, frame.atlasHeight, frame.format);
-                EnsureSlot(*slot, frame);
+                const bool newAtlas = ensureAtlas(frame.atlasWidth, frame.atlasHeight, frame.format);
+                ensureSlot(*slot, frame);
                 bool keepAny = false;
                 for (uint32_t c = 0; c < frame.cascadeCount && !newAtlas; ++c)
                 {
                     keepAny = keepAny || frame.cascades[c].keep;
                 }
 
-                auto queue = GraphicsQueue2();
+                auto queue = graphicsQueue2();
                 auto cmdList = queue->GetCommandList();
                 auto* raw = cmdList->GetGraphicsCommandList().Get();
-                const UINT firstStamp = SlotIndex(*slot) * kDrawStamps;
+                const UINT firstStamp = slotIndex(*slot) * DRAW_STAMPS;
                 if (drawQueries)
                 {
                     raw->EndQuery(drawQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp);
@@ -864,7 +827,6 @@ void ShadowMaskedPS(MaskedVertex input)
                 }
                 else
                 {
-                    // Only the cascades drawn anew; the kept ones stay as the previous atlas left them.
                     clearRects.clear();
                     for (uint32_t c = 0; c < frame.cascadeCount; ++c)
                     {
@@ -884,14 +846,12 @@ void ShadowMaskedPS(MaskedVertex input)
                 }
 
                 cmdList->SetRootSignature(*signature);
-                raw->SetGraphicsRootShaderResourceView(kMatricesParameter,
+                raw->SetGraphicsRootShaderResourceView(MATRICES_PARAMETER,
                                                        slot->matrices->GetD3D12Resource()->GetGPUVirtualAddress());
                 ID3D12DescriptorHeap* const descriptorHeaps[] = {maskHeap.Get()};
                 raw->SetDescriptorHeaps(1, descriptorHeaps);
                 cmdList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-                // Draws sorted by cascade, then by pipeline, mask and mesh: the pipeline, the mask and the vertex buffers
-                // change only where they differ. The order inside a cascade does not change the depth (LESS_EQUAL).
                 drawOrder.resize(frame.drawCount);
                 for (uint32_t d = 0; d < frame.drawCount; ++d)
                 {
@@ -911,7 +871,7 @@ void ShadowMaskedPS(MaskedVertex input)
                 const gfx::GraphicPSO* currentPso = nullptr;
                 const Mask* currentMask = nullptr;
                 const Mesh* currentMesh = nullptr;
-                int currentStreams = -1; // 0: positions, 1: skinned, 2: positions and texture coordinates
+                int currentStreams = -1;
                 for (const uint32_t d : drawOrder)
                 {
                     const DrawDesc& draw = frame.draws[d];
@@ -934,8 +894,8 @@ void ShadowMaskedPS(MaskedVertex input)
                                                     static_cast<LONG>(cascade->viewport[1] + cascade->viewport[3])};
                         cmdList->SetViewports(&viewport, 1);
                         cmdList->SetScissorRects(&scissor, 1);
-                        raw->SetGraphicsRoot32BitConstants(kConstantsParameter, kViewProjConstants, cascade->viewProj, 0);
-                        currentPso = nullptr; // the depth bias of a cascade is a part of the pipeline
+                        raw->SetGraphicsRoot32BitConstants(CONSTANTS_PARAMETER, VIEW_PROJ_CONSTANTS, cascade->viewProj, 0);
+                        currentPso = nullptr;
                     }
 
                     const auto found = meshes.find(draw.mesh);
@@ -953,8 +913,8 @@ void ShadowMaskedPS(MaskedVertex input)
                     const auto foundMask = draw.mask != 0 && !skinned && mesh.texCoords ? masks.find(draw.mask) : masks.end();
                     const bool masked = foundMask != masks.end();
 
-                    const gfx::GraphicPSO& pso = GetPso(skinned, masked, frame.format, cascade->depthBias, cascade->slopeScaledDepthBias,
-                                                        cascade->depthClip);
+                    const gfx::GraphicPSO& pso = getPso(skinned, masked, frame.format, cascade->depthBias, cascade->slopeScaledDepthBias,
+                                                        cascade->depthClip, cascade->flipCull);
                     if (&pso != currentPso)
                     {
                         cmdList->SetPipelineState(pso);
@@ -962,13 +922,14 @@ void ShadowMaskedPS(MaskedVertex input)
                     }
                     if (masked && &foundMask->second != currentMask)
                     {
-                        raw->SetGraphicsRootDescriptorTable(kMaskParameter, foundMask->second.descriptor);
+                        raw->SetGraphicsRootDescriptorTable(MASK_PARAMETER, foundMask->second.descriptor);
                         currentMask = &foundMask->second;
                     }
-                    const uint32_t drawConstants[kDrawConstants] = {draw.firstMatrix, draw.boneCount};
-                    raw->SetGraphicsRoot32BitConstants(kConstantsParameter, kDrawConstants, drawConstants, kViewProjConstants);
+                    const uint32_t drawConstants[DRAW_CONSTANTS] = {draw.firstMatrix, draw.boneCount};
+                    raw->SetGraphicsRoot32BitConstants(CONSTANTS_PARAMETER, DRAW_CONSTANTS, drawConstants, VIEW_PROJ_CONSTANTS);
 
-                    const int streams = masked ? 2 : skinned ? 1 : 0;
+                    const int streams = masked ? 2 : skinned ? 1
+                                                             : 0;
                     if (&mesh != currentMesh || streams != currentStreams)
                     {
                         if (masked)
@@ -992,7 +953,6 @@ void ShadowMaskedPS(MaskedVertex input)
                     raw->EndQuery(drawQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp + 1);
                 }
 
-                // Depth atlas -> shared heap, then both back to COMMON (PopulateCopyResource of HybridShadowApp).
                 cmdList->CopyResource(slot->shared->GetSharedResource(), *atlas);
                 cmdList->TransitionBarrier(slot->shared->GetSharedResource(), D3D12_RESOURCE_STATE_COMMON);
                 cmdList->TransitionBarrier(*atlas, D3D12_RESOURCE_STATE_COMMON);
@@ -1000,7 +960,7 @@ void ShadowMaskedPS(MaskedVertex input)
                 if (drawQueries)
                 {
                     raw->EndQuery(drawQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp + 2);
-                    raw->ResolveQueryData(drawQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp, kDrawStamps, drawReadback.Get(),
+                    raw->ResolveQueryData(drawQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp, DRAW_STAMPS, drawReadback.Get(),
                                           firstStamp * sizeof(UINT64));
                 }
 
@@ -1027,15 +987,14 @@ void ShadowMaskedPS(MaskedVertex input)
             return false;
         }
 
-        // HybridShadowApp: the first GPU copies the newest atlas of the second GPU when its copy queue is free.
-        void StartTransfer(Slot& slot)
+        void startTransfer(Slot& slot)
         {
             try
             {
-                auto queue = CopyQueue1();
+                auto queue = copyQueue1();
                 auto cmdList = queue->GetCommandList();
                 auto* raw = cmdList->GetGraphicsCommandList().Get();
-                const UINT firstStamp = SlotIndex(slot) * kTransferStamps;
+                const UINT firstStamp = slotIndex(slot) * TRANSFER_STAMPS;
                 if (transferQueries)
                 {
                     raw->EndQuery(transferQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp);
@@ -1048,7 +1007,7 @@ void ShadowMaskedPS(MaskedVertex input)
                 if (transferQueries)
                 {
                     raw->EndQuery(transferQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp + 1);
-                    raw->ResolveQueryData(transferQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp, kTransferStamps,
+                    raw->ResolveQueryData(transferQueries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, firstStamp, TRANSFER_STAMPS,
                                           transferReadback.Get(), firstStamp * sizeof(UINT64));
                 }
                 slot.transferFenceValue = queue->ExecuteCommandList(cmdList);
@@ -1063,18 +1022,18 @@ void ShadowMaskedPS(MaskedVertex input)
             }
         }
 
-        void CollectFinished()
+        void collectFinished()
         {
-            ReleaseFinishedUploads();
-            auto graphics2 = GraphicsQueue2();
-            auto copy1 = CopyQueue1();
+            releaseFinishedUploads();
+            auto graphics2 = graphicsQueue2();
+            auto copy1 = copyQueue1();
             bool transferring = false;
             for (Slot& slot : slots)
             {
                 if (slot.state == SlotState::Rendering && graphics2->IsFinish(slot.fenceValue))
                 {
                     slot.state = SlotState::Drawn;
-                    ReadDrawTimings(slot);
+                    readDrawTimings(slot);
                 }
                 else if (slot.state == SlotState::Transferring)
                 {
@@ -1086,7 +1045,7 @@ void ShadowMaskedPS(MaskedVertex input)
                         stats.lastLatencyMs = slot.latencyMs;
                         stats.lastTransferMs = std::chrono::duration<float, std::milli>(now - slot.drawn).count();
                         ++stats.completed;
-                        ReadTransferTimings(slot);
+                        readTransferTimings(slot);
                     }
                     else
                     {
@@ -1100,7 +1059,6 @@ void ShadowMaskedPS(MaskedVertex input)
                 return;
             }
 
-            // Only the newest drawn atlas is worth the transfer; older ones are superseded.
             Slot* newest = nullptr;
             for (Slot& slot : slots)
             {
@@ -1120,17 +1078,17 @@ void ShadowMaskedPS(MaskedVertex input)
                     slot.state = SlotState::Free;
                 }
             }
-            StartTransfer(*newest);
+            startTransfer(*newest);
         }
 
-        bool TakeReady(ReadyAtlas& out)
+        bool takeReady(ReadyAtlas& out)
         {
             if (!ready)
             {
                 return false;
             }
 
-            CollectFinished();
+            collectFinished();
 
             Slot* newest = nullptr;
             for (Slot& slot : slots)
@@ -1145,7 +1103,6 @@ void ShadowMaskedPS(MaskedVertex input)
                 return false;
             }
 
-            // Older finished atlases are superseded by the newest one.
             for (Slot& slot : slots)
             {
                 if (slot.state == SlotState::Ready && &slot != newest)
@@ -1165,15 +1122,15 @@ void ShadowMaskedPS(MaskedVertex input)
             return true;
         }
 
-        void ReleaseSlot(const uint32_t index)
+        void releaseSlot(const uint32_t index)
         {
-            if (index < kSlotCount && slots[index].state == SlotState::Handed)
+            if (index < SLOT_COUNT && slots[index].state == SlotState::Handed)
             {
                 slots[index].state = SlotState::Free;
             }
         }
 
-        bool WaitAndReadBack(std::vector<float>& depths, uint32_t& width, uint32_t& height)
+        bool waitAndReadBack(std::vector<float>& depths, uint32_t& width, uint32_t& height)
         {
             if (!ready)
             {
@@ -1182,11 +1139,13 @@ void ShadowMaskedPS(MaskedVertex input)
 
             try
             {
-                // Waits until the newest atlas has been drawn and moved into local memory of the first GPU.
                 for (;;)
                 {
-                    CollectFinished();
-                    if (std::any_of(slots.begin(), slots.end(), [](const Slot& item) { return item.state == SlotState::Ready; }))
+                    collectFinished();
+                    if (std::any_of(slots.begin(), slots.end(), [](const Slot& item)
+                    {
+                        return item.state == SlotState::Ready;
+                    }))
                     {
                         break;
                     }
@@ -1201,23 +1160,22 @@ void ShadowMaskedPS(MaskedVertex input)
                     }
                     if (busy->state == SlotState::Rendering)
                     {
-                        GraphicsQueue2()->WaitForFenceValue(busy->fenceValue);
+                        graphicsQueue2()->WaitForFenceValue(busy->fenceValue);
                     }
                     else
                     {
-                        CopyQueue1()->WaitForFenceValue(busy->transferFenceValue);
+                        copyQueue1()->WaitForFenceValue(busy->transferFenceValue);
                     }
                 }
 
                 ReadyAtlas readyAtlas;
-                if (!TakeReady(readyAtlas))
+                if (!takeReady(readyAtlas))
                 {
                     error = "no atlas was submitted";
                     return false;
                 }
                 const Slot& slot = slots[readyAtlas.slot];
 
-                // First GPU: the local copy Nau would get -> read-back buffer.
                 const gfx::GResource& local = *slot.local;
                 const D3D12_RESOURCE_DESC localDesc = local.GetD3D12Resource()->GetDesc();
                 D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
@@ -1245,7 +1203,7 @@ void ShadowMaskedPS(MaskedVertex input)
                 const D3D12_RANGE readRange = {0, static_cast<SIZE_T>(size)};
                 ThrowIfFailed(readback.GetD3D12Resource()->Map(0, &readRange,
                                                                reinterpret_cast<void**>(const_cast<uint8_t**>(&mapped))));
-                const uint32_t texel = BytesPerTexel(slot.format);
+                const uint32_t texel = bytesPerTexel(slot.format);
                 for (uint32_t y = 0; y < height; ++y)
                 {
                     const uint8_t* row = mapped + footprint.Offset + static_cast<size_t>(y) * footprint.Footprint.RowPitch;
@@ -1268,7 +1226,7 @@ void ShadowMaskedPS(MaskedVertex input)
                 const D3D12_RANGE noWrite = {0, 0};
                 readback.GetD3D12Resource()->Unmap(0, &noWrite);
 
-                ReleaseSlot(readyAtlas.slot);
+                releaseSlot(readyAtlas.slot);
                 return true;
             }
             catch (const std::exception& e)
@@ -1282,11 +1240,10 @@ void ShadowMaskedPS(MaskedVertex input)
             return false;
         }
 
-        void Release()
+        void release()
         {
             ready = false;
 
-            // Waits for all work in flight on both GPUs.
             if (primaryDevice)
             {
                 primaryDevice->Flush();
@@ -1300,7 +1257,7 @@ void ShadowMaskedPS(MaskedVertex input)
             {
                 slot = Slot();
             }
-            ReleaseTimings();
+            releaseTimings();
             uploadList.reset();
             uploadBuffers.clear();
             uploadsInFlight.clear();
@@ -1324,7 +1281,8 @@ void ShadowMaskedPS(MaskedVertex input)
         }
     };
 
-    CascadeRenderer::CascadeRenderer() : m_impl(std::make_unique<Impl>())
+    CascadeRenderer::CascadeRenderer() :
+        m_impl(std::make_unique<Impl>())
     {
     }
 
@@ -1339,7 +1297,7 @@ void ShadowMaskedPS(MaskedVertex input)
         {
             return true;
         }
-        return m_impl->Initialize(nauAdapterName);
+        return m_impl->initialize(nauAdapterName);
     }
 
     bool CascadeRenderer::isReady() const
@@ -1351,7 +1309,7 @@ void ShadowMaskedPS(MaskedVertex input)
     {
         if (m_impl)
         {
-            m_impl->Release();
+            m_impl->release();
         }
     }
 
@@ -1362,42 +1320,42 @@ void ShadowMaskedPS(MaskedVertex input)
 
     bool CascadeRenderer::registerMesh(const uint64_t key, const MeshDesc& mesh)
     {
-        return m_impl->RegisterMesh(key, mesh);
+        return m_impl->registerMesh(key, mesh);
     }
 
     bool CascadeRenderer::registerMask(const uint64_t key, const MaskDesc& mask)
     {
-        return m_impl->RegisterMask(key, mask);
+        return m_impl->registerMask(key, mask);
     }
 
     void CascadeRenderer::forgetMeshes()
     {
-        m_impl->ForgetMeshes();
+        m_impl->forgetMeshes();
     }
 
     bool CascadeRenderer::submit(const FrameDesc& frame)
     {
-        return m_impl->Submit(frame);
+        return m_impl->submit(frame);
     }
 
     bool CascadeRenderer::canSubmit()
     {
-        return m_impl->CanSubmit();
+        return m_impl->canSubmit();
     }
 
     bool CascadeRenderer::takeReady(ReadyAtlas& out)
     {
-        return m_impl->TakeReady(out);
+        return m_impl->takeReady(out);
     }
 
     void CascadeRenderer::release(const uint32_t slot)
     {
-        m_impl->ReleaseSlot(slot);
+        m_impl->releaseSlot(slot);
     }
 
     bool CascadeRenderer::waitAndReadBack(std::vector<float>& depths, uint32_t& width, uint32_t& height)
     {
-        return m_impl->WaitAndReadBack(depths, width, height);
+        return m_impl->waitAndReadBack(depths, width, height);
     }
 
     const char* CascadeRenderer::lastError() const
@@ -1419,4 +1377,4 @@ void ShadowMaskedPS(MaskedVertex input)
     {
         return m_impl->stats;
     }
-}
+}  // namespace nau::mgpu::shadows

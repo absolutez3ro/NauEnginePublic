@@ -3,6 +3,8 @@
 
 
 #include "nau/samples/sample_app_delegate.h"
+
+#include <cstdlib>
 #include "./sample_components/asset_reloader.h"
 #include "./sample_components/light_control.h"
 #include "./sample_components/mgpu_toggle.h"
@@ -66,6 +68,11 @@ namespace nau::sample
         }
 
     private:
+        Result<> configureApplication() override
+        {
+            return SampleAppDelegate::configureApplication(std::getenv("NAU_SAMPLE_BENCHMARK") == nullptr);
+        }
+
         Result<> initializeServices() override
         {
             getServiceProvider().addService<TextureImportSettingsProvider>();

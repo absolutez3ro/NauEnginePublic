@@ -1,5 +1,3 @@
-// Multi-pass depth of field adapted from Mikhanil/Multi-GPU-Render-DX12.
-// Colors remain linear HDR throughout; the existing Nau post-process performs tonemapping.
 
 #define THREADS_X 8
 #define THREADS_Y 8
@@ -52,7 +50,6 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     LinearDepthOut.GetDimensions(width, height);
     if (id.x >= width || id.y >= height) return;
 
-    // Nau uses reverse-Z: 1 at the near plane, 0 at the far plane.
     const float ndc = NdcDepth[id.xy];
     const float linearZ = (nearZ * farZ) / max(nearZ + ndc * (farZ - nearZ), 1e-6f);
     LinearDepthOut[id.xy] = saturate(linearZ / farZ);
@@ -542,7 +539,6 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         accumulated += lerp(ColorIn[candidate], ColorFilled[candidate], occlusionWeight);
         ++count;
     }
-    // Keep the chain linear. The final pixel pass performs the single sRGB conversion.
     DofOut[id.xy] = count > 0 ? accumulated / float(count) : ColorIn[id.xy];
 }
 

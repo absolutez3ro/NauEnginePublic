@@ -1,7 +1,6 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
-
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -14,21 +13,14 @@
 namespace nau::render
 {
 #if defined(NAU_ENABLE_MGPU)
-    // Initial state of the Mgpu path of the render pipeline: the second GPU draws Nau's shadow cascades (see
-    // MgpuShadowsState). The value is applied once, when the first render graph is created;
-    // nau::mgpu::bridge::setEnabled() switches the path at run time (SceneBaseSample: key M).
-    // It only has an effect in a build with NAU_ENABLE_MGPU (preset win_vs2022_x64_mgpu) on a machine with two distinct
-    // GPUs, while the directional light casts shadows; with one GPU Nau draws the cascades itself.
     constexpr bool MGPU_SHADOWS_ENABLED = true;
 
     namespace
     {
         namespace shadows = nau::mgpu::shadows;
 
-        // Matrices go to the second GPU in the memory layout Nau's shaders read them in.
         static_assert(sizeof(math::Matrix4) == 16 * sizeof(float));
 
-        // drv3d_DX12 (render_state.h): D3D12 DepthBias = zBias / MINIMUM_REPRESENTABLE_D16, truncated to INT.
         constexpr double DX12_MINIMUM_REPRESENTABLE_D16 = 2e-5;
 
         void copyText(char* destination, const size_t capacity, const char* source)
@@ -43,29 +35,26 @@ namespace nau::render
             matrices.insert(matrices.end(), values, values + count * 16);
         }
 
-        bool toAtlasFormat(const uint32_t format, shadows::AtlasFormat& out)
+        bool toAtlasFormat(const uint32_t format, shadows::AtlasFormat& atlasFormat)
         {
             switch (format)
             {
                 case TEXFMT_DEPTH16:
-                    out = shadows::AtlasFormat::Depth16;
+                    atlasFormat = shadows::AtlasFormat::Depth16;
                     return true;
                 case TEXFMT_DEPTH32:
-                    out = shadows::AtlasFormat::Depth32;
+                    atlasFormat = shadows::AtlasFormat::Depth32;
                     return true;
                 default:
                     return false;
             }
         }
 
-        bool sameAtlas(const csm::CascadeShadows::AtlasInfo& a, const csm::CascadeShadows::AtlasInfo& b)
+        bool sameAtlas(const csm::CascadeShadows::AtlasInfo& lhs, const csm::CascadeShadows::AtlasInfo& rhs)
         {
-            return a.width == b.width && a.height == b.height && a.format == b.format;
+            return lhs.width == rhs.width && lhs.height == rhs.height && lhs.format == rhs.format;
         }
 
-        // Read-only lock of a Nau skinned mesh buffer. These buffers are SBCF_DYNAMIC and filled on the CPU once, so this
-        // reads their mapped memory without waiting for the GPU. Static meshes are in video memory, their geometry is kept
-        // on the CPU (StaticMeshLod).
         class BufferRead
         {
         public:
@@ -103,32 +92,25 @@ namespace nau::render
             Sbuffer* m_buffer;
             void* m_data = nullptr;
         };
-    }
+    }  // namespace
 #endif
 
 #if defined(NAU_ENABLE_MGPU)
     namespace
     {
-        // Stage 4 of the MGPU optimisation (bridge::Settings::nearCascades): the cascades Nau draws itself every frame, the
-        // second GPU draws the others. At least one cascade stays on the second GPU (renderMgpuShadows).
         int mgpuNearCascadesSetting()
         {
             return std::min(static_cast<int>(nau::mgpu::bridge::getSettings().nearCascades),
                             static_cast<int>(csm::CascadeShadows::MAX_CASCADES));
         }
 
-        // Stage 7 (bridge::Settings::maxAtlasesPerSecond).
         int mgpuMaxAtlasesSetting()
         {
             return static_cast<int>(nau::mgpu::bridge::getSettings().maxAtlasesPerSecond);
         }
-    } // namespace
+    }  // namespace
 #endif
 
-    // The Mgpu switch and settings from the "mgpu" section of the application properties, an environment variable
-    // overriding a value (for comparisons and debugging): mgpu/enabled (NAU_MGPU, default MGPU_SHADOWS_ENABLED),
-    // mgpu/auto (NAU_MGPU_AUTO), mgpu/nearCascades (NAU_MGPU_NEAR_CASCADES), mgpu/maxAtlasesPerSecond
-    // (NAU_MGPU_MAX_ATLASES). Applied once; nau::mgpu::bridge::setEnabled / setSettings change them at run time.
     void RenderWindowImpl::initializeMgpu()
     {
 #if defined(NAU_ENABLE_MGPU)
@@ -179,14 +161,12 @@ namespace nau::render
 
         for (size_t slot = 0; slot < releaseEvents.size(); ++slot)
         {
-            // The driver signals the event when the frame with the copy has finished; it must not be closed earlier.
             if (releasePending[slot])
             {
                 os_event_wait(&releaseEvents[slot], 1000);
             }
             os_event_destroy(&releaseEvents[slot]);
         }
-        // The renderer is destroyed after this and waits for the second GPU.
     }
 
     void RenderWindowImpl::publishMgpuStatus() const
@@ -230,6 +210,13 @@ namespace nau::render
         }
     }
 
+    void RenderWindowImpl::recordFrameTiming() const
+    {
+        const auto& shadows = m_mgpuShadows;
+        nau::mgpu::bridge::recordFrameTiming(shadows.hasAtlas, m_mgpuOmniShadows.hasAtlas,
+                                             shadows.hasAtlas ? static_cast<uint32_t>(shadows.frame - shadows.atlasFrame) : 0);
+    }
+
     void RenderWindowImpl::reportMgpuTimings()
     {
         using Views = nau::RenderScene::ViewsStats;
@@ -268,7 +255,6 @@ namespace nau::render
         out.gpuNauCascadesMs = average(timings.gpuNauCascades);
         out.gpuAtlasCopyMs = average(timings.gpuAtlasCopy);
 
-        // The renderer sums since its initialization; another initialization starts from zero.
         const shadows::RendererStats& stats = state.renderer.stats();
         if (stats.drawGpuSamples < timings.drawGpuSamples || stats.transferGpuSamples < timings.transferGpuSamples)
         {
@@ -297,14 +283,15 @@ namespace nau::render
         {
             return value < 0 ? std::string("n/a") : ::fmt::format("{:.2f} ms", value);
         };
-        NAU_LOG_INFO("mgpu timing: frame {:.2f} ms, render thread {:.2f} ms, scene GPU {}; lists: main {:.2f} ms ({} instances), "
-                     "cascades {:.2f} ms ({}: {}/{}/{}/{}/{}/{}), omni {:.2f} ms ({}); second GPU path on the CPU: collect {:.3f} ms, "
-                     "submit {:.3f} ms per frame; GPU: Nau cascades {}, atlas copy {}, second GPU draw {}, to shared heap {}, transfer {}",
-                     out.cpuFrameMs, out.cpuRenderMs, ms(out.gpuFrameMs), out.cpuListsMainMs, out.instancesMain, out.cpuListsCascadesMs,
-                     out.instancesCascades, out.instancesPerCascade[0], out.instancesPerCascade[1], out.instancesPerCascade[2],
-                     out.instancesPerCascade[3], out.instancesPerCascade[4], out.instancesPerCascade[5], out.cpuListsOmniMs,
-                     out.instancesOmni, out.cpuCollectMs, out.cpuSubmitMs, ms(out.gpuNauCascadesMs), ms(out.gpuAtlasCopyMs),
-                     ms(out.gpu2DrawMs), ms(out.gpu2SharedCopyMs), ms(out.gpuTransferMs));
+        NAU_LOG_INFO(
+            "mgpu timing: frame {:.2f} ms, render thread {:.2f} ms, scene GPU {}; lists: main {:.2f} ms ({} instances), "
+            "cascades {:.2f} ms ({}: {}/{}/{}/{}/{}/{}), omni {:.2f} ms ({}); second GPU path on the CPU: collect {:.3f} ms, "
+            "submit {:.3f} ms per frame; GPU: Nau cascades {}, atlas copy {}, second GPU draw {}, to shared heap {}, transfer {}",
+            out.cpuFrameMs, out.cpuRenderMs, ms(out.gpuFrameMs), out.cpuListsMainMs, out.instancesMain, out.cpuListsCascadesMs,
+            out.instancesCascades, out.instancesPerCascade[0], out.instancesPerCascade[1], out.instancesPerCascade[2],
+            out.instancesPerCascade[3], out.instancesPerCascade[4], out.instancesPerCascade[5], out.cpuListsOmniMs,
+            out.instancesOmni, out.cpuCollectMs, out.cpuSubmitMs, ms(out.gpuNauCascadesMs), ms(out.gpuAtlasCopyMs),
+            ms(out.gpu2DrawMs), ms(out.gpu2SharedCopyMs), ms(out.gpuTransferMs));
 
         {
             eastl::array<double, csm::CascadeShadows::MAX_CASCADES> triangles = {};
@@ -312,13 +299,14 @@ namespace nau::render
             {
                 triangles[cascade] = static_cast<double>(timings.cascadeTriangles[cascade]) / listFrames / 1000.0;
             }
-            NAU_LOG_INFO("mgpu timing: thousands of caster triangles per cascade: {:.0f}/{:.0f}/{:.0f}/{:.0f}/{:.0f}/{:.0f}; "
-                         "cascades drawn by Nau {:.2f} per frame, by the second GPU {:.2f} per atlas; {} frames sent no atlas "
-                         "(nothing to draw anew)",
-                         triangles[0], triangles[1], triangles[2], triangles[3], triangles[4], triangles[5],
-                         static_cast<double>(timings.nauCascadeDraws) / frames,
-                         timings.submits != 0 ? static_cast<double>(timings.secondGpuCascadeDraws) / timings.submits : 0.0,
-                         timings.unchangedFrames);
+            NAU_LOG_INFO(
+                "mgpu timing: thousands of caster triangles per cascade: {:.0f}/{:.0f}/{:.0f}/{:.0f}/{:.0f}/{:.0f}; "
+                "cascades drawn by Nau {:.2f} per frame, by the second GPU {:.2f} per atlas; {} frames sent no atlas "
+                "(nothing to draw anew)",
+                triangles[0], triangles[1], triangles[2], triangles[3], triangles[4], triangles[5],
+                static_cast<double>(timings.nauCascadeDraws) / frames,
+                timings.submits != 0 ? static_cast<double>(timings.secondGpuCascadeDraws) / timings.submits : 0.0,
+                timings.unchangedFrames);
         }
 
         if (state.skippedListFrames != 0 || state.listFallbacks != 0)
@@ -369,7 +357,6 @@ namespace nau::render
 
     void RenderWindowImpl::releaseMgpuShadows(MgpuShadowsState& state)
     {
-        // Waits for the second GPU. Nau's copies have executed already (releaseMgpuShadowSlots).
         state.renderer.shutdown();
         state.meshes.clear();
         state.pendingFrames.clear();
@@ -387,21 +374,18 @@ namespace nau::render
 
     uint64_t RenderWindowImpl::registerMgpuShadowMesh(MgpuShadowsState& state, const RenderEntity& entity)
     {
-        // state: the stream the mesh belongs to (every Mgpu renderer has its own meshes).
-
         const auto bufferKey = eastl::make_pair<const Sbuffer*, const Sbuffer*>(entity.positionBuffer, entity.indexBuffer);
         const int positionsSize = entity.positionBuffer->ressize();
         const int indicesSize = entity.indexBuffer->ressize();
 
-        if (const auto found = state.meshes.find(bufferKey); found != state.meshes.end() &&
-                                                             found->second.positionsSize == positionsSize &&
-                                                             found->second.indicesSize == indicesSize)
+        const auto found = state.meshes.find(bufferKey);
+        const bool known = found != state.meshes.end() && found->second.positionsSize == positionsSize &&
+                           found->second.indicesSize == indicesSize;
+        if (known && found->second.key != 0)
         {
-            return found->second.key; // 0: the mesh could not be registered, it is not retried
+            return found->second.key;
         }
 
-        // A new mesh, or a buffer address reused by another one: the old mesh stays on the second GPU until the Mgpu
-        // path is switched off (CascadeRenderer::shutdown).
         MgpuShadowsState::MeshRecord& record = state.meshes[bufferKey];
         record = {0, positionsSize, indicesSize};
 
@@ -424,7 +408,6 @@ namespace nau::render
         }
         if (skinned)
         {
-            // Nau's skinned vertices: float4 weights + uint4 joints.
             const size_t skinSize = static_cast<size_t>(mesh.vertexCount) * 4 * sizeof(float);
             if (static_cast<size_t>(boneWeights.size()) >= skinSize && static_cast<size_t>(boneIndices.size()) >= skinSize)
             {
@@ -439,15 +422,21 @@ namespace nau::render
 
         if (mesh.positions == nullptr || mesh.indices == nullptr || (skinned && (mesh.boneWeights == nullptr || mesh.boneIndices == nullptr)))
         {
-            NAU_LOG_ERROR("mgpu shadows: could not read a shadow caster mesh ({} vertices, {} indices), Nau draws without it",
-                          mesh.vertexCount, mesh.indexCount);
+            if (!known)
+            {
+                NAU_LOG_ERROR("mgpu shadows: could not read a shadow caster mesh ({} vertices, {} indices), will retry",
+                              mesh.vertexCount, mesh.indexCount);
+            }
             return 0;
         }
 
         const uint64_t key = state.nextMeshKey++;
         if (!state.renderer.registerMesh(key, mesh))
         {
-            NAU_LOG_ERROR("mgpu shadows: could not register a shadow caster mesh on the second GPU: {}", state.renderer.lastError());
+            if (!known)
+            {
+                NAU_LOG_ERROR("mgpu shadows: could not register a shadow caster mesh on the second GPU, will retry: {}", state.renderer.lastError());
+            }
             return 0;
         }
 
@@ -469,7 +458,8 @@ namespace nau::render
         }
 
         const void* const texture = view.get();
-        if (const auto found = state.masks.find(texture); found != state.masks.end())
+        const auto found = state.masks.find(texture);
+        if (found != state.masks.end() && found->second != 0)
         {
             return found->second;
         }
@@ -491,7 +481,10 @@ namespace nau::render
         const uint64_t key = state.nextMaskKey++;
         if (!state.renderer.registerMask(key, mask))
         {
-            NAU_LOG_ERROR("mgpu shadows: could not register a shadow mask on the second GPU, the caster is drawn without it: {}", state.renderer.lastError());
+            if (found == state.masks.end())
+            {
+                NAU_LOG_ERROR("mgpu shadows: could not register a shadow mask on the second GPU, will retry: {}", state.renderer.lastError());
+            }
             state.masks[texture] = 0;
             return 0;
         }
@@ -500,9 +493,6 @@ namespace nau::render
         return key;
     }
 
-    // The same cascades and casters Nau draws in renderShadowsCascades (renderCascadeShadowDepth -> RenderView::renderZPrepass
-    // of the csmView_<cascade> view), as a frame description for the second GPU. The cascades before firstCascade are
-    // described but get no casters: Nau draws them (stage 4).
     void RenderWindowImpl::collectMgpuShadowCasters(const int firstCascade, const int numCascades)
     {
         auto& state = m_mgpuShadows;
@@ -546,10 +536,8 @@ namespace nau::render
         }
     }
 
-    // The shadow casters of one view (a cascade or a face of a point light shadow map) as draws of the frame description.
     void RenderWindowImpl::appendMgpuViewCasters(MgpuShadowsState& state, nau::RenderView& view, const uint32_t cascade)
     {
-        // Another scene: a buffer or a texture of the old meshes can be replaced by a new one at the same address.
         if (const uint64_t generation = nau::mgpu::bridge::getMeshGeneration(); generation != state.meshGeneration)
         {
             state.renderer.forgetMeshes();
@@ -583,8 +571,6 @@ namespace nau::render
                     draw.firstMatrix = static_cast<uint32_t>(state.matrices.size() / 16);
                     draw.mask = registerMgpuShadowMask(state, entity);
 
-                    // RenderView::renderZPrepass: instanced entities use the "default" pipeline, the others are skinned
-                    // when they have bone buffers.
                     const bool instanced = entity.instancingSupported && entity.instancesCount != 1;
                     const bool skinned = !instanced && entity.boneWeightsBuffer != nullptr && entity.boneIndicesBuffer != nullptr;
                     if (skinned)
@@ -596,7 +582,6 @@ namespace nau::render
                             continue;
                         }
 
-                        // Bones are already in world space; one copy per skinned instance, shared by its cascades.
                         draw.boneCount = std::min<uint32_t>(static_cast<uint32_t>(bones->second.size / sizeof(math::Matrix4)),
                                                             NAU_MAX_SKINNING_BONES_COUNT);
                         const auto known = std::find_if(state.bones.begin(), state.bones.end(), [&](const auto& item)
@@ -615,8 +600,6 @@ namespace nau::render
                     }
                     else
                     {
-                        // The z-prepass shader reads instanceBuffer[startInstance + instance].worldMatrix; a non-instanced
-                        // draw is instance 0.
                         const uint32_t requested = instanced ? entity.instancesCount : 1;
                         draw.instanceCount = std::min<uint32_t>(requested, static_cast<uint32_t>(entity.instanceData.size()));
                         if (draw.instanceCount == 0)
@@ -637,7 +620,6 @@ namespace nau::render
 
     bool RenderWindowImpl::checkMgpuStall(MgpuShadowsState& state, const char* what)
     {
-        // pendingFrames is in the order of submission; takeReady drops the frames up to the atlas it hands out.
         const bool late = !state.pendingFrames.empty() &&
                           std::chrono::steady_clock::now() - state.pendingFrames.front().submitted >
                               std::chrono::duration<float>(MGPU_STALL_SECONDS) &&
@@ -648,9 +630,11 @@ namespace nau::render
             state.stalled = stalled;
             if (stalled)
             {
-                NAU_LOG_WARNING("{}: the second GPU has stopped delivering atlases ({}), Nau draws the shadows itself until it "
-                                "does again: {}", what, late ? "an atlas is late by over a second" : "its submits fail",
-                                state.renderer.lastError());
+                NAU_LOG_WARNING(
+                    "{}: the second GPU has stopped delivering atlases ({}), Nau draws the shadows itself until it "
+                    "does again: {}",
+                    what, late ? "an atlas is late by over a second" : "its submits fail",
+                    state.renderer.lastError());
             }
             else
             {
@@ -688,7 +672,6 @@ namespace nau::render
         {
             return;
         }
-        // A steady rate: the next time follows the previous one, unless that one is more than a period ago.
         const auto now = std::chrono::steady_clock::now();
         const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / rate));
         state.nextSubmit = state.nextSubmit + period > now ? state.nextSubmit + period : now + period / 2;
@@ -696,9 +679,9 @@ namespace nau::render
 
     void RenderWindowImpl::updateMgpuAutoSwitch()
     {
-        constexpr float FIRST_PROBE_SECONDS = 10.0f; // after a start or another scene
+        constexpr float FIRST_PROBE_SECONDS = 10.0f;
         constexpr float PROBE_SECONDS = 30.0f;
-        constexpr float MAX_PROBE_SECONDS = 240.0f; // the interval doubles after every try that kept the choice
+        constexpr float MAX_PROBE_SECONDS = 240.0f;
         constexpr float FASTER = 1.05f;
 
         auto& state = m_mgpuShadows;
@@ -719,7 +702,6 @@ namespace nau::render
             return;
         }
 
-        // Another scene, or the first period of the mode: the next try comes soon.
         const uint64_t generation = nau::mgpu::bridge::getMeshGeneration();
         if (a.nextProbe == std::chrono::steady_clock::time_point{} || generation != a.meshGeneration)
         {
@@ -746,7 +728,6 @@ namespace nau::render
             return;
         }
 
-        // The first period after a switch settles: the second GPU sends its first atlas, the lists fill up.
         if (++a.probePeriods < 2)
         {
             return;
@@ -777,12 +758,12 @@ namespace nau::render
         shadows::ReadyAtlas ready;
         if (state.renderer.takeReady(ready))
         {
-            state.renderer.release(ready.slot); // takeReady has dropped the older ones
+            state.renderer.release(ready.slot);
         }
         state.pendingFrames.clear();
         state.hasAtlas = false;
         state.nearCascades = 0;
-        state.fullRedraw = true; // Nau's cascades go on meanwhile, the persistent atlas of the second GPU gets old
+        state.fullRedraw = true;
         return false;
     }
 
@@ -808,11 +789,6 @@ namespace nau::render
             return;
         }
 
-        // The far cascades: drawn by the second GPU with the matrices of an older frame, which are relative to the camera of
-        // that frame, while the resolve measures from the camera of this one (worldViewPos - worldPos). Moved to this camera
-        // the way CascadeShadows moves a kept cascade: the shadows stay where they were drawn instead of following the camera
-        // by the distance it went during the latency. In the shader t = p.x*col0 + p.y*col1 + p.z*col2 + col3, with p from
-        // the camera; from the old camera p is d farther, d = the new camera - the old one.
         auto& tm = state.resolveSnapshot.constants.shadowCascadeTmTransp;
         for (int cascade = state.nearCascades; cascade < state.atlasSnapshot.numCascades; ++cascade)
         {
@@ -829,7 +805,6 @@ namespace nau::render
             col3.b += dx * col0.b + dy * col1.b + dz * col2.b;
         }
 
-        // The near cascades Nau has drawn this frame: the constants of this frame.
         if (state.nearCascades <= 0)
         {
             return;
@@ -851,14 +826,12 @@ namespace nau::render
         auto& state = m_mgpuShadows;
         ++state.frame;
 
-        // On the render thread, between the commands of a frame.
         if (const bool vsync = nau::mgpu::bridge::isVsyncEnabled(); vsync != state.vsyncApplied)
         {
             d3d::enable_vsync(vsync);
             state.vsyncApplied = vsync;
         }
 
-        // Render frame rate for the UI, in every mode.
         const auto frameTime = std::chrono::steady_clock::now();
         if (state.renderFrames++ == 0)
         {
@@ -879,11 +852,10 @@ namespace nau::render
                          state.vsyncApplied ? "on" : "off");
         }
 
-        state.nearCascades = 0; // set below once the cascades of this frame are known
+        state.nearCascades = 0;
         if (!nau::mgpu::bridge::isEnabled())
         {
             state.hasAtlas = false;
-            // Shut down once Nau's copies from the shared heaps have executed; until then nothing new is started.
             if (state.initAttempted && releaseMgpuShadowSlots(state))
             {
                 releaseMgpuShadows(state);
@@ -908,7 +880,6 @@ namespace nau::render
             }
 
             state.fullRedraw = true;
-            // The primary Mgpu device is the one on the adapter Nau renders on: the shared heaps are copied from there.
             if (state.renderer.initialize(d3d::get_device_name()))
             {
                 NAU_LOG_INFO("mgpu shadows: the shadow cascades are drawn by '{}', the scene by '{}'",
@@ -923,7 +894,7 @@ namespace nau::render
 
         if (!state.renderer.isReady())
         {
-            state.hasAtlas = false; // the resolve must not take the constants of an old atlas for Nau's cascades
+            state.hasAtlas = false;
             return false;
         }
         if (state.autoSwitch.suspended)
@@ -940,22 +911,19 @@ namespace nau::render
         shadows::AtlasFormat format = shadows::AtlasFormat::Depth16;
         if (numCascades <= 0 || !toAtlasFormat(atlas.format, format))
         {
-            // No shadows this frame: Nau clears its atlas.
             state.hasAtlas = false;
             return false;
         }
         if (state.hasAtlas && (!sameAtlas(state.atlasSnapshot.atlas, atlas) || state.atlasSnapshot.numCascades != numCascades))
         {
-            state.hasAtlas = false; // Nau's atlas was recreated (another size or format), or the cascades are laid out anew
+            state.hasAtlas = false;
         }
         state.nearCascades = std::min(mgpuNearCascadesSetting(), numCascades - 1);
         if (sparseShadowFrames() > 0)
         {
-            // The near cascades are never kept (FAR_SHADOW_CASCADE): Nau draws them over the atlas every frame.
             state.nearCascades = std::min(state.nearCascades, FAR_SHADOW_CASCADE);
         }
 
-        // Stage 5: what the persistent atlas of the second GPU has to draw anew.
         if (!sameAtlas(state.redrawAtlas, atlas) || state.redrawNumCascades != numCascades ||
             nau::mgpu::bridge::getMeshGeneration() != state.meshGeneration ||
             state.renderer.stats().failed != state.reportedFailures)
@@ -969,7 +937,6 @@ namespace nau::render
             state.redrawPending[cascade] = state.redrawPending[cascade] || m_csm->shouldUpdateCascade(cascade);
         }
 
-        // 1. The newest atlas the second GPU has finished goes into Nau's atlas, with the constants it was drawn with.
         shadows::ReadyAtlas ready;
         if (state.renderer.takeReady(ready))
         {
@@ -988,7 +955,6 @@ namespace nau::render
                 state.timings.gpuAtlasCopy.end();
                 if (copied)
                 {
-                    // Same state Nau leaves its atlas in after drawing it (CascadeShadows::renderShadowsCascadesCb).
                     d3d::resource_barrier({target, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
                     d3d::driver_command(DRV3D_COMMAND_REGISTER_FRAME_COMPLETION_EVENT, &state.releaseEvents[ready.slot], nullptr, nullptr);
                     state.releasePending[ready.slot] = true;
@@ -1008,22 +974,18 @@ namespace nau::render
 
             if (!copied)
             {
-                // Drawn for an atlas Nau has recreated since, or refused by the driver: the slot is free right away.
                 state.renderer.release(ready.slot);
             }
 
-            // takeReady has dropped the older finished atlases.
             state.pendingFrames.erase(std::remove_if(state.pendingFrames.begin(), state.pendingFrames.end(), [&](const auto& item)
             {
                 return item.token <= ready.userToken;
-            }), state.pendingFrames.end());
+            }),
+                                      state.pendingFrames.end());
         }
 
         checkMgpuStall(state, "mgpu shadows");
 
-        // 2. The cascades of this frame go to the second GPU if it has a free slot; it never waits.
-        // Without this frame's cascade lists (skipped while the second GPU was busy or the rate reached) nothing is
-        // submitted: the casters would be missing from the atlas.
         updateMgpuResolveSnapshot();
         if (state.cascadeListsSkipped || !mgpuSubmitDue(state))
         {
@@ -1035,8 +997,6 @@ namespace nau::render
         {
             return cascade >= state.nearCascades && (state.fullRedraw || state.redrawPending[cascade]);
         };
-        // Nothing to draw anew (every far cascade is kept): no atlas is sent, Nau's atlas or the one on its way holds the
-        // far cascades already. In a light scene the transfer over the bus is the dearest part of an atlas.
         bool anyRedraw = false;
         for (int cascade = 0; cascade < numCascades; ++cascade)
         {
@@ -1052,7 +1012,6 @@ namespace nau::render
         uint32_t redrawn = 0;
         for (int cascade = 0; cascade < numCascades; ++cascade)
         {
-            // A near cascade is cleared (Nau draws it over the atlas), a far one drawn anew unless the atlas keeps it.
             state.cascades[cascade].keep = cascade >= state.nearCascades && !redraw(cascade);
             redrawn += redraw(cascade) ? 1 : 0;
         }
@@ -1092,7 +1051,6 @@ namespace nau::render
             ++state.timings.submits;
         }
 
-        // 3. Log and UI.
         const auto now = std::chrono::steady_clock::now();
         state.cpuSecondsSinceReport += std::chrono::duration<double>(now - workStart).count();
 
@@ -1117,13 +1075,14 @@ namespace nau::render
             publishMgpuStatus();
             state.publishedHasAtlas = state.hasAtlas;
 
-            NAU_LOG_INFO("mgpu shadows: {:.1f} atlases/s from '{}', {} draws ({} casters skipped), latency {:.1f} ms "
-                         "(transfer {:.1f} ms), atlas age {} frames, {} completed, {} skipped (busy), {} failed; scene {:.1f} fps, "
-                         "{:.3f} ms CPU per frame",
-                         state.atlasesPerSecond, state.renderer.secondaryAdapterName(), stats.lastDrawCount, state.skippedCasters,
-                         stats.lastLatencyMs, stats.lastTransferMs,
-                         state.hasAtlas ? state.frame - state.atlasFrame : 0, stats.completed, stats.skippedBusy,
-                         stats.failed + state.copyFailures, framesPerSecond, cpuMsPerFrame);
+            NAU_LOG_INFO(
+                "mgpu shadows: {:.1f} atlases/s from '{}', {} draws ({} casters skipped), latency {:.1f} ms "
+                "(transfer {:.1f} ms), atlas age {} frames, {} completed, {} skipped (busy), {} failed; scene {:.1f} fps, "
+                "{:.3f} ms CPU per frame",
+                state.atlasesPerSecond, state.renderer.secondaryAdapterName(), stats.lastDrawCount, state.skippedCasters,
+                stats.lastLatencyMs, stats.lastTransferMs,
+                state.hasAtlas ? state.frame - state.atlasFrame : 0, stats.completed, stats.skippedBusy,
+                stats.failed + state.copyFailures, framesPerSecond, cpuMsPerFrame);
         }
         else if (state.publishedHasAtlas != state.hasAtlas)
         {

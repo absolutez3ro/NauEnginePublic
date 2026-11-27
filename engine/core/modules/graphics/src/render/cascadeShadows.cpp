@@ -378,7 +378,6 @@ namespace nau::csm
     }
 
 
-    // keep_atlas: the atlas is not cleared as a whole, every drawn cascade clears its own rectangle (renderNearShadowCascades).
     void CascadeShadowsPrivate::renderShadowsCascadesCb(csm_render_cascades_cb_t render_cascades_cb, bool keep_atlas)
     {
         //SCOPE_RENDER_TARGET;
@@ -572,9 +571,6 @@ namespace nau::csm
                     Vector3 frustumPoints[8];
                     shadowFrustum.generateAllPointFrustm(frustumPoints);
 
-                    // A corner of the part of the view this cascade covers outside of the kept cascade: behind one of its
-                    // planes, which face inwards (NauFrustum::testSphere). The port of the Dagor test ORed the distances of
-                    // distFromPlane, which returns their absolute values: almost every frame looked like an escape.
                     for (int pt = 0; pt < 8 && !shouldUpdate; ++pt)
                     {
                         const Vector4 point(frustumPoints[pt], 1.0f);
@@ -967,8 +963,6 @@ namespace nau::csm
 
     CascadeShadows::ShaderSnapshot CascadeShadowsPrivate::snapshotShaderConstants()
     {
-        // calcTMs() writes only what setCascadesToShader() recomputes before every upload anyway,
-        // the transposed matrices go to the snapshot and csmConstData.transposed stays as is.
         calcTMs();
 
         CascadeShadows::ShaderSnapshot snapshot;

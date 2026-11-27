@@ -1,14 +1,17 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
-
 #include "./scene_switcher.h"
+#include "./light_control.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iomanip>
 #include <iterator>
+#include <locale>
 #include <string>
 #include <utility>
 
@@ -28,20 +31,14 @@ namespace nau::sample
     {
         constexpr const char* JUNGLE_RUINS_FILE = "/content/scenes/jungle_ruins/jungle_ruins.gltf";
 
-        // The camera of the source scene, in the coordinates of the converter (the pyramid is in the origin).
         const math::vec3 JUNGLE_CAMERA_TRANSLATION(29.0f, 2.5f, 43.1f);
         constexpr float JUNGLE_CAMERA_SPEED = 25.0f;
         constexpr float DEFAULT_CAMERA_SPEED = 10.0f;
 
-        // Phases of the benchmark: the second GPU, the scene GPU, and again, so that a drift of the numbers is visible.
-        constexpr int BENCHMARK_PHASES = 4;
-        constexpr float BENCHMARK_SETTLE_SECONDS = 8.0f; // after a switch: the second GPU loads the meshes, the rate is averaged
+        constexpr float BENCHMARK_SETTLE_SECONDS = 8.0f;
         constexpr float BENCHMARK_MEASURE_SECONDS = 16.0f;
         constexpr float BENCHMARK_AUTOSTART_SECONDS = 6.0f;
 
-        // NAU_SAMPLE_BENCHMARK_MOTION=1: the camera sways sideways and turns during the benchmark, so the cascades and the
-        // shadows move as in play (a still camera hides how late the shadows of the second GPU are, and lets the shadow
-        // cascades stay unchanged). Walking speed: up to 2*pi*amplitude/period = 3 m/s, 12 degrees of turn.
         constexpr float MOTION_AMPLITUDE_METERS = 4.0f;
         constexpr float MOTION_PERIOD_SECONDS = 8.0f;
         constexpr float MOTION_YAW_DEGREES = 12.0f;
@@ -65,9 +62,9 @@ namespace nau::sample
             "collect", "submit",
             "GPU frame", "GPU Nau cascades", "GPU atlas copy",
             "second GPU draw", "second GPU to shared heap", "transfer"};
-        static_assert(std::size(TIMING_NAMES) == SceneSwitcher::TIMING_VALUES);
+        static_assert(std::size(TIMING_NAMES) == SceneSwitcher::TimingValueCount);
 
-        eastl::array<float, SceneSwitcher::TIMING_VALUES> timingValues(const nau::mgpu::bridge::Status::Timings& t)
+        eastl::array<float, SceneSwitcher::TimingValueCount> timingValues(const nau::mgpu::bridge::Status::Timings& t)
         {
             return {t.cpuFrameMs, t.cpuRenderMs, t.cpuListsMainMs, t.cpuListsCascadesMs, t.cpuListsOmniMs,
                     static_cast<float>(t.instancesMain), static_cast<float>(t.instancesCascades), static_cast<float>(t.instancesOmni),
@@ -145,25 +142,55 @@ namespace nau::sample
             }
             else
             {
-                // Looking at the pyramid: the camera looks along -Z of its rotation.
                 const float yaw = std::atan2(static_cast<float>(JUNGLE_CAMERA_TRANSLATION.getX()), static_cast<float>(JUNGLE_CAMERA_TRANSLATION.getZ()));
                 camera->setPose(JUNGLE_CAMERA_TRANSLATION, math::quat::rotationY(yaw));
             }
         }
     }
 
+    bool SceneSwitcher::isBenchmarkRunning() const
+    {
+        return m_benchmarkPhase >= 0;
+    }
+
+    double SceneSwitcher::BenchmarkMode::averageFrameTimeMs() const
+    {
+        return frameCount > 0 ? frameTimeMs / static_cast<double>(frameCount) : 0.0;
+    }
+
+    double SceneSwitcher::BenchmarkMode::averageFramesPerSecond() const
+    {
+        return frameTimeMs > 0.0 ? 1000.0 * static_cast<double>(frameCount) / frameTimeMs : 0.0;
+    }
+
     void SceneSwitcher::startBenchmark()
     {
+        if (!nau::mgpu::bridge::getStatus().linked)
+        {
+            m_benchmarkDone = true;
+            NAU_LOG_ERROR("benchmark: SceneBaseSample needs a build with NAU_ENABLE_MGPU");
+            if (m_benchmarkExit)
+            {
+                getApplication().stop();
+            }
+            return;
+        }
+
         m_savedMgpu = nau::mgpu::bridge::isEnabled();
         m_savedMgpuAuto = nau::mgpu::bridge::isAutoEnabled();
+        m_savedVsync = nau::mgpu::bridge::isVsyncEnabled();
         nau::mgpu::bridge::setAutoEnabled(false);
-        m_benchmarkModes[0] = {};
-        m_benchmarkModes[1] = {};
-        m_benchmarkDone = false;
-        m_benchmarkPhase = 0;
-        m_benchmarkPhaseStart = m_benchmarkLastUpdate = std::chrono::steady_clock::now();
         nau::mgpu::bridge::setVsyncEnabled(false);
-        nau::mgpu::bridge::setEnabled(true);
+        m_benchmarkModes = {};
+        m_frameTimingCaptures = {};
+        m_dualGpuStatus = {};
+        m_benchmarkDone = false;
+        m_benchmarkValid = false;
+        m_benchmarkPhase = 0;
+        if (const auto* lightControl = getParentObject().findFirstComponent<LightControl>())
+        {
+            m_benchmarkLightYaw = lightControl->getYawDegrees();
+        }
 
         m_benchmarkMotion = false;
         if (benchmarkMotionRequested())
@@ -173,10 +200,20 @@ namespace nau::sample
                 m_benchmarkMotion = true;
                 m_motionTranslation = camera->getPoseTranslation();
                 m_motionRotation = camera->getPoseRotation();
-                m_motionStart = m_benchmarkPhaseStart;
             }
         }
         NAU_LOG_INFO("benchmark: started{}", m_benchmarkMotion ? ", the camera in motion" : "");
+        startBenchmarkPhase(std::chrono::steady_clock::now());
+    }
+
+    void SceneSwitcher::startBenchmarkPhase(const std::chrono::steady_clock::time_point now)
+    {
+        m_benchmarkPhaseStart = m_benchmarkLastUpdate = now;
+        if (auto* lightControl = getParentObject().findFirstComponent<LightControl>())
+        {
+            lightControl->setYawDegrees(m_benchmarkExit ? 0.0f : m_benchmarkLightYaw);
+        }
+        nau::mgpu::bridge::setEnabled(BenchmarkModeIndices[m_benchmarkPhase] == 1);
     }
 
     void SceneSwitcher::updateBenchmarkMotion()
@@ -187,7 +224,7 @@ namespace nau::sample
             return;
         }
         constexpr float TWO_PI = 6.28318531f;
-        const float time = std::chrono::duration<float>(std::chrono::steady_clock::now() - m_motionStart).count();
+        const float time = std::chrono::duration<float>(std::chrono::steady_clock::now() - m_benchmarkPhaseStart).count();
         const float sideways = MOTION_AMPLITUDE_METERS * std::sin(TWO_PI * time / MOTION_PERIOD_SECONDS);
         const float yaw = MOTION_YAW_DEGREES * (TWO_PI / 360.0f) * std::sin(TWO_PI * time / MOTION_YAW_PERIOD_SECONDS);
         camera->setPose(m_motionTranslation + math::vec3(sideways, 0.0f, 0.0f), math::quat::rotationY(yaw) * m_motionRotation);
@@ -200,24 +237,31 @@ namespace nau::sample
         const double frameTime = std::chrono::duration<double>(now - m_benchmarkLastUpdate).count();
         m_benchmarkLastUpdate = now;
 
-        const bool mgpu = (m_benchmarkPhase % 2) == 0;
-        if (phaseTime > BENCHMARK_SETTLE_SECONDS)
+        if (phaseTime < BENCHMARK_SETTLE_SECONDS)
         {
-            const nau::mgpu::bridge::Status status = nau::mgpu::bridge::getStatus();
-            BenchmarkMode& mode = m_benchmarkModes[mgpu ? 1 : 0];
-            mode.time += frameTime;
-            mode.framesPerSecond += status.sceneFramesPerSecond * frameTime;
-            mode.atlasesPerSecond += status.atlasesPerSecond * frameTime;
-            mode.latencyMs += status.latencyMs * frameTime;
+            return;
+        }
+        if (!m_capturingFrameTimings)
+        {
+            nau::mgpu::bridge::startFrameTimingCapture();
+            m_capturingFrameTimings = true;
+            return;
+        }
 
-            const auto values = timingValues(status.timings);
-            for (size_t i = 0; i < values.size(); ++i)
+        const int modeIndex = BenchmarkModeIndices[m_benchmarkPhase];
+        BenchmarkMode& mode = m_benchmarkModes[modeIndex];
+        const auto status = nau::mgpu::bridge::getStatus();
+        mode.durationSeconds += frameTime;
+        mode.atlasesPerSecond += status.atlasesPerSecond * frameTime;
+        mode.latencyMs += status.latencyMs * frameTime;
+
+        const auto values = timingValues(status.timings);
+        for (size_t index = 0; index < values.size(); ++index)
+        {
+            if (values[index] >= 0.0f)
             {
-                if (values[i] >= 0.0f)
-                {
-                    mode.timings[i] += values[i] * frameTime;
-                    mode.timingWeights[i] += frameTime;
-                }
+                mode.timings[index] += values[index] * frameTime;
+                mode.timingWeights[index] += frameTime;
             }
         }
 
@@ -226,19 +270,40 @@ namespace nau::sample
             return;
         }
 
-        ++m_benchmarkPhase;
-        m_benchmarkPhaseStart = now;
-        if (m_benchmarkPhase < BENCHMARK_PHASES)
+        auto& capture = m_frameTimingCaptures[m_benchmarkPhase];
+        capture = nau::mgpu::bridge::stopFrameTimingCapture();
+        m_capturingFrameTimings = false;
+        if (modeIndex == 1)
         {
-            nau::mgpu::bridge::setEnabled((m_benchmarkPhase % 2) == 0);
-            return;
+            m_dualGpuStatus = status;
+        }
+        mode.frameCount += capture.frames.size();
+        for (const auto& frame : capture.frames)
+        {
+            mode.frameTimeMs += frame.frameTimeMs;
         }
 
+        if (++m_benchmarkPhase < BenchmarkPhaseCount)
+        {
+            startBenchmarkPhase(std::chrono::steady_clock::now());
+            return;
+        }
+        finishBenchmark();
+    }
+
+    void SceneSwitcher::finishBenchmark()
+    {
         m_benchmarkPhase = -1;
         m_benchmarkDone = true;
+        const auto& status = m_dualGpuStatus;
+        const bool csvWritten = writeBenchmarkCsv();
         nau::mgpu::bridge::setEnabled(m_savedMgpu);
         nau::mgpu::bridge::setAutoEnabled(m_savedMgpuAuto);
-        nau::mgpu::bridge::setVsyncEnabled(true);
+        nau::mgpu::bridge::setVsyncEnabled(m_savedVsync);
+        if (auto* lightControl = getParentObject().findFirstComponent<LightControl>())
+        {
+            lightControl->setYawDegrees(m_benchmarkLightYaw);
+        }
         if (m_benchmarkMotion)
         {
             m_benchmarkMotion = false;
@@ -248,20 +313,46 @@ namespace nau::sample
             }
         }
 
-        const BenchmarkMode& nauMode = m_benchmarkModes[0];
-        const BenchmarkMode& gpu2Mode = m_benchmarkModes[1];
-        const float nauFps = nauMode.framesPerSecondAverage();
-        const float gpu2Fps = gpu2Mode.framesPerSecondAverage();
-        NAU_LOG_INFO("benchmark: cascades on the scene GPU: {:.1f} fps, {:.2f} ms", nauFps, 1000.0f / std::max(nauFps, 0.001f));
-        NAU_LOG_INFO("benchmark: cascades on the second GPU: {:.1f} fps, {:.2f} ms, {:.1f} atlases/s, atlas latency {:.1f} ms, gain {:+.1f}%", gpu2Fps,
-                     1000.0f / std::max(gpu2Fps, 0.001f), gpu2Mode.time > 0 ? gpu2Mode.atlasesPerSecond / gpu2Mode.time : 0.0,
-                     gpu2Mode.time > 0 ? gpu2Mode.latencyMs / gpu2Mode.time : 0.0, (gpu2Fps / std::max(nauFps, 0.001f) - 1.0f) * 100.0f);
+        const BenchmarkMode& singleGpuMode = m_benchmarkModes[0];
+        const BenchmarkMode& dualGpuMode = m_benchmarkModes[1];
+        bool modesValid = status.ready;
+        for (size_t phase = 0; phase < m_frameTimingCaptures.size(); ++phase)
+        {
+            const auto& capture = m_frameTimingCaptures[phase];
+            const bool expectedSecondGpu = BenchmarkModeIndices[phase] == 1;
+            const bool atlasSourcesMatch = std::all_of(capture.frames.begin(), capture.frames.end(), [expectedSecondGpu](const auto& frame)
+            {
+                return frame.cascadesFromSecondGpu == expectedSecondGpu && (expectedSecondGpu || !frame.omniShadowsFromSecondGpu);
+            });
+            modesValid = modesValid && !capture.overflowed && !capture.frames.empty() && atlasSourcesMatch;
+        }
+        m_benchmarkValid = csvWritten && modesValid;
+        if (m_benchmarkValid)
+        {
+            const auto [width, height] = getServiceProvider().get<IWindowManager>().getActiveWindow().getClientSize();
+            NAU_LOG_INFO("benchmark: adapters {} / {}", status.primaryAdapter, status.secondaryAdapter);
+            NAU_LOG_INFO("benchmark: viewport {}x{}", width, height);
+            NAU_LOG_INFO("benchmark: 1 GPU {:.2f} ms ({:.1f} FPS), 2 GPUs {:.2f} ms ({:.1f} FPS)",
+                         singleGpuMode.averageFrameTimeMs(), singleGpuMode.averageFramesPerSecond(),
+                         dualGpuMode.averageFrameTimeMs(), dualGpuMode.averageFramesPerSecond());
+            if (dualGpuMode.durationSeconds > 0.0)
+            {
+                NAU_LOG_INFO("benchmark: {:.1f} atlases/s, atlas latency {:.1f} ms",
+                             dualGpuMode.atlasesPerSecond / dualGpuMode.durationSeconds, dualGpuMode.latencyMs / dualGpuMode.durationSeconds);
+            }
+        }
+        else if (!modesValid)
+        {
+            NAU_LOG_ERROR("benchmark: incomplete frame capture or unexpected shadow atlas source: {}", status.lastError);
+        }
 
-        // Where the time goes in each mode (ms, instances: per frame; GPU passes: per measured pass).
-        for (const auto& [mode, name] : {std::pair{&nauMode, "scene GPU"}, std::pair{&gpu2Mode, "second GPU"}})
+        for (const auto& [mode, name] : {
+                 std::pair{&singleGpuMode,  "scene GPU"},
+                 std::pair{  &dualGpuMode, "second GPU"}
+        })
         {
             std::string text;
-            for (size_t i = 0; i < TIMING_VALUES; ++i)
+            for (size_t i = 0; i < TimingValueCount; ++i)
             {
                 text += ::fmt::format("{}{} ", i == 0 ? "" : ", ", TIMING_NAMES[i]);
                 text += mode->timingWeights[i] > 0 ? ::fmt::format("{:.2f}", mode->timings[i] / mode->timingWeights[i]) : std::string("-");
@@ -273,6 +364,42 @@ namespace nau::sample
         {
             getApplication().stop();
         }
+    }
+
+    bool SceneSwitcher::writeBenchmarkCsv() const
+    {
+        const char* configuredPath = std::getenv("NAU_SAMPLE_BENCHMARK_CSV");
+        const auto now = std::chrono::system_clock::now().time_since_epoch();
+        const std::string outputPath = configuredPath && *configuredPath
+                                           ? configuredPath
+                                           : ::fmt::format("mgpu_benchmark_{}.csv", std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+
+        std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);
+        output.imbue(std::locale::classic());
+        output << std::fixed << std::setprecision(6);
+        output << "scene,phase,gpu_count,frame,elapsed_s,frame_time_ms,cascades_from_second_gpu,omni_shadows_from_second_gpu,cascade_atlas_age_frames,capture_overflow\n";
+        for (size_t phase = 0; phase < m_frameTimingCaptures.size(); ++phase)
+        {
+            const auto& capture = m_frameTimingCaptures[phase];
+            double elapsedMs = 0.0;
+            for (size_t frameIndex = 0; frameIndex < capture.frames.size(); ++frameIndex)
+            {
+                const auto& frame = capture.frames[frameIndex];
+                elapsedMs += frame.frameTimeMs;
+                output << (m_active == SceneSet::JungleRuins ? "jungle" : "default") << ',' << phase + 1 << ',' << BenchmarkModeIndices[phase] + 1 << ','
+                       << frameIndex + 1 << ',' << elapsedMs / 1000.0 << ',' << frame.frameTimeMs << ',' << frame.cascadesFromSecondGpu << ','
+                       << frame.omniShadowsFromSecondGpu << ',' << frame.cascadeAtlasAgeFrames << ',' << capture.overflowed << '\n';
+            }
+        }
+        output.close();
+        if (!output)
+        {
+            NAU_LOG_ERROR("benchmark: failed to write {}", outputPath);
+            return false;
+        }
+
+        NAU_LOG_INFO("benchmark: wrote {}", outputPath);
+        return true;
     }
 
     void SceneSwitcher::updateSwitchTest()
@@ -311,7 +438,6 @@ namespace nau::sample
 
     void SceneSwitcher::updateComponent([[maybe_unused]] float dt)
     {
-        updateSwitchTest();
         using namespace nau::input;
 
         static const bool converted = isJungleRuinsConverted();
@@ -319,10 +445,12 @@ namespace nau::sample
         static const bool autoBenchmark = autoBenchmarkValue != nullptr;
         static const SceneSet autoBenchmarkScene = autoBenchmark && std::strcmp(autoBenchmarkValue, "default") == 0 ? SceneSet::Default : SceneSet::JungleRuins;
 
-        // NAU_SAMPLE_SCENE=jungle: Jungle Ruins once the default scenes are up, without a benchmark (the auto mode of Mgpu
-        // works only outside of one).
+        if (!autoBenchmark && !isBenchmarkRunning())
+        {
+            updateSwitchTest();
+        }
         static const char* const startSceneValue = std::getenv("NAU_SAMPLE_SCENE");
-        if (!m_startSceneDone && startSceneValue != nullptr && std::strcmp(startSceneValue, "jungle") == 0 && converted &&
+        if (!autoBenchmark && !m_startSceneDone && startSceneValue != nullptr && std::strcmp(startSceneValue, "jungle") == 0 && converted &&
             m_active == SceneSet::Default && m_loading == SceneSet::None)
         {
             m_startSceneDone = true;
@@ -331,8 +459,15 @@ namespace nau::sample
 
         if (autoBenchmark && !m_benchmarkDone && m_benchmarkPhase < 0 && m_loading == SceneSet::None)
         {
-            if (m_active == SceneSet::Default && autoBenchmarkScene == SceneSet::JungleRuins && converted)
+            if (m_active == SceneSet::Default && autoBenchmarkScene == SceneSet::JungleRuins)
             {
+                if (!converted)
+                {
+                    m_benchmarkDone = true;
+                    NAU_LOG_ERROR("benchmark: Jungle Ruins is missing ({})", JUNGLE_RUINS_FILE);
+                    getApplication().stop();
+                    return;
+                }
                 switchTo(SceneSet::JungleRuins).detach();
             }
             else if (m_active == autoBenchmarkScene)
@@ -358,12 +493,12 @@ namespace nau::sample
             }
             updateBenchmark();
         }
-        else if (m_loading == SceneSet::None && isKeyboardButtonPressed(0, input::Key::B))
+        else if (!autoBenchmark && m_active != SceneSet::None && m_loading == SceneSet::None && isKeyboardButtonPressed(0, input::Key::B))
         {
             startBenchmark();
         }
 
-        if (m_loading == SceneSet::None && m_benchmarkPhase < 0)
+        if (!autoBenchmark && m_loading == SceneSet::None && !isBenchmarkRunning())
         {
             if (isKeyboardButtonPressed(0, input::Key::N1))
             {
@@ -393,15 +528,16 @@ namespace nau::sample
         }
         if (m_benchmarkPhase >= 0)
         {
-            ImGui::Text("Benchmark: phase %d of %d", m_benchmarkPhase + 1, BENCHMARK_PHASES);
+            ImGui::Text("Benchmark: phase %d of %d", m_benchmarkPhase + 1, BenchmarkPhaseCount);
+        }
+        else if (m_benchmarkValid)
+        {
+            ImGui::Text("1 GPU: %.2f ms (%.1f FPS)", m_benchmarkModes[0].averageFrameTimeMs(), m_benchmarkModes[0].averageFramesPerSecond());
+            ImGui::Text("2 GPUs: %.2f ms (%.1f FPS)", m_benchmarkModes[1].averageFrameTimeMs(), m_benchmarkModes[1].averageFramesPerSecond());
         }
         else if (m_benchmarkDone)
         {
-            const float nauFps = m_benchmarkModes[0].framesPerSecondAverage();
-            const float gpu2Fps = m_benchmarkModes[1].framesPerSecondAverage();
-            ImGui::Text("Cascades on the scene GPU:  %.1f FPS", nauFps);
-            ImGui::Text("Cascades on the second GPU: %.1f FPS", gpu2Fps);
-            ImGui::Text("Gain: %+.1f%%", (gpu2Fps / std::max(nauFps, 0.001f) - 1.0f) * 100.0f);
+            ImGui::TextUnformatted("Benchmark failed. See the log.");
         }
         else
         {

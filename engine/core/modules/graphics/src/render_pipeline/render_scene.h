@@ -48,7 +48,6 @@ namespace nau
 
         nau::Ptr<BillboardsManager> getBillboardsManager();
 
-        // Time and instances of the last updateViews by kind of view (the timing report of the render window).
         struct ViewsStats
         {
             enum Kind
@@ -60,8 +59,8 @@ namespace nau
             };
             double seconds[KindCount] = {};
             uint64_t instances[KindCount] = {};
-            uint64_t cascadeInstances[csm::CascadeShadows::MAX_CASCADES] = {}; // by the cascade of the view
-            uint64_t cascadeTriangles[csm::CascadeShadows::MAX_CASCADES] = {}; // the same, triangles of the casters
+            uint64_t cascadeInstances[csm::CascadeShadows::MAX_CASCADES] = {};
+            uint64_t cascadeTriangles[csm::CascadeShadows::MAX_CASCADES] = {};
         };
 
         const ViewsStats& getViewsStats() const
@@ -69,8 +68,6 @@ namespace nau
             return m_viewsStats;
         }
 
-        // viewerPosition: the main camera, for the levels of detail of every view (the shadows too). An inactive view only
-        // drops its lists.
         void updateViews(const nau::math::Matrix4& vp, const nau::math::Vector3& viewerPosition);
         void updateManagers();
         void renderScene(const nau::math::Matrix4& vp);
@@ -90,7 +87,6 @@ namespace nau
             static constexpr RenderTag shadowOmniTag = nau::strings::constHash("shadow_omni");
         };
 
-        // The lists of one view, its time and instances added to the stats of the last updateViews.
         void updateView(RenderView& view, const nau::math::Vector3& viewerPosition);
 
     private:

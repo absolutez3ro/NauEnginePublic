@@ -1,8 +1,5 @@
 #pragma once
 
-// Helpers shared by the Mgpu bridges (mgpu_bridge.cpp, mgpu_shadows.cpp). Internal to the Mgpu module: it includes
-// Mgpu headers, which must not leak into Nau code.
-
 #include <cstring>
 #include <memory>
 #include <stdexcept>
@@ -18,7 +15,7 @@ namespace nau::mgpu::bridge::detail
 {
     namespace gfx = nau::PEPEngine::Graphics;
 
-    inline std::string ToUtf8(const std::wstring& wide)
+    inline std::string toUtf8(const std::wstring& wide)
     {
         if (wide.empty())
         {
@@ -33,7 +30,7 @@ namespace nau::mgpu::bridge::detail
         return result;
     }
 
-    inline std::wstring ToWide(const char* utf8)
+    inline std::wstring toWide(const char* utf8)
     {
         if (utf8 == nullptr || utf8[0] == '\0')
         {
@@ -51,13 +48,10 @@ namespace nau::mgpu::bridge::detail
         return result;
     }
 
-    // GShader compiles from a file relative to the working directory; the bridges compile their shaders from
-    // memory instead, so nothing has to be deployed next to the executable.
     class SourceShader final : public gfx::GShader
     {
     public:
-        SourceShader(const char* source, const gfx::ShaderType shaderType, const std::string& entry,
-                     const std::string& profile) :
+        SourceShader(const char* source, const gfx::ShaderType shaderType, const std::string& entry, const std::string& profile) :
             gfx::GShader(L"MgpuBridge", shaderType, nullptr, entry, profile),
             m_source(source)
         {
@@ -87,12 +81,8 @@ namespace nau::mgpu::bridge::detail
         const char* m_source;
     };
 
-    // The primary device is the Mgpu device on the adapter Nau renders on (nauAdapterName, d3d::get_device_name());
-    // nullptr or "" picks the first hardware adapter (standalone tests). The secondary one is another hardware adapter.
-    inline bool SelectDevices(const char* nauAdapterName, std::shared_ptr<gfx::GDevice>& primary,
-                              std::shared_ptr<gfx::GDevice>& secondary, std::string& error)
+    inline bool selectDevices(const char* nauAdapterName, std::shared_ptr<gfx::GDevice>& primary, std::shared_ptr<gfx::GDevice>& secondary, std::string& error)
     {
-        // Inside a process that already owns a D3D12 device (Nau) the debug layer must not be enabled after the fact.
         if (nauAdapterName != nullptr)
         {
             gfx::GDeviceFactory::SetDebugLayerEnabled(false);
@@ -106,7 +96,7 @@ namespace nau::mgpu::bridge::detail
         }
 
         size_t primaryIndex = 0;
-        const std::wstring wantedName = ToWide(nauAdapterName);
+        const std::wstring wantedName = toWide(nauAdapterName);
         bool matched = wantedName.empty();
         for (size_t i = 0; i < devices.size() && !matched; ++i)
         {
@@ -121,7 +111,7 @@ namespace nau::mgpu::bridge::detail
 
         if (!matched)
         {
-            error = "Nau adapter '" + ToUtf8(wantedName) + "' was not found among the Mgpu adapters";
+            error = "Nau adapter '" + toUtf8(wantedName) + "' was not found among the Mgpu adapters";
             return false;
         }
 
@@ -129,4 +119,4 @@ namespace nau::mgpu::bridge::detail
         secondary = devices[primaryIndex == 0 ? 1 : 0];
         return true;
     }
-}
+}  // namespace nau::mgpu::bridge::detail

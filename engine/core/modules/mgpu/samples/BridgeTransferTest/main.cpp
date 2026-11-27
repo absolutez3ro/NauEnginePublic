@@ -1,8 +1,3 @@
-// Console check of the Mgpu <-> Nau bridges (no Nau involved).
-// 1. Transfer: GPU2 draws a sine gradient (compute shader) -> shared heap -> GPU1 -> CPU; every frame the received
-//    pixels are compared bit-exactly with what GPU2 produced.
-// 2. Shadow cascades: GPU2 draws a small two-cascade depth atlas with known depths (static, instanced and skinned
-//    casters) -> shared heap -> GPU1 -> CPU; the depths are checked at known points.
 
 #include <algorithm>
 #include <cmath>
@@ -16,7 +11,6 @@
 
 namespace
 {
-    // Column-major 4x4 (Nau memory layout) that moves along z.
     std::vector<float> translationZ(const float z)
     {
         std::vector<float> m(16, 0.0f);
@@ -25,7 +19,6 @@ namespace
         return m;
     }
 
-    // Quad [-size, size]^2 at z = 0, both windings, so the test does not depend on the cull mode.
     void makeQuad(const float size, std::vector<float>& positions, std::vector<uint32_t>& indices)
     {
         positions = {-size, -size, 0.0f, size, -size, 0.0f, size, size, 0.0f, -size, size, 0.0f};
@@ -46,7 +39,6 @@ namespace
         std::vector<float> positions;
         std::vector<uint32_t> indices32;
 
-        // Mesh 1: static, 16-bit indices, half of the cascade viewport.
         makeQuad(0.5f, positions, indices32);
         const std::vector<uint16_t> indices16(indices32.begin(), indices32.end());
         MeshDesc small;
@@ -56,7 +48,6 @@ namespace
         small.indexCount = static_cast<uint32_t>(indices16.size());
         bool registered = renderer.registerMesh(1, small);
 
-        // Mesh 2: static, 32-bit indices, the whole cascade viewport.
         std::vector<float> fullPositions;
         std::vector<uint32_t> fullIndices;
         makeQuad(1.0f, fullPositions, fullIndices);
@@ -68,7 +59,6 @@ namespace
         full.indices32 = true;
         registered = renderer.registerMesh(2, full) && registered;
 
-        // Mesh 3: skinned, every vertex bound to bone 0.
         std::vector<float> tinyPositions;
         std::vector<uint32_t> tinyIndices;
         makeQuad(0.25f, tinyPositions, tinyIndices);
@@ -90,7 +80,6 @@ namespace
             return false;
         }
 
-        // Two 128x128 cascades side by side; identity view-projection, so depth = z of the caster.
         CascadeDesc cascades[2];
         for (int c = 0; c < 2; ++c)
         {
@@ -102,7 +91,6 @@ namespace
             cascades[c].viewport[3] = 128;
         }
 
-        // matrices: [0] small quad at z 0.25, [1], [2] two instances of the full quad at z 0.5 and 0.75, [3] bone 0 at z 0.4.
         std::vector<float> matrices;
         for (const float z : {0.25f, 0.5f, 0.75f, 0.4f})
         {
@@ -168,6 +156,37 @@ namespace
         const RendererStats& stats = renderer.stats();
         std::printf("shadow atlas %ux%u, %u draws, %.2f ms on the second GPU\n", width, height, stats.lastDrawCount,
                     stats.lastLatencyMs);
+
+        DrawDesc faceDraws[2];
+        faceDraws[0] = {1, 0, 0, 6, 0, 1, 0};
+        faceDraws[1] = {1, 1, 0, 6, 0, 1, 0};
+        frame.draws = faceDraws;
+        frame.drawCount = 2;
+        cascades[0].depthClip = cascades[1].depthClip = true;
+        float previousLeft = 0.0f;
+        float previousRight = 0.0f;
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            cascades[0].flipCull = pass != 0;
+            cascades[1].flipCull = pass == 0;
+            ++frame.userToken;
+            if (!renderer.submit(frame) || !renderer.waitAndReadBack(depths, width, height))
+            {
+                std::printf("Point shadow cull test failed: %s\n", renderer.lastError());
+                return false;
+            }
+            const float left = depths[64 * width + 64];
+            const float right = depths[64 * width + 192];
+            const bool oppositeFaces = (std::fabs(left - 0.25f) < 1e-3f && std::fabs(right - 1.0f) < 1e-3f) ||
+                                       (std::fabs(right - 0.25f) < 1e-3f && std::fabs(left - 1.0f) < 1e-3f);
+            const bool swapped = pass == 0 || (std::fabs(left - previousRight) < 1e-3f &&
+                                               std::fabs(right - previousLeft) < 1e-3f);
+            ok = ok && oppositeFaces && swapped;
+            std::printf("point shadow cull pass %d: %.4f / %.4f: %s\n", pass, left, right,
+                        oppositeFaces && swapped ? "OK" : "FAILED");
+            previousLeft = left;
+            previousRight = right;
+        }
         renderer.shutdown();
         return ok;
     }

@@ -15,14 +15,13 @@ namespace nau::mgpu::bridge
         float taps = 32.0f;
     };
 
-    enum class DofResult { Completed, Fallback, PrimaryFailure };
+    enum class DofResult
+    {
+        Completed,
+        Fallback,
+        PrimaryFailure
+    };
 
-    // Plain facade: no Mgpu/D3D headers leak into Graphics.
-    // Called on the render thread after Nau finishes its recorded work.
-    // Inputs: HDR RGBA16F + normalized linear R32F depth in COPY_SOURCE.
-    // Outputs: RGBA16F ColorFilled + R16F WFiltered in COPY_DEST.
-    // Their states are not changed by this bridge. No CPU pixel readback.
-    // Fallback is latched; a new DofBridge is required to retry initialization.
     class DofBridge
     {
     public:
@@ -32,8 +31,7 @@ namespace nau::mgpu::bridge
         DofBridge& operator=(const DofBridge&) = delete;
 
         bool prepare(void* primaryDevice, void* primaryQueue, uint32_t width, uint32_t height);
-        DofResult execute(void* color, void* linearDepth, void* colorFilled, void* filtered,
-                          const DofParameters& parameters);
+        DofResult execute(void* color, void* linearDepth, void* colorFilled, void* filtered, const DofParameters& parameters);
         const char* lastError() const;
         const char* secondaryAdapterName() const;
 
@@ -41,4 +39,4 @@ namespace nau::mgpu::bridge
         struct Impl;
         std::unique_ptr<Impl> m_impl;
     };
-}
+}  // namespace nau::mgpu::bridge

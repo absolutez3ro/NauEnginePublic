@@ -1,8 +1,8 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
-
 #include "./mgpu_toggle.h"
+#include "./scene_switcher.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -11,6 +11,7 @@
 
 #include "nau/input.h"
 #include "nau/mgpu/bridge/mgpu_bridge.h"
+#include "nau/scene/scene_object.h"
 
 namespace nau::sample
 {
@@ -30,22 +31,25 @@ namespace nau::sample
                 bridge::setVsyncEnabled(false);
             }
         }
-        if (isKeyboardButtonPressed(0, input::Key::M))
+        const auto* sceneSwitcher = getParentObject().findFirstComponent<SceneSwitcher>();
+        if (!sceneSwitcher || !sceneSwitcher->isBenchmarkRunning())
         {
-            bridge::setEnabled(!bridge::isEnabled());
-        }
-        if (isKeyboardButtonPressed(0, input::Key::V))
-        {
-            bridge::setVsyncEnabled(!bridge::isVsyncEnabled());
-        }
-        if (isKeyboardButtonPressed(0, input::Key::G))
-        {
-            bridge::setAutoEnabled(!bridge::isAutoEnabled());
+            if (isKeyboardButtonPressed(0, input::Key::M))
+            {
+                bridge::setEnabled(!bridge::isEnabled());
+            }
+            if (isKeyboardButtonPressed(0, input::Key::V))
+            {
+                bridge::setVsyncEnabled(!bridge::isVsyncEnabled());
+            }
+            if (isKeyboardButtonPressed(0, input::Key::G))
+            {
+                bridge::setAutoEnabled(!bridge::isAutoEnabled());
+            }
         }
 
         const bridge::Status status = bridge::getStatus();
 
-        // Bottom-left corner: the other sample windows open in the top-left one.
         const ImVec2 windowSize(470, 300);
         ImGui::SetNextWindowPos(ImVec2(10, std::max(10.0f, ImGui::GetIO().DisplaySize.y - windowSize.y - 10)), ImGuiCond_Once);
         ImGui::SetNextWindowSize(windowSize, ImGuiCond_Once);
@@ -82,13 +86,11 @@ namespace nau::sample
                         static_cast<unsigned long long>(status.skippedBusy), static_cast<unsigned long long>(status.failed));
         }
 
-        // ImGui's frame rate is the one of the update loop; Nau renders with vsync.
         if (status.linked)
         {
             ImGui::Text("Scene FPS: %.1f, %.2f ms (update loop %.1f)", status.sceneFramesPerSecond,
                         status.sceneFramesPerSecond > 0.0f ? 1000.0f / status.sceneFramesPerSecond : 0.0f, ImGui::GetIO().Framerate);
 
-            // Where the time of a frame goes (averages over 2 s); "-" where nothing was measured.
             const bridge::Status::Timings& t = status.timings;
             const auto ms = [](char (&buffer)[16], const float value) -> const char*
             {

@@ -74,10 +74,8 @@ namespace nau
         m_staticMesh->getTyped<StaticMeshAssetView>(meshView);
         const nau::StaticMesh& mesh = *meshView->getMesh();
         const bool hasLods = mesh.getLodsCount() > 1;
-        eastl::vector<eastl::vector<eastl::map<size_t /*material name*/, uint32_t /*entityIndex*/>>> lodSlotMats(mesh.getLodsCount());
+        eastl::vector<eastl::vector<eastl::map<size_t , uint32_t >>> lodSlotMats(mesh.getLodsCount());
 
-        // Materials resolved once per call (renderOptimizationsEnabled): getTyped takes a lock and does a cast, and the result
-        // of the material filter depends on the material only.
         const bool optimized = renderOptimizationsEnabled();
         struct ResolvedMaterial
         {
@@ -116,10 +114,6 @@ namespace nau
                 continue;
             }
 
-            // Level of detail by the distance from the viewer, in the units of the mesh: the scale of the instance is divided
-            // out. Every view gets the position of the main camera, so the shadows are cast by the levels that are seen; the
-            // far shadow cascades scale the distance up, their texels are larger than the details dropped, and the shadow
-            // cascades take the shadow-only levels (lodSelection).
             uint32_t lodLevel = 0;
             if (hasLods)
             {
@@ -148,7 +142,6 @@ namespace nau
                 auto materialOverride = info.overrideInfo.find(lodSlot);
                 if (materialOverride == info.overrideInfo.end() && lodLevel != 0)
                 {
-                    // StaticMeshComponent::setMaterial overrides level 0: the simplified levels use the same material.
                     materialOverride = info.overrideInfo.find(uint64_t(slotInd));
                 }
 
@@ -173,7 +166,7 @@ namespace nau
                     {
                         continue;
                     }
-                    matNameHash = material->getNameHash(); // TODO: cache this inside material
+                    matNameHash = material->getNameHash();
                 }
                 auto& mats = slotMats[slotInd];
 

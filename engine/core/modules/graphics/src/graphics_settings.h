@@ -14,23 +14,6 @@
 
 namespace nau
 {
-    /**
-     * Rendering switches of the graphics module. Read once, from the "graphics" section of the application properties
-     * (the application config, e.g. config/app.json); an environment variable overrides a value, for comparisons and
-     * debugging:
-     *
-     *   graphics/framePipelining              NAU_FRAME_PIPELINING      the CPU records a frame while the GPU draws the
-     *                                                                   previous one (frames with pre-render work still wait)
-     *   graphics/renderOptimizations          NAU_RENDER_OPTIMIZATIONS  false: the old way of building the render lists,
-     *                                                                   kept for comparisons
-     *   graphics/shadows/sparseFrames         NAU_SHADOW_SPARSE_FRAMES  a far shadow cascade keeps its shadow map while the
-     *                                                                   view stays inside it, and is drawn anew at least every
-     *                                                                   that many frames (plus its number); 0: every frame
-     *   graphics/shadows/farCascadeLodScale   NAU_SHADOW_LOD_SCALE      the far cascades choose the levels of detail as if
-     *                                                                   the casters were that many times farther; 1: off
-     *   graphics/shadows/shadowOnlyLods       NAU_SHADOW_ONLY_LODS      the far cascades draw the shadow-only levels of
-     *                                                                   detail of the meshes that have them
-     */
     struct GraphicsSettings
     {
         bool framePipelining = true;
@@ -40,10 +23,6 @@ namespace nau
         bool shadowOnlyLods = true;
     };
 
-    /**
-     * The first far shadow cascade. The far cascades take the coarser levels of detail and are updated sparsely; the near
-     * ones are drawn every frame (with Mgpu: by the scene GPU, see nau::mgpu::bridge::Settings::nearCascades).
-     */
     constexpr int FAR_SHADOW_CASCADE = 2;
 
     namespace settings_detail
@@ -51,7 +30,7 @@ namespace nau
         inline GlobalProperties* findGlobalProperties()
         {
             return hasServiceProvider() && getServiceProvider().has<GlobalProperties>() ? &getServiceProvider().get<GlobalProperties>()
-                                                                                       : nullptr;
+                                                                                        : nullptr;
         }
 
         template <typename T>
@@ -116,12 +95,13 @@ namespace nau
                 result.farCascadeLodScale = 1.0f;
             }
 
-            NAU_LOG_INFO("graphics settings: frame pipelining {}, render optimizations {}, far shadow cascades drawn anew {}, "
-                         "their levels of detail at {}x the distance, shadow-only levels {}",
-                         result.framePipelining ? "on" : "off", result.renderOptimizations ? "on" : "off",
-                         result.shadowSparseFrames > 0 ? ::fmt::format("when the view leaves them, at least every {} frames", result.shadowSparseFrames)
-                                                       : std::string("every frame"),
-                         result.farCascadeLodScale, result.shadowOnlyLods ? "on" : "off");
+            NAU_LOG_INFO(
+                "graphics settings: frame pipelining {}, render optimizations {}, far shadow cascades drawn anew {}, "
+                "their levels of detail at {}x the distance, shadow-only levels {}",
+                result.framePipelining ? "on" : "off", result.renderOptimizations ? "on" : "off",
+                result.shadowSparseFrames > 0 ? ::fmt::format("when the view leaves them, at least every {} frames", result.shadowSparseFrames)
+                                              : std::string("every frame"),
+                result.farCascadeLodScale, result.shadowOnlyLods ? "on" : "off");
             return result;
         }();
         return settings;

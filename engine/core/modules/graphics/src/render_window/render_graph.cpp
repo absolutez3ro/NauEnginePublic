@@ -28,7 +28,6 @@ namespace
 {
     constexpr uint32_t DofThreadGroupSize = 8;
 
-    // UI and render execute on different threads. Only scalar settings cross here.
     std::atomic<float> dofFocusDistance{25.0f};
     std::atomic<float> dofFocusRange{6.0f};
 
@@ -223,7 +222,6 @@ namespace nau::render
             };
         }));
 
-        // Input precedes both the reference single-GPU path and the Mgpu path.
         m_postFxNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "dof_controls", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
@@ -269,7 +267,6 @@ namespace nau::render
             };
         }));
 
-        // GPU 0 preparation in the reference implementation: reverse-Z linearization.
         m_postFxNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "dof_depth_prepare", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
@@ -333,8 +330,6 @@ namespace nau::render
             };
         }));
 
-        // GPU0 retains scene/Depth/prime CoC/Gather. GPU1 runs the middle passes.
-        // Separate outputs keep failed/inactive transfers away from the local fallback.
         m_postFxNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "dof_multi_gpu", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
@@ -364,7 +359,6 @@ namespace nau::render
                 {
                     auto* colorTexture = const_cast<BaseTexture*>(color.get());
                     auto* depthTexture = const_cast<BaseTexture*>(depth.get());
-                    // Flush Nau's deferred recording before submitting native commands on its queue.
                     clearDofComputeBindings();
                     d3d::set_render_target();
                     void* native[4] = {};
@@ -394,7 +388,6 @@ namespace nau::render
                     const auto result = m_dofBridge.execute(native[0], native[1], native[2], native[3], parameters);
                     if (result == nau::mgpu::bridge::DofResult::PrimaryFailure)
                     {
-                        // A lost primary is not recoverable by running more work on that same device.
                         m_depthOfFieldEnabled = false;
                         m_dofMultiGpuEnabled = false;
                         NAU_FAILURE("DOF primary GPU failure: {}", m_dofBridge.lastError());
@@ -416,7 +409,6 @@ namespace nau::render
             };
         }));
 
-        // Local GPU1-equivalent block is retained for fallback.
         m_postFxNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "dof_second_coc", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
@@ -444,7 +436,6 @@ namespace nau::render
             };
         }));
 
-        // Remaining GPU 1 passes: Holes -> Pyramid -> Patch fill -> WMax -> WFilter.
         m_postFxNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "dof_holes", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
@@ -521,7 +512,6 @@ namespace nau::render
             auto occlusion = registry.readTexture(nau::utils::format("{}_{}", "dof_occlusion", m_swapchain).c_str())
                                  .atStage(dabfg::Stage::COMPUTE).useAs(dabfg::Usage::SHADER_RESOURCE).handle();
             auto filled2 = registry
-                               // Match the reference: Patch2 overwrites the quarter-resolution pyramid.
                                .renameTexture(nau::utils::format("{}_{}", "dof_pyramid_2_texture", m_swapchain).c_str(),
                                               nau::utils::format("{}_{}", "dof_filled_2", m_swapchain).c_str(), dabfg::History::No)
                                .atStage(dabfg::Stage::COMPUTE).useAs(dabfg::Usage::SHADER_RESOURCE).handle();
@@ -545,7 +535,6 @@ namespace nau::render
             auto occlusion = registry.readTexture(nau::utils::format("{}_{}", "dof_occlusion", m_swapchain).c_str())
                                  .atStage(dabfg::Stage::COMPUTE).useAs(dabfg::Usage::SHADER_RESOURCE).handle();
             auto filled1 = registry
-                               // Match the reference: Patch1 overwrites the half-resolution pyramid.
                                .renameTexture(nau::utils::format("{}_{}", "dof_pyramid_1_texture", m_swapchain).c_str(),
                                               nau::utils::format("{}_{}", "dof_filled_1", m_swapchain).c_str(), dabfg::History::No)
                                .atStage(dabfg::Stage::COMPUTE).useAs(dabfg::Usage::SHADER_RESOURCE).handle();
@@ -633,8 +622,6 @@ namespace nau::render
             };
         }));
 
-        // GPU 0 gather in the reference implementation. ColorFilled/WFiltered are
-        // the two resources that the team's cross-adapter layer will return here.
         m_postFxNodes.addNode(
             dabfg::register_node(nau::utils::format("{}_{}", "depth_of_field", m_swapchain).c_str(), DABFG_PP_NODE_SRC, [this](dabfg::Registry registry)
         {
@@ -692,8 +679,6 @@ namespace nau::render
                 m_depthOfFieldMaterial->setRwTexture("Gather", "DofOut", dofTexture.get());
                 dispatchDofPass(*m_depthOfFieldMaterial, "Gather", dofTexture.get());
             };
-            // Eight texture handles exceed the graph's 128-byte inline callback storage.
-            // Allocate once when the node is declared; each frame only invokes the callback.
             return [executeGather = eastl::make_unique<decltype(executeGather)>(eastl::move(executeGather))]()
             {
                 (*executeGather)();
@@ -728,8 +713,6 @@ namespace nau::render
                 }
                 else
                 {
-                    // This is intentionally identical to Nau's original post-process.
-                    // All DOF dispatches are skipped while disabled.
                     d3d::settex(0, const_cast<BaseTexture*>(resolveTexture.get()));
                     m_postFXRenderer->render("Regular");
                 }

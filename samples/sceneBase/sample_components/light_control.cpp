@@ -1,7 +1,6 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
-
 #include "./light_control.h"
 
 #include <algorithm>
@@ -16,6 +15,16 @@
 namespace nau::sample
 {
     NAU_IMPLEMENT_DYNAMIC_OBJECT(LightControl)
+
+    float LightControl::getYawDegrees() const
+    {
+        return m_yawDegrees;
+    }
+
+    void LightControl::setYawDegrees(const float yawDegrees)
+    {
+        m_yawDegrees = yawDegrees;
+    }
 
     void LightControl::updateComponent(float dt)
     {
@@ -34,7 +43,6 @@ namespace nau::sample
         {
             m_castShadows = light->hasShadows();
             m_intensity = light->getIntensity();
-            // NAU_SAMPLE_SUN_ROTATE=1 starts with the sun turning (a benchmark of shadows that change every frame).
             const char* const rotate = std::getenv("NAU_SAMPLE_SUN_ROTATE");
             m_autoRotate = rotate != nullptr && std::strcmp(rotate, "1") == 0;
             m_initialized = true;
@@ -53,7 +61,6 @@ namespace nau::sample
             }
         }
 
-        // Bottom-right area: the other sample windows are on the left.
         ImGui::SetNextWindowPos(ImVec2(std::max(10.0f, ImGui::GetIO().DisplaySize.x - 330.0f), 10.0f), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(320, 190), ImGuiCond_FirstUseEver);
         ImGui::Begin("Directional light");
@@ -76,7 +83,6 @@ namespace nau::sample
         ImGui::TextWrapped("The sun stays above the horizon (pitch up to -5 deg).");
         ImGui::End();
 
-        // DirectionalLightComponent::getDirection() is the rotation applied to (1, 0, 0).
         light->setRotation(Quat::rotation(Vector3(1.0f, 0.0f, 0.0f), direction));
         light->setIntensity(m_intensity);
         light->setCastShadows(m_castShadows);

@@ -7,9 +7,6 @@
 
 namespace nau::sample
 {
-    // The "Directional light" window: direction (yaw / pitch), intensity, shadows on/off and an automatic rotation of
-    // the direction, to check the shadow cascades with the sun in different places. A directional light has no
-    // position: its shadows depend on the direction only.
     class LightControl final : public scene::Component,
                                public scene::IComponentUpdate
     {
@@ -17,17 +14,18 @@ namespace nau::sample
         NAU_OBJECT(LightControl, scene::Component, scene::IComponentUpdate)
         NAU_DECLARE_DYNAMIC_OBJECT
 
+        float getYawDegrees() const;
+        void setYawDegrees(float yawDegrees);
+
     private:
         void updateComponent(float dt) override;
 
-        // Direction of the light rays: (cos(pitch)cos(yaw), sin(pitch), cos(pitch)sin(yaw)). The sun has to stay above
-        // the horizon (pitch < 0, the rays go down), otherwise the cascades are degenerate.
         float m_yawDegrees = 0.0f;
         float m_pitchDegrees = -45.0f;
         float m_intensity = 1.0f;
         bool m_castShadows = true;
         bool m_autoRotate = false;
-        float m_rotationSpeed = 20.0f;  // degrees per second
+        float m_rotationSpeed = 20.0f;
         bool m_initialized = false;
     };
 }  // namespace nau::sample

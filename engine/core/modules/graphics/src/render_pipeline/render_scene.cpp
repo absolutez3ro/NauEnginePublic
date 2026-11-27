@@ -109,7 +109,6 @@ namespace nau
         {
             if (!view->isActive())
             {
-                // Its lists of an earlier frame must not be drawn.
                 view->clearLists();
                 continue;
             }

@@ -29,14 +29,19 @@ namespace nau::mgpu::bridge
         struct Handle
         {
             HANDLE value = nullptr;
-            ~Handle() { if (value) CloseHandle(value); }
+            ~Handle()
+            {
+                if (value)
+                    CloseHandle(value);
+            }
         };
 
         void wait(ID3D12Fence* fence, UINT64 value, ID3D12Device* device)
         {
             Handle event;
             event.value = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-            if (!event.value) throw std::runtime_error("CreateEvent failed");
+            if (!event.value)
+                throw std::runtime_error("CreateEvent failed");
             check(fence->SetEventOnCompletion(value, event.value));
             while (fence->GetCompletedValue() < value)
             {
@@ -48,31 +53,29 @@ namespace nau::mgpu::bridge
             check(device->GetDeviceRemovedReason());
         }
 
-        void transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource,
-                        D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+        void transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
         {
-            if (before == after) return;
+            if (before == after)
+                return;
             auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(resource, before, after);
             list->ResourceBarrier(1, &barrier);
         }
 
-        // Shared BUFFER transport also works when row-major texture sharing is unavailable.
-        // Only local textures are sampled or used as UAVs, as in the reference copy path.
         struct Channel
         {
             ComPtr<ID3D12Heap> heaps[2];
             ComPtr<ID3D12Resource> buffers[2];
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
 
-            void create(ID3D12Device* primary, ID3D12Device* secondary,
-                        DXGI_FORMAT format, UINT width, UINT height)
+            void create(ID3D12Device* primary, ID3D12Device* secondary, DXGI_FORMAT format, UINT width, UINT height)
             {
                 const auto texture = CD3DX12_RESOURCE_DESC::Tex2D(format, width, height, 1, 1);
                 UINT64 bytes = 0;
                 primary->GetCopyableFootprints(&texture, 0, 1, 0, &footprint, nullptr, nullptr, &bytes);
                 const auto buffer = CD3DX12_RESOURCE_DESC::Buffer(bytes, D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER);
                 const auto allocation = primary->GetResourceAllocationInfo(0, 1, &buffer);
-                if (allocation.SizeInBytes == UINT64_MAX) throw std::runtime_error("Invalid shared allocation");
+                if (allocation.SizeInBytes == UINT64_MAX)
+                    throw std::runtime_error("Invalid shared allocation");
                 D3D12_HEAP_DESC heap = {};
                 heap.SizeInBytes = allocation.SizeInBytes;
                 heap.Alignment = allocation.Alignment;
@@ -85,7 +88,7 @@ namespace nau::mgpu::bridge
                 ID3D12Device* devices[] = {primary, secondary};
                 for (UINT side = 0; side != 2; ++side)
                     check(devices[side]->CreatePlacedResource(heaps[side].Get(), 0, &buffer,
-                        D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&buffers[side])));
+                                                              D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&buffers[side])));
             }
 
             void copy(ID3D12GraphicsCommandList* list, UINT side, ID3D12Resource* texture, bool toShared)
@@ -94,13 +97,27 @@ namespace nau::mgpu::bridge
                 transition(list, buffers[side].Get(), D3D12_RESOURCE_STATE_COMMON, state);
                 CD3DX12_TEXTURE_COPY_LOCATION tex(texture, 0);
                 CD3DX12_TEXTURE_COPY_LOCATION buf(buffers[side].Get(), footprint);
-                if (toShared) list->CopyTextureRegion(&buf, 0, 0, 0, &tex, nullptr);
-                else list->CopyTextureRegion(&tex, 0, 0, 0, &buf, nullptr);
+                if (toShared)
+                    list->CopyTextureRegion(&buf, 0, 0, 0, &tex, nullptr);
+                else
+                    list->CopyTextureRegion(&tex, 0, 0, 0, &buf, nullptr);
                 transition(list, buffers[side].Get(), state, D3D12_RESOURCE_STATE_COMMON);
             }
         };
 
-        enum Image { Color, Depth, Coc, Mask, Pyramid1, Pyramid2, Filled, Wmax, Filtered, ImageCount };
+        enum Image
+        {
+            Color,
+            Depth,
+            Coc,
+            Mask,
+            Pyramid1,
+            Pyramid2,
+            Filled,
+            Wmax,
+            Filtered,
+            ImageCount
+        };
         struct ImageData
         {
             ComPtr<ID3D12Resource> texture;
@@ -115,18 +132,18 @@ namespace nau::mgpu::bridge
             Image output;
         };
         constexpr Pass passes[] = {
-            {"DOF_PASS_COC", {Depth, -1, -1}, Coc},
-            {"DOF_PASS_HOLES", {Depth, -1, -1}, Mask},
-            {"DOF_PASS_PYRAMID1", {Color, Mask, -1}, Pyramid1},
-            {"DOF_PASS_PYRAMID2", {Pyramid1, -1, -1}, Pyramid2},
-            {"DOF_PASS_PATCH2", {Color, Mask, -1}, Pyramid2},
-            {"DOF_PASS_PATCH1", {Color, Pyramid2, Mask}, Pyramid1},
-            {"DOF_PASS_PATCH0", {Color, Pyramid1, Mask}, Filled},
-            {"DOF_PASS_WMAX", {Mask, Coc, -1}, Wmax},
-            {"DOF_PASS_WFILTER", {Wmax, -1, -1}, Filtered}
+            {     "DOF_PASS_COC",         {Depth, -1, -1},      Coc},
+            {   "DOF_PASS_HOLES",         {Depth, -1, -1},     Mask},
+            {"DOF_PASS_PYRAMID1",       {Color, Mask, -1}, Pyramid1},
+            {"DOF_PASS_PYRAMID2",      {Pyramid1, -1, -1}, Pyramid2},
+            {  "DOF_PASS_PATCH2",       {Color, Mask, -1}, Pyramid2},
+            {  "DOF_PASS_PATCH1", {Color, Pyramid2, Mask}, Pyramid1},
+            {  "DOF_PASS_PATCH0", {Color, Pyramid1, Mask},   Filled},
+            {    "DOF_PASS_WMAX",         {Mask, Coc, -1},     Wmax},
+            { "DOF_PASS_WFILTER",          {Wmax, -1, -1}, Filtered}
         };
         constexpr UINT passCount = static_cast<UINT>(sizeof(passes) / sizeof(passes[0]));
-    }
+    }  // namespace
 
     struct DofBridge::Impl
     {
@@ -163,18 +180,23 @@ namespace nau::mgpu::bridge
 
             wchar_t executable[32768];
             const DWORD length = GetModuleFileNameW(nullptr, executable, 32768);
-            if (!length || length >= 32768) throw std::runtime_error("Executable path unavailable");
+            if (!length || length >= 32768)
+                throw std::runtime_error("Executable path unavailable");
             std::wstring path(executable, length);
             path.resize(path.find_last_of(L"\\/") + 1);
             path += L"Shaders/DOF/dof_pipeline.hlsl";
             for (UINT i = 0; i < passCount; ++i)
             {
-                const D3D_SHADER_MACRO macros[] = {{passes[i].macro, "1"}, {nullptr, nullptr}};
+                const D3D_SHADER_MACRO macros[] = {
+                    {passes[i].macro,     "1"},
+                    {        nullptr, nullptr}
+                };
                 const HRESULT hr = D3DCompileFromFile(path.c_str(), macros, D3D_COMPILE_STANDARD_FILE_INCLUDE,
-                    "CSMain", "cs_5_1", D3DCOMPILE_ENABLE_STRICTNESS, 0, &blob, &errors);
+                                                      "CSMain", "cs_5_1", D3DCOMPILE_ENABLE_STRICTNESS, 0, &blob, &errors);
                 if (FAILED(hr))
                     throw std::runtime_error(errors ? std::string(static_cast<const char*>(errors->GetBufferPointer()),
-                        errors->GetBufferSize()) : "DOF shader missing or failed to compile");
+                                                                  errors->GetBufferSize())
+                                                    : "DOF shader missing or failed to compile");
                 D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
                 pso.pRootSignature = root.Get();
                 pso.CS = {blob->GetBufferPointer(), blob->GetBufferSize()};
@@ -189,28 +211,30 @@ namespace nau::mgpu::bridge
             primary = device;
             primaryQueue = queue;
             const LUID luid = primary->GetAdapterLuid();
-            // Do not initialize the module factory on a one-adapter machine: its
-            // enumeration creates devices/queues before the transfer test rejects it.
             ComPtr<IDXGIFactory1> factory;
             check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
             bool hasSecondary = false;
-            for (UINT i = 0; ; ++i)
+            for (UINT i = 0;; ++i)
             {
                 ComPtr<IDXGIAdapter1> adapter;
                 const HRESULT hr = factory->EnumAdapters1(i, &adapter);
-                if (hr == DXGI_ERROR_NOT_FOUND) break;
+                if (hr == DXGI_ERROR_NOT_FOUND)
+                    break;
                 check(hr);
                 DXGI_ADAPTER_DESC1 desc = {};
                 check(adapter->GetDesc1(&desc));
-                if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) continue;
-                if (desc.AdapterLuid.HighPart == luid.HighPart && desc.AdapterLuid.LowPart == luid.LowPart) continue;
+                if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
+                    continue;
+                if (desc.AdapterLuid.HighPart == luid.HighPart && desc.AdapterLuid.LowPart == luid.LowPart)
+                    continue;
                 if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), nullptr)))
                 {
                     hasSecondary = true;
                     break;
                 }
             }
-            if (!hasSecondary) throw std::runtime_error("no suitable secondary hardware GPU (preflight)");
+            if (!hasSecondary)
+                throw std::runtime_error("no suitable secondary hardware GPU (preflight)");
             gfx::GDeviceFactory::SetDebugLayerEnabled(false);
             for (const auto& candidate : gfx::GDeviceFactory::GetAllDevices(false))
             {
@@ -221,46 +245,48 @@ namespace nau::mgpu::bridge
                     break;
                 }
             }
-            if (!secondary) throw std::runtime_error("no suitable secondary hardware GPU");
+            if (!secondary)
+                throw std::runtime_error("no suitable secondary hardware GPU");
             const auto name = secondary->GetName();
             const int bytes = WideCharToMultiByte(CP_UTF8, 0, name.data(), static_cast<int>(name.size()), nullptr, 0, nullptr, nullptr);
             adapterName.resize(bytes);
             WideCharToMultiByte(CP_UTF8, 0, name.data(), static_cast<int>(name.size()), adapterName.data(), bytes, nullptr, nullptr);
             check(primary->CreateFence(0, D3D12_FENCE_FLAG_SHARED | D3D12_FENCE_FLAG_SHARED_CROSS_ADAPTER,
-                IID_PPV_ARGS(&primaryFence)));
+                                       IID_PPV_ARGS(&primaryFence)));
             Handle handle;
             check(primary->CreateSharedHandle(primaryFence.Get(), nullptr, GENERIC_ALL, nullptr, &handle.value));
             check(secondary->GetDXDevice()->OpenSharedHandle(handle.value, IID_PPV_ARGS(&secondaryFence)));
             check(primary->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)));
             check(primary->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
-                IID_PPV_ARGS(&primaryList)));
+                                             IID_PPV_ARGS(&primaryList)));
             check(primaryList->Close());
             createPipelines();
         }
 
         void resize(UINT w, UINT h)
         {
-            // execute() completes all queues before returning, so old allocations are no longer in flight.
             auto device = secondary->GetDXDevice();
             const UINT halfW = (w / 2) ? w / 2 : 1, halfH = (h / 2) ? h / 2 : 1;
             const UINT quarterW = (w / 4) ? w / 4 : 1, quarterH = (h / 4) ? h / 4 : 1;
             const DXGI_FORMAT formats[] = {DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_FLOAT,
-                DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R16G16B16A16_FLOAT,
-                DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
-                DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R16_FLOAT};
+                                           DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                                           DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                                           DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R16_FLOAT};
             images = {};
             channels = {};
             for (int i = 0; i < ImageCount; ++i)
             {
                 auto& image = images[i];
                 image.format = formats[i];
-                image.width = i == Pyramid1 ? halfW : i == Pyramid2 ? quarterW : w;
-                image.height = i == Pyramid1 ? halfH : i == Pyramid2 ? quarterH : h;
+                image.width = i == Pyramid1 ? halfW : i == Pyramid2 ? quarterW
+                                                                    : w;
+                image.height = i == Pyramid1 ? halfH : i == Pyramid2 ? quarterH
+                                                                     : h;
                 const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(image.format, image.width, image.height, 1, 1,
-                    1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                                                               1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
                 const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
                 check(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                    D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&image.texture)));
+                                                      D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&image.texture)));
             }
             channels[0].create(primary.Get(), device.Get(), formats[Color], w, h);
             channels[1].create(primary.Get(), device.Get(), formats[Depth], w, h);
@@ -285,16 +311,16 @@ namespace nau::mgpu::bridge
                     srv.Texture2D.MipLevels = 1;
                     srv.Format = input < 0 ? DXGI_FORMAT_R32_FLOAT : images[input].format;
                     device->CreateShaderResourceView(input < 0 ? nullptr : images[input].texture.Get(), &srv,
-                        CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptors->GetCPUDescriptorHandleForHeapStart(),
-                            pass * 4 + slot, descriptorSize));
+                                                     CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptors->GetCPUDescriptorHandleForHeapStart(),
+                                                                                   pass * 4 + slot, descriptorSize));
                 }
                 const auto& output = images[passes[pass].output];
                 D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
                 uav.Format = output.format;
                 uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
                 device->CreateUnorderedAccessView(output.texture.Get(), nullptr, &uav,
-                    CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptors->GetCPUDescriptorHandleForHeapStart(),
-                        pass * 4 + 3, descriptorSize));
+                                                  CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptors->GetCPUDescriptorHandleForHeapStart(),
+                                                                                pass * 4 + 3, descriptorSize));
             }
             width = w;
             height = h;
@@ -322,8 +348,7 @@ namespace nau::mgpu::bridge
             wait(primaryFence.Get(), serial, primary.Get());
         }
 
-        DofResult execute(ID3D12Resource* color, ID3D12Resource* depth,
-                          ID3D12Resource* filled, ID3D12Resource* filtered, const DofParameters& params)
+        DofResult execute(ID3D12Resource* color, ID3D12Resource* depth, ID3D12Resource* filled, ID3D12Resource* filtered, const DofParameters& params)
         {
             bool primaryInFlight = false;
             try
@@ -334,19 +359,21 @@ namespace nau::mgpu::bridge
                 const Image indices[] = {Color, Depth, Filled, Filtered};
                 for (UINT i = 0; i < 4; ++i)
                 {
-                    if (!resources[i]) throw std::runtime_error("null DOF resource");
+                    if (!resources[i])
+                        throw std::runtime_error("null DOF resource");
                     const auto desc = resources[i]->GetDesc();
                     const DXGI_FORMAT format = images[indices[i]].format;
                     const bool compatible = desc.Format == format ||
-                        (format == DXGI_FORMAT_R16G16B16A16_FLOAT && desc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS) ||
-                        (format == DXGI_FORMAT_R32_FLOAT && desc.Format == DXGI_FORMAT_R32_TYPELESS) ||
-                        (format == DXGI_FORMAT_R16_FLOAT && desc.Format == DXGI_FORMAT_R16_TYPELESS);
+                                            (format == DXGI_FORMAT_R16G16B16A16_FLOAT && desc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS) ||
+                                            (format == DXGI_FORMAT_R32_FLOAT && desc.Format == DXGI_FORMAT_R32_TYPELESS) ||
+                                            (format == DXGI_FORMAT_R16_FLOAT && desc.Format == DXGI_FORMAT_R16_TYPELESS);
                     if (!compatible || desc.Width != width || desc.Height != height || desc.SampleDesc.Count != 1 ||
                         desc.MipLevels != 1 || desc.DepthOrArraySize != 1)
                         throw std::runtime_error("unsupported DOF resource format, dimensions or sample count");
                     ComPtr<ID3D12Device> owner;
                     check(resources[i]->GetDevice(IID_PPV_ARGS(&owner)));
-                    if (owner.Get() != primary.Get()) throw std::runtime_error("DOF resource belongs to another device");
+                    if (owner.Get() != primary.Get())
+                        throw std::runtime_error("DOF resource belongs to another device");
                 }
 
                 beginPrimary();
@@ -371,24 +398,30 @@ namespace nau::mgpu::bridge
                 {
                     const auto& pass = passes[i];
                     for (int input : pass.inputs)
-                        if (input >= 0) imageState(list.Get(), static_cast<Image>(input), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                        if (input >= 0)
+                            imageState(list.Get(), static_cast<Image>(input), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                     imageState(list.Get(), pass.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                     float constants[8] = {};
                     if (i < 2)
                     {
-                        constants[0] = params.focusDistance; constants[1] = params.focusRange;
-                        constants[2] = params.farZ; constants[3] = 0; constants[4] = params.maxCoC;
+                        constants[0] = params.focusDistance;
+                        constants[1] = params.focusRange;
+                        constants[2] = params.farZ;
+                        constants[3] = 0;
+                        constants[4] = params.maxCoC;
                     }
                     else if (pass.output == Wmax)
                     {
-                        constants[0] = params.maxCoC; constants[1] = params.taps;
+                        constants[0] = params.maxCoC;
+                        constants[1] = params.taps;
                     }
-                    else if (pass.output == Filtered) constants[0] = params.filterRadius;
+                    else if (pass.output == Filtered)
+                        constants[0] = params.filterRadius;
                     list->SetComputeRoot32BitConstants(0, 8, constants, 0);
                     list->SetComputeRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(
-                        descriptors->GetGPUDescriptorHandleForHeapStart(), i * 4, descriptorSize));
+                                                               descriptors->GetGPUDescriptorHandleForHeapStart(), i * 4, descriptorSize));
                     list->SetComputeRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(
-                        descriptors->GetGPUDescriptorHandleForHeapStart(), i * 4 + 3, descriptorSize));
+                                                               descriptors->GetGPUDescriptorHandleForHeapStart(), i * 4 + 3, descriptorSize));
                     list->SetPipelineState(pipelines[i].Get());
                     const auto& output = images[pass.output];
                     list->Dispatch((output.width + 7) / 8, (output.height + 7) / 8, 1);
@@ -401,8 +434,6 @@ namespace nau::mgpu::bridge
                 channels[3].copy(list.Get(), 1, images[Filtered].texture.Get(), true);
                 queue->ExecuteCommandList(command);
                 check(queue->GetD3D12CommandQueue()->Signal(secondaryFence.Get(), ++serial));
-                // Correctness baseline: complete GPU1 before allowing any write to Nau outputs.
-                // A failed GPU1 therefore cannot race the single-GPU fallback.
                 wait(primaryFence.Get(), serial, secondary->GetDXDevice().Get());
 
                 check(primaryQueue->Wait(primaryFence.Get(), serial));
@@ -419,32 +450,40 @@ namespace nau::mgpu::bridge
                 failed = true;
                 error = exception.what();
                 return primaryInFlight || FAILED(primary->GetDeviceRemovedReason())
-                    ? DofResult::PrimaryFailure : DofResult::Fallback;
+                           ? DofResult::PrimaryFailure
+                           : DofResult::Fallback;
             }
             catch (...)
             {
-                // The team's DxException does not derive from std::exception.
                 failed = true;
                 error = "Mgpu command submission failed (see D3D12 diagnostics)";
                 return primaryInFlight || FAILED(primary->GetDeviceRemovedReason())
-                    ? DofResult::PrimaryFailure : DofResult::Fallback;
+                           ? DofResult::PrimaryFailure
+                           : DofResult::Fallback;
             }
         }
     };
 
-    DofBridge::DofBridge() : m_impl(std::make_unique<Impl>()) {}
+    DofBridge::DofBridge() :
+        m_impl(std::make_unique<Impl>())
+    {
+    }
     DofBridge::~DofBridge() = default;
 
     bool DofBridge::prepare(void* device, void* queue, uint32_t width, uint32_t height)
     {
-        if (m_impl->failed) return false;
+        if (m_impl->failed)
+            return false;
         try
         {
             if (!device || !queue || !width || !height || width > 16384 || height > 16384)
                 throw std::runtime_error("invalid DOF device, queue or dimensions");
-            if (!m_impl->primary) m_impl->initialize(static_cast<ID3D12Device*>(device), static_cast<ID3D12CommandQueue*>(queue));
-            if (m_impl->primary.Get() != device) throw std::runtime_error("primary device changed; recreate DOF bridge");
-            if (width != m_impl->width || height != m_impl->height) m_impl->resize(width, height);
+            if (!m_impl->primary)
+                m_impl->initialize(static_cast<ID3D12Device*>(device), static_cast<ID3D12CommandQueue*>(queue));
+            if (m_impl->primary.Get() != device)
+                throw std::runtime_error("primary device changed; recreate DOF bridge");
+            if (width != m_impl->width || height != m_impl->height)
+                m_impl->resize(width, height);
             return true;
         }
         catch (const std::exception& error)
@@ -463,11 +502,18 @@ namespace nau::mgpu::bridge
 
     DofResult DofBridge::execute(void* color, void* depth, void* filled, void* filtered, const DofParameters& params)
     {
-        if (m_impl->failed || !m_impl->width) return DofResult::Fallback;
+        if (m_impl->failed || !m_impl->width)
+            return DofResult::Fallback;
         return m_impl->execute(static_cast<ID3D12Resource*>(color), static_cast<ID3D12Resource*>(depth),
-            static_cast<ID3D12Resource*>(filled), static_cast<ID3D12Resource*>(filtered), params);
+                               static_cast<ID3D12Resource*>(filled), static_cast<ID3D12Resource*>(filtered), params);
     }
 
-    const char* DofBridge::lastError() const { return m_impl->error.c_str(); }
-    const char* DofBridge::secondaryAdapterName() const { return m_impl->adapterName.c_str(); }
-}
+    const char* DofBridge::lastError() const
+    {
+        return m_impl->error.c_str();
+    }
+    const char* DofBridge::secondaryAdapterName() const
+    {
+        return m_impl->adapterName.c_str();
+    }
+}  // namespace nau::mgpu::bridge

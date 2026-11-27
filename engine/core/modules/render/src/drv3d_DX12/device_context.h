@@ -851,7 +851,6 @@ struct FrameInfo
   eastl::vector<GraphicsProgramID> deletedGraphicPrograms;
   eastl::vector<backend::ShaderModuleManager::AnyShaderModuleUniquePointer> deletedShaderModules;
   eastl::vector<Query *> deletedQueries;
-  // external resources used by this frame (DRV3D_COMMAND_D3D12_COPY_FROM_EXTERNAL_RESOURCE), released when it has completed
   eastl::vector<ComPtr<ID3D12Resource>> usedExternalResources;
   ShaderResourceViewDescriptorHeapManager resourceViewHeaps;
   SamplerDescriptorHeapManager samplerHeaps;
@@ -1800,7 +1799,6 @@ public:
   void clearDepthStencilImage(Image *image, const ImageSubresourceRange &area, const ClearDepthStencilValue &value);
   void clearColorImage(Image *image, const ImageSubresourceRange &area, const ClearColorValue &value);
   void copyImage(Image *src, Image *dst, const ImageCopy &copy);
-  // adds a reference to src, the backend releases it once the GPU has finished the frame with the copy
   void copyFromExternalResource(ID3D12Resource *src, Image *dst);
   void resolveMultiSampleImage(Image *src, Image *dst);
   void flushDraws();

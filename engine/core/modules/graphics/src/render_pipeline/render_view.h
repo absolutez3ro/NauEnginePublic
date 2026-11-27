@@ -50,8 +50,6 @@ namespace nau
         void setUserData(void* userData);
         void* getUserData();
 
-        // An inactive view builds no lists and draws nothing (RenderScene::updateViews): a cascade beyond the ones in use, a
-        // face of a point light slot without a light, the cascades while the second GPU is busy (renderOptimizationsEnabled).
         void setActive(bool active)
         {
             m_active = active;
@@ -61,8 +59,6 @@ namespace nau
             return m_active;
         }
 
-        // How the view chooses the levels of detail: the default for the views that are seen, the shadow-only levels and a
-        // larger distance for the shadow cascades (stage 3 of the MGPU optimisation, GraphicsScene).
         void setLodSelection(const LodSelection& selection)
         {
             m_lodSelection = selection;

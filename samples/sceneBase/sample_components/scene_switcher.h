@@ -9,22 +9,13 @@
 
 #include "nau/async/task.h"
 #include "nau/math/math.h"
+#include "nau/mgpu/bridge/mgpu_bridge.h"
 #include "nau/scene/components/component.h"
 #include "nau/scene/components/component_life_cycle.h"
 #include "nau/scene/scene.h"
 
 namespace nau::sample
 {
-    // Key 1 shows the default scenes, key 2 the Jungle Ruins scene (see tools/convert_jungle_ruins.py); the "Scenes" window
-    // shows which one is active. The object with this component stays in both: it has the camera and the lights.
-    //
-    // NAU_SAMPLE_SWITCH_TEST=<n>: the sample switches between the scenes n times, 3 s in each, and closes (a stability
-    // test of loading and unloading; "switch test:" lines in the log).
-    //
-    // Key B runs a benchmark in the active scene: without vsync, the shadow cascades in turn on the second GPU and on the
-    // scene GPU, the table goes to the window and to the log. With the environment variable NAU_SAMPLE_BENCHMARK set the
-    // sample does this by itself and closes (no keys, the window does not need the focus): in Jungle Ruins, or in the
-    // default scenes if the value is "default".
     class SceneSwitcher final : public scene::Component,
                                 public scene::IComponentUpdate
     {
@@ -42,32 +33,39 @@ namespace nau::sample
             JungleRuins
         };
 
-        // nau::mgpu::bridge::Status::Timings as numbers in the benchmark (scene_switcher.cpp: TIMING_NAMES).
-        static constexpr size_t TIMING_VALUES = 22;
+        static constexpr size_t TimingValueCount = 22;
 
         void setFactories(ScenesFactory defaultScenes, ScenesFactory jungleRuins);
 
-        // Replaces the active scenes. Does nothing while another switch is in progress.
         async::Task<> switchTo(SceneSet sceneSet);
+        bool isBenchmarkRunning() const;
 
     private:
         void updateComponent(float dt) override;
 
         struct BenchmarkMode
         {
-            double time = 0;
-            double framesPerSecond = 0;
+            double durationSeconds = 0;
+            size_t frameCount = 0;
+            double frameTimeMs = 0;
             double atlasesPerSecond = 0;
             double latencyMs = 0;
-            // Time-weighted sums of the timings; a value not measured in a frame has no weight there.
-            eastl::array<double, TIMING_VALUES> timings = {};
-            eastl::array<double, TIMING_VALUES> timingWeights = {};
-            float framesPerSecondAverage() const { return time > 0 ? static_cast<float>(framesPerSecond / time) : 0.0f; }
+            eastl::array<double, TimingValueCount> timings = {};
+            eastl::array<double, TimingValueCount> timingWeights = {};
+
+            double averageFrameTimeMs() const;
+            double averageFramesPerSecond() const;
         };
 
+        static constexpr int BenchmarkPhaseCount = 4;
+        static constexpr eastl::array<int, BenchmarkPhaseCount> BenchmarkModeIndices = {0, 1, 1, 0};
+
         void startBenchmark();
+        void startBenchmarkPhase(std::chrono::steady_clock::time_point now);
         void updateBenchmark();
         void updateBenchmarkMotion();
+        void finishBenchmark();
+        bool writeBenchmarkCsv() const;
 
         ScenesFactory m_defaultScenes = nullptr;
         ScenesFactory m_jungleRuins = nullptr;
@@ -81,19 +79,23 @@ namespace nau::sample
         math::quat m_jungleCameraRotation;
         bool m_jungleCameraSaved = false;
 
-        BenchmarkMode m_benchmarkModes[2]; // [0]: the cascades on the scene GPU, [1]: on the second GPU
-        int m_benchmarkPhase = -1; // -1: not running
+        eastl::array<BenchmarkMode, 2> m_benchmarkModes;
+        eastl::array<mgpu::bridge::FrameTimingCapture, BenchmarkPhaseCount> m_frameTimingCaptures;
+        mgpu::bridge::Status m_dualGpuStatus;
+        int m_benchmarkPhase = -1;
+        bool m_capturingFrameTimings = false;
+        bool m_benchmarkValid = false;
         bool m_benchmarkDone = false;
         bool m_benchmarkExit = false;
         bool m_savedMgpu = false;
         bool m_savedMgpuAuto = false;
+        bool m_savedVsync = true;
+        float m_benchmarkLightYaw = 0.0f;
         bool m_startSceneDone = false;
 
-        // NAU_SAMPLE_BENCHMARK_MOTION=1: the camera sways during the benchmark (the pose it had at the start, moved).
         bool m_benchmarkMotion = false;
         math::vec3 m_motionTranslation = math::vec3::zero();
         math::quat m_motionRotation = math::quat::identity();
-        std::chrono::steady_clock::time_point m_motionStart;
 
         void updateSwitchTest();
         SceneSet m_switchTestSeen = SceneSet::None;

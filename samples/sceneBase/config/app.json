@@ -30,7 +30,7 @@
     },
     "mgpu": {
         "enabled": true,
-        "auto": true,
+        "auto": false,
         "nearCascades": 2,
         "maxAtlasesPerSecond": 30
     },

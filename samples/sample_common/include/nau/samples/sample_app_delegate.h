@@ -31,6 +31,7 @@ namespace nau::sample
         }
 
         Result<> configureApplication() override;
+        Result<> configureApplication(bool fileLoggingEnabled);
 
         eastl::string getModulesListString() const final;
 

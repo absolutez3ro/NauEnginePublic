@@ -1396,7 +1396,6 @@ int on_copy_from_external_resource(void *par1, void *par2)
     return 0;
   }
 
-  // CopyResource requirements: same size, mips, layers and format, no MSAA
   const D3D12_RESOURCE_DESC srcDesc = src->GetDesc();
   const D3D12_RESOURCE_DESC dstDesc = dst->getHandle()->GetDesc();
   if (D3D12_RESOURCE_DIMENSION_TEXTURE2D != srcDesc.Dimension || D3D12_RESOURCE_DIMENSION_TEXTURE2D != dstDesc.Dimension ||

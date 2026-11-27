@@ -43,12 +43,8 @@ static constexpr float MIN_SCALE = 1.0f;
 static constexpr float MAX_SCALE = 4.0f;
 static bool frameEnded = true;
 
-// ImGui is lazily initialized from the render thread (debug_gui node declaration calls imgui_update()/imgui_endframe()),
-// while the main thread starts calling imgui_cache_render_data()/imgui_update() as soon as imgui_get_state() != OFF.
-// imgui_mutex serializes state changes, init and frame begin/end between these threads.
-// Recursive because state change handlers are called under it.
 static std::recursive_mutex imgui_mutex;
-static std::thread::id frame_thread; // thread that started the current ImGui frame
+static std::thread::id frame_thread;
 
 static bool imguiSubmenuEnabled = true;
 
@@ -295,8 +291,6 @@ void imgui_update()
 void imgui_endframe()
 {
   std::lock_guard<std::recursive_mutex> lock(imgui_mutex);
-  // By the time the render thread ends the frame it began during lazy init, the main thread
-  // may have already rendered it and begun its own frame. Don't end a frame another thread is building.
   if (frame_thread != std::this_thread::get_id())
     return;
   end_frame();
@@ -368,8 +362,6 @@ void imgui_copy_render_data()
 }
 
 
-// Not under imgui_mutex: uses only copiedDrawData (swapped in syncSceneState while the render thread waits),
-// and DagImGuiRenderer::render() may block on the main thread executor.
 void imgui_render_copied_data()
 {
     if(copiedDrawData)

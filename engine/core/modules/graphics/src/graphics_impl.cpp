@@ -305,13 +305,6 @@ namespace nau
             task.detach();
         }
 
-        // Stage 1b of the MGPU optimisation, frame pipelining (GraphicsSettings::framePipelining, on by default). The waits below
-        // keep the CPU and the GPU from overlapping: the CPU records a frame only after the GPU has finished the previous
-        // one. Pre-render work (asset loading, scene activation, material changes) may change resources the GPU still
-        // reads, so a frame with such work waits and runs it exactly as before. A frame without it records at once: the
-        // driver bounds the frames in flight at present, frees resources only after the frames that used them, and the
-        // per-frame updates of buffers go through discard (renamed copies). Work that arrives during such a frame is run
-        // by the next frame, which then waits.
         const bool pipelining = getGraphicsSettings().framePipelining;
 
         if (pipelining && !hasPreRenderWork())
@@ -407,6 +400,12 @@ namespace nau
 
         d3d::update_screen();
         d3d::driver_command(DRV3D_COMMAND_RELEASE_OWNERSHIP, NULL, NULL, NULL);
+#if defined(NAU_ENABLE_MGPU)
+        if (m_defaultRenderWindow)
+        {
+            m_defaultRenderWindow->recordFrameTiming();
+        }
+#endif
     }
 
     void GraphicsImpl::createDefaultTexture()
@@ -527,7 +526,6 @@ namespace nau
                 return true;
             }
         }
-        // The work queue tells it through its runtime component; a queue that cannot tell counts as busy.
         auto* const component = m_preRenderWorkQueue->as<IRuntimeComponent*>();
         return component == nullptr || component->hasWorks();
     }

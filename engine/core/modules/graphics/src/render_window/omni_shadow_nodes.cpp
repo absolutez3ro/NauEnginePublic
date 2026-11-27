@@ -1,7 +1,6 @@
 // Copyright 2024 N-GINN LLC. All rights reserved.
 // Use of this source code is governed by a BSD-3 Clause license that can be found in the LICENSE file.
 
-
 #include <algorithm>
 #include <cstring>
 
@@ -10,7 +9,6 @@
 #include "nau/diag/logging.h"
 #include "render_window_impl.h"
 
-// Shadow maps of point lights: the faces are drawn by Nau (one GPU) or by the second GPU (Mgpu path), see render/omniShadows.h.
 namespace nau::render
 {
     void RenderWindowImpl::renderOmniShadows()
@@ -29,7 +27,6 @@ namespace nau::render
 
         bool atlasFromSecondGpu = false;
 #if defined(NAU_ENABLE_MGPU)
-        // Also called without casters: it releases the slots handed out earlier and shuts the path down when it is switched off.
         atlasFromSecondGpu = renderMgpuOmniShadows(casters);
 #endif
 
@@ -67,14 +64,11 @@ namespace nau::render
     {
         namespace shadows = nau::mgpu::shadows;
 
-        // drv3d_DX12 (render_state.h): D3D12 DepthBias = zBias / MINIMUM_REPRESENTABLE_D16, truncated to INT.
         constexpr double DX12_MINIMUM_REPRESENTABLE_D16 = 2e-5;
 
         constexpr float MGPU_OMNI_REPORT_PERIOD_SECONDS = 2.0f;
-    }
+    }  // namespace
 
-    // The faces of the point light shadow maps, as a frame description for the second GPU: every face is a "cascade" of the
-    // atlas (viewport, view-projection, depth bias), the casters of a face are the draws of its omniView_<slot>_<face>.
     void RenderWindowImpl::collectMgpuOmniShadowCasters(const eastl::vector<OmniShadowCaster>& casters)
     {
         auto& state = m_mgpuOmniShadows;
@@ -101,6 +95,7 @@ namespace nau::render
                 cascade.depthBias = static_cast<int32_t>(constBias / DX12_MINIMUM_REPRESENTABLE_D16);
                 cascade.slopeScaledDepthBias = slopeBias;
                 cascade.depthClip = true;
+                cascade.flipCull = true;
             }
         }
 
@@ -129,7 +124,6 @@ namespace nau::render
         if (!nau::mgpu::bridge::isEnabled())
         {
             state.hasAtlas = false;
-            // Shut down once Nau's copies from the shared heaps have executed; until then nothing new is started.
             if (state.initAttempted && releaseMgpuShadowSlots(state))
             {
                 releaseMgpuShadows(state);
@@ -140,7 +134,6 @@ namespace nau::render
 
         if (casters.empty())
         {
-            // Nothing to draw, but the slots handed to Nau are still released when their copy has executed.
             if (state.initAttempted)
             {
                 releaseMgpuShadowSlots(state);
@@ -188,7 +181,6 @@ namespace nau::render
         ++state.framesSinceReport;
         releaseMgpuShadowSlots(state);
 
-        // 1. The newest atlas the second GPU has finished goes into the atlas of Nau, with the constants it was drawn with.
         shadows::ReadyAtlas ready;
         if (state.renderer.takeReady(ready))
         {
@@ -228,12 +220,12 @@ namespace nau::render
             state.pendingFrames.erase(std::remove_if(state.pendingFrames.begin(), state.pendingFrames.end(), [&](const auto& item)
             {
                 return item.token <= ready.userToken;
-            }), state.pendingFrames.end());
+            }),
+                                      state.pendingFrames.end());
         }
 
         checkMgpuStall(state, "mgpu omni shadows");
 
-        // 2. The faces of this frame go to the second GPU if it has a free slot and the rate allows; it never waits.
         if (!mgpuSubmitDue(state))
         {
             return state.hasAtlas;
@@ -266,7 +258,6 @@ namespace nau::render
             state.pendingFrames.push_back(pending);
         }
 
-        // 3. Log.
         const shadows::RendererStats& stats = state.renderer.stats();
         if (stats.failed != state.reportedFailures)
         {
@@ -279,12 +270,13 @@ namespace nau::render
         const float elapsed = std::chrono::duration<float>(now - state.lastReport).count();
         if (elapsed >= MGPU_OMNI_REPORT_PERIOD_SECONDS)
         {
-            NAU_LOG_INFO("mgpu omni shadows: {:.1f} atlases/s from '{}', {} draws ({} casters skipped), latency {:.1f} ms "
-                         "(transfer {:.1f} ms), atlas age {} frames, {} completed, {} skipped (busy), {} failed",
-                         static_cast<float>(state.atlasesSinceReport) / elapsed, state.renderer.secondaryAdapterName(), stats.lastDrawCount,
-                         state.skippedCasters, stats.lastLatencyMs, stats.lastTransferMs,
-                         state.hasAtlas ? state.frame - state.atlasFrame : 0, stats.completed, stats.skippedBusy,
-                         stats.failed + state.copyFailures);
+            NAU_LOG_INFO(
+                "mgpu omni shadows: {:.1f} atlases/s from '{}', {} draws ({} casters skipped), latency {:.1f} ms "
+                "(transfer {:.1f} ms), atlas age {} frames, {} completed, {} skipped (busy), {} failed",
+                static_cast<float>(state.atlasesSinceReport) / elapsed, state.renderer.secondaryAdapterName(), stats.lastDrawCount,
+                state.skippedCasters, stats.lastLatencyMs, stats.lastTransferMs,
+                state.hasAtlas ? state.frame - state.atlasFrame : 0, stats.completed, stats.skippedBusy,
+                stats.failed + state.copyFailures);
             state.atlasesSinceReport = 0;
             state.framesSinceReport = 0;
             state.lastReport = now;

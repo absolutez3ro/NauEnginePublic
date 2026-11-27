@@ -13,7 +13,7 @@ class DofIntegrationTests(unittest.TestCase):
     def test_secondary_pass_bindings_match_hlsl(self):
         shader = (CONTENT / 'shaders/src/dof_pipeline.hlsl').read_text()
         bridge = BRIDGE.read_text()
-        plan = re.findall(r'\{"DOF_PASS_(\w+)", \{([^}]+)\}, (\w+)\}', bridge)
+        plan = re.findall(r'\{\s*"DOF_PASS_(\w+)",\s*\{([^}]+)\},\s*(\w+)\s*\}', bridge)
         self.assertEqual([p[0] for p in plan], [
             'COC', 'HOLES', 'PYRAMID1', 'PYRAMID2', 'PATCH2', 'PATCH1', 'PATCH0', 'WMAX', 'WFILTER'])
         expected_inputs = {
@@ -35,12 +35,15 @@ class DofIntegrationTests(unittest.TestCase):
 
     def test_graph_routes_and_fallback(self):
         graph = GRAPH.read_text()
-        fallback = graph.split('// Local GPU1-equivalent block', 1)[1].split('// GPU 0 gather', 1)[0]
-        self.assertEqual(fallback.count('if (!m_depthOfFieldEnabled || m_dofMultiGpuUsed) return;'), 9)
+        self.assertIn('"dof_second_coc", m_swapchain', graph)
+        self.assertIn('"depth_of_field", m_swapchain', graph)
+        fallback = graph.split('"dof_second_coc", m_swapchain', 1)[1].split('"depth_of_field", m_swapchain', 1)[0]
+        guards = re.findall(r'if\s*\(!m_depthOfFieldEnabled\s*\|\|\s*m_dofMultiGpuUsed\)\s*(?:\{\s*)?return;', fallback)
+        self.assertEqual(len(guards), 9)
         self.assertEqual(graph.count('.renameTexture('), 2)
         self.assertIn('m_dofMultiGpuUsed ? multiFilled.get() : colorFilled.get()', graph)
         self.assertEqual(graph.count('m_dofMultiGpuUsed ? multiFiltered.get() : filtered.get()'), 2)
-        self.assertIn('createMgpuNodes();', graph)
+        self.assertIn('"dof_multi_gpu", m_swapchain', graph)
         self.assertIn('DRV3D_COMMAND_PREPARE_TEXTURE_FOR_EXTERNAL_COPY', graph)
         self.assertLess(graph.index('d3d::finish_render_commands();'), graph.index('m_dofBridge.execute('))
 

@@ -57,6 +57,11 @@ namespace nau::sample
 
     Result<> SampleAppDelegate::configureApplication()
     {
+        return configureApplication(true);
+    }
+
+    Result<> SampleAppDelegate::configureApplication(const bool fileLoggingEnabled)
+    {
         namespace fs = std::filesystem;
 
         getServiceProvider().get<GlobalProperties>().addVariableResolver("sampleDir", [](eastl::string_view sampleName) -> eastl::optional<eastl::string>
@@ -96,6 +101,14 @@ namespace nau::sample
             }
         }
 
+        constexpr eastl::string_view logFilesProperty = "app/log/files";
+        if (!fileLoggingEnabled && globalProperties.contains(logFilesProperty))
+        {
+            GlobalProperties::ModificationLock lock;
+            const auto logFiles = globalProperties.getModify(logFilesProperty, lock);
+            NauCheckResult(logFiles);
+            (*logFiles)->as<RuntimeCollection&>().clear();
+        }
         return nau::applyDefaultAppConfiguration();
     }
 

@@ -70,10 +70,6 @@ void nau::RenderView::clearLists()
 
 namespace
 {
-    // Static meshes take the instanced pipelines even with a single instance. The depth prepass reads the instance buffer
-    // in both of its paths, while the non-instanced gbuffer pipeline transforms with the mvp computed on the CPU: the depth
-    // came out slightly different and failed the depth test of the gbuffer pass in places (black pixels). Levels of detail
-    // split the instances of a mesh by distance, so entities with one instance are common.
     bool drawInstanced(const nau::RenderEntity& ent)
     {
         if (!ent.instancingSupported)
