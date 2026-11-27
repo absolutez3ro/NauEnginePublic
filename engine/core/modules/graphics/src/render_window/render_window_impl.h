@@ -136,6 +136,8 @@ namespace nau::render
         bool m_uiLayerRequested = true; // F7 / NAU_UI_LAYER
         bool m_uiLayerActive = false; // this frame: requested and the composite material is loaded
         bool m_uiLayerToggleWasDown = false;
+        bool m_uiBlurEnabled = false;
+        bool m_uiBlurKeyWasDown = false;
 
 #if defined(NAU_ENABLE_MGPU)
         // Mgpu path: the second GPU draws Nau's shadow cascades (the MGPU-ShadowMap scheme of Multi-GPU-Render-DX12).

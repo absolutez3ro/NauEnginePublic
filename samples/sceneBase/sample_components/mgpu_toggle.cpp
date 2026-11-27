@@ -89,6 +89,7 @@ namespace nau::sample
         }
         if (status.linked)
         {
+            ImGui::Text("F7 - UI layer, F6 - UI layer blur");
             ImGui::Text("M - switch MGPU on/off, F9 - DOF on/off, F8 - DOF on the second GPU");
         }
 

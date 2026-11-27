@@ -899,6 +899,14 @@ namespace nau::render
                 NAU_LOG_INFO("UI layer: {}", m_uiLayerRequested ? "on" : "off");
             }
             m_uiLayerToggleWasDown = toggleDown;
+
+            const bool blurDown = (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
+            if (blurDown && !m_uiBlurKeyWasDown)
+            {
+                m_uiBlurEnabled = !m_uiBlurEnabled;
+                NAU_LOG_INFO("UI layer blur: {}", m_uiBlurEnabled ? "on" : "off");
+            }
+            m_uiBlurKeyWasDown = blurDown;
         }
 #endif
 
@@ -974,7 +982,7 @@ namespace nau::render
                 setRenderTarget();
                 d3d::set_srgb_backbuffer_write(false);
                 d3d::settex(0, const_cast<BaseTexture*>(uiLayer.get()));
-                m_uiCompositeRenderer->render("Regular");
+                m_uiCompositeRenderer->render(m_uiBlurEnabled ? "Blur" : "Regular");
                 d3d::settex(0, nullptr);
             };
         }));

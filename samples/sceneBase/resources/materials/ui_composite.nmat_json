@@ -12,6 +12,18 @@
       "cullMode": "Clockwise",
       "depthMode": "Disabled",
       "blendMode": "PremultipliedOver"
+    },
+    "Blur": {
+      "properties": {
+        "ui_layer": "file:/content/textures/white_8x8.png"
+      },
+      "shaders": [
+        "file:/res/shaders/cache/shader_cache.nsbc+[ui_composite.vs.vsmain]",
+        "file:/res/shaders/cache/shader_cache.nsbc+[ui_composite.ps.psblur]"
+      ],
+      "cullMode": "Clockwise",
+      "depthMode": "Disabled",
+      "blendMode": "PremultipliedOver"
     }
   }
 }

@@ -247,6 +247,9 @@ namespace nau::sample
 #if 1
         IScene::Ptr mainScene = co_await loadGltfScene("file:/content/scenes/scene_demo.gltf", true);
         IScene::Ptr helmetScene = co_await loadGltfScene("file:/content/scenes/damaged_helmet/DamagedHelmet.gltf", false);
+        AssetRef<> loafAsset{"file:/content/scenes/scored_loaf.gltf"};
+        auto loafView = co_await loafAsset.getAssetViewTyped<SceneAsset>();
+        IScene::Ptr loafScene = getServiceProvider().get<ISceneFactory>().createSceneFromAsset(*loafView);
         IScene::Ptr shadowScene = co_await loadGltfScene("file:/content/scenes/shadow_test.gltf", true);
         IScene::Ptr helmetTranslucentScene = co_await loadGltfScene("file:/content/scenes/damaged_helmet_translucent/DamagedHelmet_Translucent.gltf", false);
 
@@ -313,6 +316,7 @@ namespace nau::sample
 
         sceneLoaders.push(sceneManager.activateScene(std::move(mainScene)));
         sceneLoaders.push(sceneManager.activateScene(std::move(shadowScene)));
+        sceneLoaders.push(sceneManager.activateScene(std::move(loafScene)));
         sceneLoaders.push(sceneManager.activateScene(std::move(helmetScene)));
         //sceneLoaders.push(sceneManager.activateScene(std::move(helmetTranslucentScene)));
         // todo: NAU-1295 add scene to scene when API is present
