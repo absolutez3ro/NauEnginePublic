@@ -906,6 +906,11 @@ namespace nau::render
         // While the layer holds the UI, the debug_gui node of GPU0 draws nothing. Until the first layer arrives (and
         // whenever a copy fails) Nau keeps drawing ImGui itself, so the UI never disappears.
         state.drawsImGui = state.hasLayer && imguiDrawData != nullptr;
+        // "features" column of the GPU profiler: ImGui of this frame comes from GPU1 (ui_layer=gpu1); it overrides the
+        // ui_layer label set by updateUiLayerSwitch earlier in the same node.
+        nau::gpu_profiler::GpuProfiler::instance().setPlacement(
+            "ui_layer", state.drawsImGui ? nau::gpu_profiler::Placement::Gpu1
+                                         : (m_uiLayerActive ? nau::gpu_profiler::Placement::Gpu0 : nau::gpu_profiler::Placement::Off));
 
         const ui_layer::RendererStats& stats = state.renderer.stats();
         if (stats.failed != state.reportedFailures)

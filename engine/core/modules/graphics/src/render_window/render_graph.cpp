@@ -927,6 +927,9 @@ namespace nau::render
             // drawn and composited on GPU 0). gpu1 is left for the second GPU.
             nau::gpu_profiler::GpuProfiler::instance().setPlacement(
                 "ui_layer", m_uiLayerActive ? nau::gpu_profiler::Placement::Gpu0 : nau::gpu_profiler::Placement::Off);
+            // F6 blur of the layer: done by ui_composite, which always runs on GPU 0 (ui_blur=gpu0), or off.
+            nau::gpu_profiler::GpuProfiler::instance().setPlacement(
+                "ui_blur", m_uiBlurEnabled ? nau::gpu_profiler::Placement::Gpu0 : nau::gpu_profiler::Placement::Off);
         }
     }
 

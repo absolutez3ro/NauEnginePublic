@@ -5,6 +5,9 @@
 
 #include <imgui.h>
 
+#include <cstdio>
+#include <cstdlib>
+
 #include "nau/input.h"
 #include "nau/scene/camera/camera_manager.h"
 #include "nau/scene/components/camera_component.h"
@@ -226,6 +229,29 @@ namespace nau::sample
         NAU_LOG("Component ready");
 
         getControlledTransform().setRotation(math::quat::identity());
+
+        // NAU_CAMERA_POS="x,y,z" [NAU_CAMERA_YAW=<degrees>] puts the camera at a fixed pose at start, for repeatable
+        // measurements (the default pose is wherever the camera manager starts). The camera looks along -Z with no yaw;
+        // W moves it forward. Example for the scored loaf of sceneBase (world bounds x -5.5..-0.5, y -2.7..-1.1,
+        // z 1.9..4.1): NAU_CAMERA_POS="-3,-1.9,10".
+        if (const char* pose = std::getenv("NAU_CAMERA_POS"); pose != nullptr)
+        {
+            float x = 0.0f, y = 0.0f, z = 0.0f;
+            if (std::sscanf(pose, "%f,%f,%f", &x, &y, &z) == 3)
+            {
+                auto& control = getControlledTransform();
+                control.setTranslation(math::vec3(x, y, z));
+                if (const char* yaw = std::getenv("NAU_CAMERA_YAW"); yaw != nullptr)
+                {
+                    control.setRotation(math::quat::rotationY(std::strtof(yaw, nullptr) * 3.14159265f / 180.0f));
+                }
+                NAU_LOG_INFO("camera: start pose from NAU_CAMERA_POS = ({}, {}, {})", x, y, z);
+            }
+            else
+            {
+                NAU_LOG_WARNING("camera: NAU_CAMERA_POS='{}' is not 'x,y,z', ignored", pose);
+            }
+        }
     }
 
     void CameraControl::doStep(const math::vec3& offset)
