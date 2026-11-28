@@ -21,8 +21,13 @@ VsOutput VSMain(uint id : SV_VertexID)
     return output;
 }
 
+#include "ui_blur.hlsli"
 float4 PSMain(VsOutput input) : SV_Target
 {
-    // The layer has the size of the back buffer: one texel per pixel, no filtering.
     return ui_layer.Load(int3(input.position.xy, 0));
+}
+
+float4 PSBlur(VsOutput input) : SV_Target
+{
+    return blurUi(ui_layer, int2(input.position.xy));
 }
